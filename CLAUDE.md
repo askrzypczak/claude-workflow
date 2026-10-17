@@ -1,0 +1,10 @@
+# claude-workflow
+
+Private Claude Code plugin marketplace (`askrzypczak-plugins`) holding the `ticket-workflow` plugin. See README.md for contents and install.
+
+## Conventions
+- **Bump the version in every PR that changes the plugin**: `version` in `plugins/ticket-workflow/.claude-plugin/plugin.json`, in the same commit. Patch for wording or doc fixes, minor for behaviour changes. Claude Code updates installed plugins by comparing this version, so an unbumped merge may never reach agent sessions. `marketplace.json` has no version.
+- Keep README.md's Workflow list in step with `skills/work-ticket/SKILL.md`.
+- Validate with `claude plugin validate .`; self-test grg with `plugins/ticket-workflow/scripts/test-grg.sh`.
+- Guardrails (git guard hook, deny rules) live in each consuming project, not here.
+- Owner: Tony (`askrzypczak`). Branch per change, PR to `main`; humans merge.
