@@ -1,6 +1,6 @@
 {
   "name": "ticket-workflow",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Orchestrated GitHub-issue workflow: plan gate, implementer and reviewer subagents, green/red/green test proof, PR, feedback loop.",
   "author": { "name": "Tony Skrzypczak" }
 }
