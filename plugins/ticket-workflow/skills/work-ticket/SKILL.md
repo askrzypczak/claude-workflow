@@ -5,17 +5,12 @@ description: Work a GitHub issue end to end - plan with a human sign-off gate, d
 
 # work-ticket
 
-Argument: an issue number `N`, optionally followed by `mode=direct|plan|implement`. Always launched with an explicit number (manually, or by a launcher script); never auto-pick.
+Argument: an issue number `N`, optionally followed by `auto` (see Auto mode). Always launched with an explicit number (manually, or by a launcher script); never auto-pick.
 
-You are the **orchestrator**. Keep your own context small: delegate the heavy reading and writing to subagents and work from their short reports. In interactive use the ticket is a conversation with Tony, so expect to ask questions.
+You are the **orchestrator**. Keep your own context small: delegate the heavy reading and writing to subagents and work from their short reports. The ticket is a conversation with Tony, so expect to ask questions (a background session just waits for him).
 
-## Modes
-- **No `mode`** (interactive): follow the steps below as written.
-- **Headless** (`mode=` given): nobody is watching, so never block on a question or plan-mode approval. State anything unresolved in a comment on the issue instead.
-  - `plan`: do steps 1-2, post the plan as an issue comment (`gh issue comment N`) with the same contents step 2 requires, run `gh issue edit N --add-label plan-posted --remove-label needs-plan`, then stop. Do not claim or branch. Tony adds `plan-approved` when he is happy.
-  - `implement`: do step 1, but the issue carries `plan-approved` and no `in-progress`. Take the latest plan comment as the approved plan (any later comment from Tony overrides it), skip step 2, then run steps 3-8, removing `plan-approved` and `plan-posted` at the claim in step 3.
-  - `direct`: plan privately (step 2 contents, no approval gate), then continue from step 3. **Escape hatch**: if the acceptance criteria are ambiguous, the change spans more than a handful of files, or it touches security, data handling or shared infrastructure, behave as `plan` instead and say why in the comment.
-  - Any headless run that cannot finish: comment what was done, then `gh issue edit N --add-label agent-failed --remove-label in-progress` (if claimed), and stop. Soft blockers on a dependency still use `blocked` as in step 8.
+## Auto mode
+If the argument is `N auto` (a launcher passes it for tickets labelled `skip-plan`), plan as in step 2 but skip the human sign-off: do not enter plan mode or wait for approval, and go straight to step 3 with your own plan. Still ask Tony if the ticket is ambiguous or the change turns out to be wide or risky (touching security, data handling or shared code); that is what the gate is for. Everything else is unchanged.
 
 ## 1. Read (read-only)
 Run `git fetch origin --quiet` first: the local checkout can be stale, and everything below assumes a current `origin/main`. Then `gh issue view N --comments --json number,title,body,labels,assignees,state`.
@@ -23,7 +18,7 @@ Run `git fetch origin --quiet` first: the local checkout can be stale, and every
 - Stop if it already has `in-progress`.
 
 ## 2. Plan - gate 1 (human sign-off)
-(Headless: see Modes; no plan-mode approval, and `implement` skips this step.) Enter plan mode and explore just enough to plan. Read from `origin/main` (`git show origin/main:<path>`, `git ls-tree -r origin/main`), not the working tree, which may be behind. The plan must include:
+(Auto mode: plan privately, with no plan mode and no sign-off.) Otherwise enter plan mode and explore just enough to plan. Read from `origin/main` (`git show origin/main:<path>`, `git ls-tree -r origin/main`), not the working tree, which may be behind. The plan must include:
 - Approach, and the files likely touched.
 - Acceptance criteria (from the ticket; add any that are implied).
 - Test list: each behaviour to be covered.
@@ -33,7 +28,7 @@ Ask clarifying questions first if the ticket is ambiguous. Exit plan mode only w
 
 ## 3. Claim and branch
 - Re-check the issue has no `in-progress`, then `gh issue edit N --add-assignee @me --add-label in-progress --remove-label ready` and comment "Claimed; working in branch `issue-N-<slug>`."
-- Run `git fetch origin --quiet` again (sign-off may have taken a while), enter a worktree (headless: if the session already runs inside one under `.claude/worktrees/`, stay in it), and create branch `issue-N-<short-slug>` from `origin/main`.
+- Run `git fetch origin --quiet` again (sign-off may have taken a while), enter a worktree, and create branch `issue-N-<short-slug>` from `origin/main`.
 
 ## 4. Implement
 Launch the `ticket-workflow:implementer` subagent (override `model`/`effort` per the approved tier). If the Agent tool rejects `ticket-workflow:implementer`, list the available agent types and use the one that ends in `:implementer`; do the same for the reviewer. Prompt it with: the approved plan, acceptance criteria, test list, and the instruction to follow its agent definition. Do not do the implementation yourself.
