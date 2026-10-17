@@ -8,3 +8,4 @@ Private Claude Code plugin marketplace (`askrzypczak-plugins`) holding the `tick
 - Validate with `claude plugin validate .`; self-test grg with `plugins/ticket-workflow/scripts/test-grg.sh`.
 - Guardrails (git guard hook, deny rules) live in each consuming project, not here.
 - Owner: Tony (`askrzypczak`). Branch per change, PR to `main`; humans merge.
+- `.github/workflows/ticket-labels.yml` is a reusable workflow that embeds `scripts/ticket-labels.ts` (callers cannot check out this private repo). Edit both together; `npm test` checks they match. Requires Actions access `user` on this repo.
