@@ -43,7 +43,7 @@ Local development:
 3. Branch in a worktree.
 4. Implementer builds the code and tests.
 5. Green/red/green proof.
-6. Reviewer on complex changes.
+6. Reviewer on complex changes; the orchestrator triages its findings (blockers and cheap fixes to the implementer, the rest deferred).
 7. Open an active (non-draft) PR with CI green.
 8. Human review, then address-feedback.
 9. Human merges.

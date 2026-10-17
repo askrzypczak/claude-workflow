@@ -38,7 +38,10 @@ Launch the `ticket-workflow:implementer` subagent (override `model`/`effort` per
 Run `npm run check`, then `${CLAUDE_PLUGIN_ROOT}/scripts/grg.sh`. Failures, or a tests-pass-without-implementation result, go back to the implementer (SendMessage to continue it, with the exact output). Maximum 2 rounds, then stop and tell Tony what is stuck. Do not accept "PASS (weak)" without the implementer's targeted-break evidence in its report.
 
 ## 6. Review
-- `complex`: launch the `ticket-workflow:reviewer` subagent with the issue number, acceptance criteria, base ref `origin/main`, and the implementer's report. Send blockers back to the implementer, then re-run step 5. Maximum 2 rounds, then escalate to Tony.
+- `complex`: commit the work as a WIP first (`git add -A && git commit -m "WIP: issue N"`; step 7 may amend or squash it) so the reviewer's `git diff origin/main...HEAD` shows it. Launch the `ticket-workflow:reviewer` subagent with the issue number, acceptance criteria, base ref `origin/main`, and the implementer's report. Its findings carry severity, confidence, a proposed fix and a cost (`small`/`larger`). You hold the ticket, plan and Tony's decisions, so you mediate:
+  - Default: send blockers and `small` suggestions to the implementer in one round, with each finding's `file:line`, scenario and proposed fix. Put `larger` suggestions in the PR body under "Deferred review suggestions", or file them as issues (`gh issue create`) when they are worth doing separately.
+  - Override either way when ticket context says so (for example, drop a blocker that contradicts a plan decision, or apply a larger suggestion that the ticket implies). Record each override and why in the PR body. Tony may change the default rule per ticket.
+  Then re-run step 5. Maximum 2 rounds, then escalate to Tony.
 - `simple`: check `git diff origin/main...HEAD` against the acceptance criteria yourself.
 File a new issue (`gh issue create`) for anything adjacent instead of expanding scope.
 
