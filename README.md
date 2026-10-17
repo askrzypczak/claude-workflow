@@ -6,7 +6,7 @@ Private Claude Code plugin marketplace for Tony's agent workflow.
 
 Plugin `ticket-workflow`:
 
-- Skills: `work-ticket` (works a GitHub issue end to end) and `address-feedback` (handles review feedback on the PR).
+- Skills: `work-ticket` (works a GitHub issue end to end), `address-feedback` (handles review feedback on the PR) and `resolve-conflicts` (merges `origin/main` into a conflicting `issue-N-*` PR branch, resolves, runs `npm run check`, publishes the branch; stops with `needs input` on semantic conflicts; never rebases or force-pushes).
 - Subagents: `implementer` (haiku, xhigh; sonnet or opus per the approved plan) builds code and tests; `reviewer` (opus, medium, read-only) reviews complex diffs.
 - `scripts/grg.sh`: mechanical green/red/green test check. Self-test: `scripts/test-grg.sh`.
 
