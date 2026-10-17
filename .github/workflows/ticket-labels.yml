@@ -9,6 +9,11 @@ name: ticket-labels
 #       uses: askrzypczak/claude-workflow/.github/workflows/ticket-labels.yml@main
 on:
   workflow_call:
+    inputs:
+      issue_number:
+        description: Issue to clean up; defaults to the issue in the triggering event
+        type: number
+        required: false
     secrets:
       workflow_token:
         description: Token able to read askrzypczak/claude-workflow (only needed if the default token cannot)
@@ -36,4 +41,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
