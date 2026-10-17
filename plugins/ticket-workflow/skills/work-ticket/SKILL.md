@@ -12,10 +12,12 @@ You are the **orchestrator**. Keep your own context small: delegate the heavy re
 ## Auto mode
 If the argument is `N auto` (a launcher passes it for tickets labelled `skip-plan`), plan as in step 2 but skip the human sign-off: do not enter plan mode or wait for approval, and go straight to step 3 with your own plan. Still ask Tony if the ticket is ambiguous or the change turns out to be wide or risky (touching security, data handling or shared code); that is what the gate is for. Everything else is unchanged.
 
-## 1. Read (read-only)
+## 1. Read and claim
 Run `git fetch origin --quiet` first: the local checkout can be stale, and everything below assumes a current `origin/main`. Then `gh issue view N --comments --json number,title,body,labels,assignees,state`.
 - Stop and report if the issue is closed, has `blocked`, or its body has an open `Blocked by #M` (check `gh issue view M --json state`).
-- Stop if it already has `in-progress`.
+- Stop if it already has `in-progress`: another session owns it.
+
+Then claim it before any planning, since planning is work on the ticket and only one session should do it: `gh issue edit N --add-assignee @me --add-label in-progress --remove-label ready` and comment "Claimed; planning."
 
 ## 2. Plan - gate 1 (human sign-off)
 (Auto mode: plan privately, with no plan mode and no sign-off.) Otherwise enter plan mode and explore just enough to plan. Read from `origin/main` (`git show origin/main:<path>`, `git ls-tree -r origin/main`), not the working tree, which may be behind. The plan must include:
@@ -24,11 +26,10 @@ Run `git fetch origin --quiet` first: the local checkout can be stale, and every
 - Test list: each behaviour to be covered.
 - **Complexity** rating: `complex` (branching logic, new abstractions, shared code, security/data handling) or `simple` (docs, config, chores, trivial one-file changes). This decides step 6.
 - **Implementer tier**: default `haiku` with `xhigh` effort; the approved plan carries the detail it needs. Propose `sonnet` medium for subtle logic or loosely specified work, and `opus` for the hardest. Say why when departing from the default.
-Ask clarifying questions first if the ticket is ambiguous. Exit plan mode only with Tony's explicit approval. If he declines or abandons, stop; nothing has been claimed.
+Ask clarifying questions first if the ticket is ambiguous. Exit plan mode only with Tony's explicit approval. If he declines or abandons, release the claim: comment the reason on the issue, then `gh issue edit N --remove-label in-progress --add-label blocked` (`blocked` tells a launcher this was a hand-off, not a failure). Tony removes `blocked` and re-adds `ready` to retry.
 
-## 3. Claim and branch
-- Re-check the issue has no `in-progress`, then `gh issue edit N --add-assignee @me --add-label in-progress --remove-label ready` and comment "Claimed; working in branch `issue-N-<slug>`."
-- Run `git fetch origin --quiet` again (sign-off may have taken a while), enter a worktree, and create branch `issue-N-<short-slug>` from `origin/main`.
+## 3. Branch
+- Run `git fetch origin --quiet` again (sign-off may have taken a while), enter a worktree, and create branch `issue-N-<short-slug>` from `origin/main`. Comment "Plan approved; working in branch `issue-N-<slug>`." on the issue.
 
 ## 4. Implement
 Launch the `ticket-workflow:implementer` subagent (override `model`/`effort` per the approved tier). If the Agent tool rejects `ticket-workflow:implementer`, list the available agent types and use the one that ends in `:implementer`; do the same for the reviewer. Prompt it with: the approved plan, acceptance criteria, test list, and the instruction to follow its agent definition. Do not do the implementation yourself.
