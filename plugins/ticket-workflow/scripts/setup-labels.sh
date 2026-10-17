@@ -9,7 +9,7 @@ REPO_ARGS=() # expanded with [@]+ below: empty arrays are unbound under set -u o
 
 # name|color|description
 LABELS=(
-  "ready|0e8a16|Reviewed and approved by Tony; only Tony adds it"
+  "ready|0e8a16|Reviewed and approved by a human; only the maintainer adds it"
   "in-progress|fbca04|Claimed by a person or agent"
   "blocked|b60205|Waiting on another ticket or a decision"
   "needs-review|5319e7|PR open; awaiting human review"
