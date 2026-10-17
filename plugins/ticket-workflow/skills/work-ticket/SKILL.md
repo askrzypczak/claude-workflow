@@ -5,9 +5,12 @@ description: Work a GitHub issue end to end - plan with a human sign-off gate, d
 
 # work-ticket
 
-Argument: an issue number `N`. Always launched manually with an explicit number; never auto-pick.
+Argument: an issue number `N`, optionally followed by `auto` (see Auto mode). Always launched with an explicit number (manually, or by a launcher script); never auto-pick.
 
-You are the **orchestrator**. Keep your own context small: delegate the heavy reading and writing to subagents and work from their short reports. The ticket is a conversation with Tony, so expect to ask questions.
+You are the **orchestrator**. Keep your own context small: delegate the heavy reading and writing to subagents and work from their short reports. The ticket is a conversation with Tony, so expect to ask questions (a background session just waits for him).
+
+## Auto mode
+If the argument is `N auto` (a launcher passes it for tickets labelled `skip-plan`), plan as in step 2 but skip the human sign-off: do not enter plan mode or wait for approval, and go straight to step 3 with your own plan. Still ask Tony if the ticket is ambiguous or the change turns out to be wide or risky (touching security, data handling or shared code); that is what the gate is for. Everything else is unchanged.
 
 ## 1. Read (read-only)
 Run `git fetch origin --quiet` first: the local checkout can be stale, and everything below assumes a current `origin/main`. Then `gh issue view N --comments --json number,title,body,labels,assignees,state`.
@@ -15,7 +18,7 @@ Run `git fetch origin --quiet` first: the local checkout can be stale, and every
 - Stop if it already has `in-progress`.
 
 ## 2. Plan - gate 1 (human sign-off)
-Enter plan mode and explore just enough to plan. Read from `origin/main` (`git show origin/main:<path>`, `git ls-tree -r origin/main`), not the working tree, which may be behind. The plan must include:
+(Auto mode: plan privately, with no plan mode and no sign-off.) Otherwise enter plan mode and explore just enough to plan. Read from `origin/main` (`git show origin/main:<path>`, `git ls-tree -r origin/main`), not the working tree, which may be behind. The plan must include:
 - Approach, and the files likely touched.
 - Acceptance criteria (from the ticket; add any that are implied).
 - Test list: each behaviour to be covered.
