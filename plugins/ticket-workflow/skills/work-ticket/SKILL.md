@@ -10,12 +10,12 @@ Argument: an issue number `N`. Always launched manually with an explicit number;
 You are the **orchestrator**. Keep your own context small: delegate the heavy reading and writing to subagents and work from their short reports. The ticket is a conversation with Tony, so expect to ask questions.
 
 ## 1. Read (read-only)
-`gh issue view N --comments --json number,title,body,labels,assignees,state`.
+Run `git fetch origin --quiet` first: the local checkout can be stale, and everything below assumes a current `origin/main`. Then `gh issue view N --comments --json number,title,body,labels,assignees,state`.
 - Stop and report if the issue is closed, has `blocked`, or its body has an open `Blocked by #M` (check `gh issue view M --json state`).
 - Stop if it already has `in-progress`.
 
 ## 2. Plan - gate 1 (human sign-off)
-Enter plan mode and explore just enough to plan. The plan must include:
+Enter plan mode and explore just enough to plan. Read from `origin/main` (`git show origin/main:<path>`, `git ls-tree -r origin/main`), not the working tree, which may be behind. The plan must include:
 - Approach, and the files likely touched.
 - Acceptance criteria (from the ticket; add any that are implied).
 - Test list: each behaviour to be covered.
@@ -25,7 +25,7 @@ Ask clarifying questions first if the ticket is ambiguous. Exit plan mode only w
 
 ## 3. Claim and branch
 - Re-check the issue has no `in-progress`, then `gh issue edit N --add-assignee @me --add-label in-progress --remove-label ready` and comment "Claimed; working in branch `issue-N-<slug>`."
-- Enter a worktree; create branch `issue-N-<short-slug>` from `origin/main`.
+- Run `git fetch origin --quiet` again (sign-off may have taken a while), enter a worktree, and create branch `issue-N-<short-slug>` from `origin/main`.
 
 ## 4. Implement
 Launch the `ticket-workflow:implementer` subagent (override `model`/`effort` per the approved tier). If the Agent tool rejects `ticket-workflow:implementer`, list the available agent types and use the one that ends in `:implementer`; do the same for the reviewer. Prompt it with: the approved plan, acceptance criteria, test list, and the instruction to follow its agent definition. Do not do the implementation yourself.
