@@ -38,9 +38,9 @@ Local development:
 
 ## Workflow
 
-1. Read the ticket.
+1. Read and claim the ticket (planning counts as work).
 2. Plan, with human sign-off.
-3. Claim the issue and branch in a worktree.
+3. Branch in a worktree.
 4. Implementer builds the code and tests.
 5. Green/red/green proof.
 6. Reviewer on complex changes.
