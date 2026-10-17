@@ -1,17 +1,17 @@
 ---
 name: address-feedback
-description: Handle Tony's review of a PR - collect feedback from live discussion, merge in GitHub PR comments, confirm the list, then fix. Use when asked to "address feedback on #N", when Tony says he is done reviewing, or after review comments land on a PR.
+description: Handle the human reviewer's review of a PR - collect feedback from live discussion, merge in GitHub PR comments, confirm the list, then fix. Use when asked to "address feedback on #N", when the human says they are done reviewing, or after review comments land on a PR.
 ---
 
 # address-feedback
 
-Argument: an issue number `N` (or PR number). Tony reviews by discussing the PR live with you and may also leave GitHub comments. Launched manually after CI is green, or started by the conversation itself.
+Argument: an issue number `N` (or PR number). The human reviews by discussing the PR live with you and may also leave GitHub comments. Launched manually after CI is green, or started by the conversation itself.
 
 ## 1. Collect (live conversation)
-Feedback comes from what Tony says. Keep a running numbered list (with `file:line` where relevant) as he talks, and show it when asked.
+Feedback comes from what the human says. Keep a running numbered list (with `file:line` where relevant) as they talk, and show it when asked.
 - No code changes in this phase. Discuss, record, ask questions.
 - Find the PR early (`gh pr list --search "N in:body" --json number,headRefName,url`; branch is `issue-N-*`) so you can read the diff while discussing.
-- The phase ends when Tony says he is done, or runs `address-feedback N`. Do not move on before that.
+- The phase ends when the human says they are done, or runs `address-feedback N`. Do not move on before that.
 
 ## 2. Gather (read-only)
 At the trigger, also pull GitHub feedback and merge it into the list:
@@ -33,7 +33,7 @@ Enter the existing worktree for the PR branch (or create one from the PR's head 
 Commit, push the same branch, and reply on the PR threads you resolved (`gh pr comment`), noting which items were done and which were deferred to new issues.
 
 ## 4. Hand off
-Confirm CI passes on the new commits (`gh pr checks`), then tell Tony what changed and what remains. Re-add `needs-review` to the issue. Humans merge; do not merge the PR.
+Confirm CI passes on the new commits (`gh pr checks`), then tell the human what changed and what remains. Re-add `needs-review` to the issue. Humans merge; do not merge the PR.
 
 ## Hard rules
 Same as `work-ticket`: push only the PR's `issue-N-*` branch, never `main`, never force-push, never merge.
