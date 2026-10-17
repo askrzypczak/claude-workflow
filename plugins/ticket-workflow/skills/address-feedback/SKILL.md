@@ -1,23 +1,29 @@
 ---
 name: address-feedback
-description: Handle Tony's review of a PR - gather comments, summarise them, ask clarifying questions before acting, then fix. Use when asked to "address feedback on #N" or after review comments land on a PR.
+description: Handle Tony's review of a PR - collect feedback from live discussion, merge in GitHub PR comments, confirm the list, then fix. Use when asked to "address feedback on #N", when Tony says he is done reviewing, or after review comments land on a PR.
 ---
 
 # address-feedback
 
-Argument: an issue number `N` (or PR number). Launched manually after CI is green and Tony has reviewed.
+Argument: an issue number `N` (or PR number). Tony reviews by discussing the PR live with you and may also leave GitHub comments. Launched manually after CI is green, or started by the conversation itself.
 
-## 1. Gather (read-only)
-- Find the PR: `gh pr list --search "N in:body" --json number,headRefName,url` (branch is `issue-N-*`).
+## 1. Collect (live conversation)
+Feedback comes from what Tony says. Keep a running numbered list (with `file:line` where relevant) as he talks, and show it when asked.
+- No code changes in this phase. Discuss, record, ask questions.
+- Find the PR early (`gh pr list --search "N in:body" --json number,headRefName,url`; branch is `issue-N-*`) so you can read the diff while discussing.
+- The phase ends when Tony says he is done, or runs `address-feedback N`. Do not move on before that.
+
+## 2. Gather (read-only)
+At the trigger, also pull GitHub feedback and merge it into the list:
 - Check CI: `gh pr checks <pr>`. If it is red, say so; fixing CI comes first.
-- Collect everything: `gh pr view <pr> --comments`, review threads (`gh api repos/{owner}/{repo}/pulls/<pr>/comments`), and review summaries (`gh pr view <pr> --json reviews`). Also read the issue comments.
+- `gh pr view <pr> --comments`, review threads (`gh api repos/{owner}/{repo}/pulls/<pr>/comments`), review summaries (`gh pr view <pr> --json reviews`), and issue comments.
+- Deduplicate against the conversation list. Flag any item where a GitHub comment conflicts with what was said live.
 
-## 2. Summarise and ask - gate 2
-Do not change anything yet. Present Tony with:
-- A numbered list of each distinct piece of feedback, grouped by theme, with `file:line` where relevant.
-- For each: what you understand it to mean and what you would change.
-- **Clarifying questions** for anything ambiguous, conflicting, out of scope for this ticket, or where several fixes are plausible. Prefer asking over guessing.
-Wait for answers. Anything agreed as out of scope becomes a new issue (`gh issue create`), not part of this PR.
+## Gate 2: confirm the list
+Do not change anything yet. Present the merged numbered list, grouped by theme, with `file:line` where relevant. For each item: what you understand it to mean, which source it came from (conversation or GitHub), and the fix you propose.
+- Ask only what is still open: ambiguity, conflicts, out-of-scope items, or several plausible fixes. Prefer asking over guessing.
+- If everything was agreed in conversation, this is a quick "confirm this list".
+Wait for confirmation. Anything agreed as out of scope becomes a new issue (`gh issue create`), not part of this PR.
 
 ## 3. Act
 Enter the existing worktree for the PR branch (or create one from the PR's head branch). Then run the same loop as `work-ticket`, with the agreed fix list as the plan:
