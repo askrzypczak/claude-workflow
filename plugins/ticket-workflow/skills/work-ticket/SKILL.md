@@ -23,7 +23,7 @@ Run `git fetch origin --quiet` first: the local checkout can be stale, and every
 - Acceptance criteria (from the ticket; add any that are implied).
 - Test list: each behaviour to be covered.
 - **Complexity** rating: `complex` (branching logic, new abstractions, shared code, security/data handling) or `simple` (docs, config, chores, trivial one-file changes). This decides step 6.
-- **Implementer tier**: default `sonnet` medium. Propose `haiku` with `xhigh` effort only for mechanical, well-specified work; use `opus` for subtle logic. Say why.
+- **Implementer tier**: default `haiku` with `xhigh` effort; the approved plan carries the detail it needs. Propose `sonnet` medium for subtle logic or loosely specified work, and `opus` for the hardest. Say why when departing from the default.
 Ask clarifying questions first if the ticket is ambiguous. Exit plan mode only with Tony's explicit approval. If he declines or abandons, stop; nothing has been claimed.
 
 ## 3. Claim and branch

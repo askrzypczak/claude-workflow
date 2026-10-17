@@ -1,8 +1,8 @@
 ---
 name: implementer
 description: Implements an approved ticket plan in the current worktree - code plus tests, run to green, then a green/red/green proof. Use after the plan has been signed off; pass the plan and acceptance criteria in the prompt.
-model: sonnet
-effort: medium
+model: haiku
+effort: xhigh
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 
