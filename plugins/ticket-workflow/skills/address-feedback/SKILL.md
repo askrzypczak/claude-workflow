@@ -21,7 +21,7 @@ Wait for answers. Anything agreed as out of scope becomes a new issue (`gh issue
 
 ## 3. Act
 Enter the existing worktree for the PR branch (or create one from the PR's head branch). Then run the same loop as `work-ticket`, with the agreed fix list as the plan:
-- Launch the `ticket-workflow:implementer` (tier as agreed; default sonnet medium) with the fix list.
+- Launch the `ticket-workflow:implementer` (tier as agreed; default haiku xhigh) with the fix list.
 - `npm run check`, then `${CLAUDE_PLUGIN_ROOT}/scripts/grg.sh` for any new or changed tests.
 - `ticket-workflow:reviewer` for complex changes, self-check for simple ones.
 Commit, push the same branch, and reply on the PR threads you resolved (`gh pr comment`), noting which items were done and which were deferred to new issues.
