@@ -3,5 +3,5 @@
   "version": "0.7.2",
   "description": "Orchestrated GitHub-issue workflow: plan gate, implementer and reviewer subagents, green/red/green test proof, PR, feedback loop.",
   "license": "MIT",
-  "author": { "name": "Tony Skrzypczak" }
+  "author": { "name": "Anthony Skrzypczak" }
 }

@@ -1,6 +1,6 @@
 {
   "name": "askrzypczak-plugins",
-  "owner": { "name": "Tony Skrzypczak" },
+  "owner": { "name": "Anthony Skrzypczak" },
   "metadata": { "description": "Claude Code plugins: orchestrated agent workflows." },
   "plugins": [
     {
