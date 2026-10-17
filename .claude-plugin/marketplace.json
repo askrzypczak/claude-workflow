@@ -1,7 +1,7 @@
 {
   "name": "askrzypczak-plugins",
   "owner": { "name": "Tony Skrzypczak" },
-  "metadata": { "description": "Tony's personal Claude Code plugins: orchestrated agent workflows." },
+  "metadata": { "description": "Claude Code plugins: orchestrated agent workflows." },
   "plugins": [
     {
       "name": "ticket-workflow",

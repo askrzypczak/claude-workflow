@@ -27,16 +27,16 @@ Polls every configured GitHub repo for agent-ready tickets and starts one intera
 ```json
 [
   {
-    "repo": "askrzypczak/ttrpg-agents",
-    "dir": "~/Projects/ttrpg-agents",
-    "sessionPrefix": "ttrpg",
-    "owner": "askrzypczak"
+    "repo": "example-owner/example-app",
+    "dir": "~/Projects/example-app",
+    "sessionPrefix": "app",
+    "owner": "example-owner"
   },
   {
-    "repo": "askrzypczak/claude-workflow",
-    "dir": "~/Projects/claude-workflow",
-    "sessionPrefix": "cw",
-    "owner": "askrzypczak",
+    "repo": "example-owner/example-tools",
+    "dir": "~/Projects/example-tools",
+    "sessionPrefix": "tools",
+    "owner": "example-owner",
     "bgFlags": "--permission-mode acceptEdits"
   }
 ]
@@ -54,7 +54,7 @@ repos/<sessionPrefix>/launched.json   {"<N>": {name, at}, "conflict-<N>": {name,
 repos/<sessionPrefix>/conflicts.json  {"<N>": {pr, mainSha}}  last conflict attempt per ticket
 ```
 
-Migrating from the old single-repo poller in ttrpg-agents: copy its `launched.json` and `conflicts.json` into `repos/ttrpg/` (entry shapes are unchanged).
+Migrating from a single-repo poller: copy its `launched.json` and `conflicts.json` into `repos/<sessionPrefix>/` (entry shapes are unchanged).
 
 ### Running
 

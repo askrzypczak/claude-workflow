@@ -16,10 +16,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
 const SCRIPT = join(import.meta.dirname, "agent-poller.sh");
-const TTRPG = {
-  repo: "askrzypczak/ttrpg-agents",
-  sessionPrefix: "ttrpg",
-  owner: "askrzypczak",
+const APP = {
+  repo: "example-owner/example-app",
+  sessionPrefix: "app",
+  owner: "example-owner",
 };
 
 let dir;
@@ -71,7 +71,7 @@ afterEach(() => {
 });
 
 // Writes the config (adding a real working dir per repo) and creates the fake data dirs.
-function configure(repos = [TTRPG]) {
+function configure(repos = [APP]) {
   const entries = repos.map((r) => {
     const work = join(dir, "work", r.sessionPrefix);
     mkdirSync(work, { recursive: true });
@@ -101,16 +101,16 @@ const gh = () => readLines("gh.log");
 describe("agent-poller reconcile", () => {
   function run(opts) {
     configure();
-    const repoDir = rdir(TTRPG.repo);
+    const repoDir = rdir(APP.repo);
     const sessions = opts.state
-      ? [{ name: "ttrpg-5", state: opts.state, startedAt: 1 }]
+      ? [{ name: "app-5", state: opts.state, startedAt: 1 }]
       : [];
     writeFileSync(join(dir, "sessions.json"), JSON.stringify(sessions));
     const at = Math.floor(Date.now() / 1000) - (opts.ageSec ?? 3600);
-    mkdirSync(state("ttrpg"), { recursive: true });
+    mkdirSync(state("app"), { recursive: true });
     writeFileSync(
-      join(state("ttrpg"), "launched.json"),
-      JSON.stringify({ 5: { name: "ttrpg-5", at } }),
+      join(state("app"), "launched.json"),
+      JSON.stringify({ 5: { name: "app-5", at } }),
     );
     writeFileSync(
       join(repoDir, "issue.json"),
@@ -122,7 +122,7 @@ describe("agent-poller reconcile", () => {
     const res = exec();
     assert.equal(res.status, 0, res.stdout + res.stderr);
     const calls = gh();
-    const launched = readJson(join(state("ttrpg"), "launched.json"));
+    const launched = readJson(join(state("app"), "launched.json"));
     return {
       stdout: res.stdout,
       failed: calls.some((c) => c.includes("agent-failed")),
@@ -182,7 +182,7 @@ describe("agent-poller reconcile", () => {
 
   it("logs the observed state, prefixed with the repo", () => {
     const out = run({ state: "waiting" }).stdout;
-    assert.match(out, /\[ttrpg\] #5: ttrpg-5 state=waiting/);
+    assert.match(out, /\[app\] #5: app-5 state=waiting/);
     assert.ok(run({ ageSec: 60 }).stdout.includes("state=<none>"));
   });
 });
@@ -190,20 +190,20 @@ describe("agent-poller reconcile", () => {
 describe("agent-poller conflict phase", () => {
   function runConflict(opts) {
     configure();
-    const repoDir = rdir(TTRPG.repo);
+    const repoDir = rdir(APP.repo);
     writeFileSync(
       join(dir, "sessions.json"),
       JSON.stringify(
         (opts.sessions ?? []).map((s) => ({ ...s, startedAt: 1 })),
       ),
     );
-    mkdirSync(state("ttrpg"), { recursive: true });
+    mkdirSync(state("app"), { recursive: true });
     writeFileSync(
-      join(state("ttrpg"), "launched.json"),
+      join(state("app"), "launched.json"),
       JSON.stringify(opts.launched ?? {}),
     );
     writeFileSync(
-      join(state("ttrpg"), "conflicts.json"),
+      join(state("app"), "conflicts.json"),
       JSON.stringify(opts.attempts ?? {}),
     );
     writeFileSync(join(repoDir, "sha"), opts.sha ?? "sha1");
@@ -237,7 +237,7 @@ describe("agent-poller conflict phase", () => {
       join(repoDir, "issue.json"),
       JSON.stringify({
         state: "OPEN",
-        author: { login: opts.author ?? "askrzypczak" },
+        author: { login: opts.author ?? "example-owner" },
         labels: (opts.labels ?? ["agent-ok", "needs-review"]).map((name) => ({
           name,
         })),
@@ -249,19 +249,19 @@ describe("agent-poller conflict phase", () => {
       stdout: res.stdout,
       launches: readLines("claude.log"),
       calls: gh(),
-      state: readJson(join(state("ttrpg"), "launched.json")),
-      attempts: readJson(join(state("ttrpg"), "conflicts.json")),
+      state: readJson(join(state("app"), "launched.json")),
+      attempts: readJson(join(state("app"), "conflicts.json")),
     };
   }
 
   const CONFLICT_LAUNCH =
-    "--bg --name ttrpg-5-conflict /ticket-workflow:resolve-conflicts 5";
+    "--bg --name app-5-conflict /ticket-workflow:resolve-conflicts 5";
 
   it("launches resolve-conflicts for a CONFLICTING issue PR and records it", () => {
     const r = runConflict({});
     assert.deepEqual(r.launches, [CONFLICT_LAUNCH]);
     assert.partialDeepStrictEqual(r.state["conflict-5"], {
-      name: "ttrpg-5-conflict",
+      name: "app-5-conflict",
       pr: "9",
       mainSha: "sha1",
     });
@@ -283,21 +283,21 @@ describe("agent-poller conflict phase", () => {
 
   for (const st of ["working", "blocked"]) {
     it(`skips when the ticket session is ${st}`, () => {
-      const r = runConflict({ sessions: [{ name: "ttrpg-5", state: st }] });
+      const r = runConflict({ sessions: [{ name: "app-5", state: st }] });
       assert.deepEqual(r.launches, []);
     });
   }
 
   for (const st of ["idle", "done"]) {
     it(`still launches when the ticket session is ${st}`, () => {
-      const r = runConflict({ sessions: [{ name: "ttrpg-5", state: st }] });
+      const r = runConflict({ sessions: [{ name: "app-5", state: st }] });
       assert.equal(r.launches.length, 1);
     });
   }
 
   it("skips when a live conflict session exists", () => {
     const r = runConflict({
-      sessions: [{ name: "ttrpg-5-conflict", state: "working" }],
+      sessions: [{ name: "app-5-conflict", state: "working" }],
     });
     assert.deepEqual(r.launches, []);
   });
@@ -306,7 +306,7 @@ describe("agent-poller conflict phase", () => {
     const r = runConflict({
       launched: {
         "conflict-5": {
-          name: "ttrpg-5-conflict",
+          name: "app-5-conflict",
           at: Math.floor(Date.now() / 1000),
           pr: "9",
           mainSha: "sha1",
@@ -374,7 +374,7 @@ describe("agent-poller conflict phase", () => {
 describe("agent-poller conflict reconcile", () => {
   const entry = {
     "conflict-5": {
-      name: "ttrpg-5-conflict",
+      name: "app-5-conflict",
       at: Math.floor(Date.now() / 1000) - 3600,
       pr: "9",
       mainSha: "sha1",
@@ -386,18 +386,18 @@ describe("agent-poller conflict reconcile", () => {
   // Reuses the conflict-phase setup through a fresh describe-local helper.
   function runConflict(opts) {
     configure();
-    const repoDir = rdir(TTRPG.repo);
+    const repoDir = rdir(APP.repo);
     writeFileSync(
       join(dir, "sessions.json"),
       JSON.stringify(opts.sessions.map((s) => ({ ...s, startedAt: 1 }))),
     );
-    mkdirSync(state("ttrpg"), { recursive: true });
+    mkdirSync(state("app"), { recursive: true });
     writeFileSync(
-      join(state("ttrpg"), "launched.json"),
+      join(state("app"), "launched.json"),
       JSON.stringify(entry),
     );
     writeFileSync(
-      join(state("ttrpg"), "conflicts.json"),
+      join(state("app"), "conflicts.json"),
       JSON.stringify(attempts),
     );
     writeFileSync(join(repoDir, "sha"), "sha1");
@@ -423,7 +423,7 @@ describe("agent-poller conflict reconcile", () => {
       join(repoDir, "issue.json"),
       JSON.stringify({
         state: "OPEN",
-        author: { login: "askrzypczak" },
+        author: { login: "example-owner" },
         labels: [{ name: "agent-ok" }, { name: "needs-review" }],
       }),
     );
@@ -431,18 +431,18 @@ describe("agent-poller conflict reconcile", () => {
     assert.equal(res.status, 0, res.stdout + res.stderr);
     return {
       calls: gh(),
-      state: readJson(join(state("ttrpg"), "launched.json")),
+      state: readJson(join(state("app"), "launched.json")),
     };
   }
 
   for (const st of ["failed", "stopped"]) {
     it(`fails a ${st} conflict session on the PR and issue`, () => {
       const r = runConflict({
-        sessions: [{ name: "ttrpg-5-conflict", state: st }],
+        sessions: [{ name: "app-5-conflict", state: st }],
       });
       assert.ok(
         r.calls.includes(
-          "issue edit 5 --repo askrzypczak/ttrpg-agents --add-label agent-failed",
+          "issue edit 5 --repo example-owner/example-app --add-label agent-failed",
         ),
       );
       assert.ok(r.calls.some((c) => c.startsWith("pr comment 9")));
@@ -453,7 +453,7 @@ describe("agent-poller conflict reconcile", () => {
 
   it("fails a done session whose PR still conflicts", () => {
     const r = runConflict({
-      sessions: [{ name: "ttrpg-5-conflict", state: "done" }],
+      sessions: [{ name: "app-5-conflict", state: "done" }],
     });
     assert.ok(r.calls.some((c) => c.includes("agent-failed")));
     assert.ok(r.calls.some((c) => c.startsWith("pr comment 9")));
@@ -462,7 +462,7 @@ describe("agent-poller conflict reconcile", () => {
 
   it("cleans up a done session whose conflict is resolved", () => {
     const r = runConflict({
-      sessions: [{ name: "ttrpg-5-conflict", state: "done" }],
+      sessions: [{ name: "app-5-conflict", state: "done" }],
       prViewMergeable: "MERGEABLE",
       mergeable: "MERGEABLE",
     });
@@ -473,7 +473,7 @@ describe("agent-poller conflict reconcile", () => {
   for (const prViewState of ["CLOSED", "MERGED"]) {
     it(`does not fail a done session whose PR is ${prViewState}`, () => {
       const r = runConflict({
-        sessions: [{ name: "ttrpg-5-conflict", state: "done" }],
+        sessions: [{ name: "app-5-conflict", state: "done" }],
         prViewState,
         mergeable: "MERGEABLE",
       });
@@ -484,7 +484,7 @@ describe("agent-poller conflict reconcile", () => {
 
   it("keeps a working conflict session", () => {
     const r = runConflict({
-      sessions: [{ name: "ttrpg-5-conflict", state: "working" }],
+      sessions: [{ name: "app-5-conflict", state: "working" }],
     });
     assert.ok(!r.calls.some((c) => c.includes("agent-failed")));
     assert.ok(r.state["conflict-5"]);

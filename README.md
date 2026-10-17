@@ -1,6 +1,6 @@
 # claude-workflow
 
-Private Claude Code plugin marketplace for Tony's agent workflow.
+Claude Code plugin marketplace for an orchestrated, ticket-driven agent workflow.
 
 ## What's in it
 
@@ -28,7 +28,7 @@ From a shell:
 
 Local development:
 
-    claude plugin marketplace add /Users/tony/Projects/claude-workflow
+    claude plugin marketplace add /path/to/claude-workflow
     claude plugin update ticket-workflow@askrzypczak-plugins
     /reload-plugins
     claude plugin validate .
@@ -38,7 +38,7 @@ Local development:
 - An `npm run check` command that runs build, lint, typecheck, and tests. It is the definition of done and what CI runs.
 - The ticket labels (see [Ticket conventions](#ticket-conventions)), created with `setup-labels.sh [owner/repo]` from this repo.
 - `gh` authenticated (SSH remote, `gh auth login`).
-- A project-level PreToolUse git guard hook that blocks pushes to `main`/`master`, force pushes and PR merges via `gh`, plus matching deny rules in `.claude/settings.json`. This plugin deliberately does not ship the guardrails; they stay in each project, e.g. ttrpg-agents `.claude/hooks/guard-git.sh`.
+- A project-level PreToolUse git guard hook that blocks pushes to `main`/`master`, force pushes and PR merges via `gh`, plus matching deny rules in `.claude/settings.json`. This plugin deliberately does not ship the guardrails; they stay in each project, e.g. `.claude/hooks/guard-git.sh`.
 - The plugin enabled in the project's `.claude/settings.json` (`enabledPlugins` with `ticket-workflow@askrzypczak-plugins`, plus the `extraKnownMarketplaces` entry for `askrzypczak/claude-workflow`).
 - For automatic dispatch: an entry for the repo in the poller config, and the directory trusted by Claude Code (see [Dispatch](#dispatch-automatic-ticket-pickup)).
 - For label cleanup on close: a caller workflow for the shared ticket-labels workflow (see [Label cleanup](#label-cleanup-on-close)).
@@ -51,7 +51,7 @@ GitHub Issues is the source of truth; agents use `gh` (at `/opt/homebrew/bin/gh`
 - State: `ready` -> `in-progress` -> `needs-review`; `blocked` while waiting on something.
 - Type: `bug`, `feature`, `chore`.
 - Dispatch: `agent-ok` (safe for unattended background agents), `skip-plan` (launch with `work-ticket N auto`, no plan sign-off), `agent-failed` (set by the poller when a session failed; see below).
-- `ready` means Tony has reviewed the ticket and approved it for work. **Only Tony adds `ready`.** Agents that file tickets never set `ready` or `skip-plan`, even on unblocked tickets. They may set type labels, `agent-ok` and `blocked` (with `Blocked by #M`); Tony removes `agent-ok` during review if needed.
+- `ready` means a human has reviewed the ticket and approved it for work. **Only the maintainer adds `ready`.** Agents that file tickets never set `ready` or `skip-plan`, even on unblocked tickets. They may set type labels, `agent-ok` and `blocked` (with `Blocked by #M`); the maintainer removes `agent-ok` during review if needed.
 - Create or refresh the whole set in any repo with `setup-labels.sh [owner/repo]` (it adds `skip-plan` and `agent-failed` too).
 
 ### One ticket, one worktree
@@ -67,7 +67,7 @@ Agents follow the `work-ticket` skill with an explicit issue number, either run 
 
 A poller runs every 3 minutes from a macOS LaunchAgent and starts one interactive background Claude Code session per eligible ticket, across all configured repos. Sessions show up in `claude agents`.
 
-A ticket is picked up when it is **open**, authored by the repo's configured `owner`, and labelled **`agent-ok` + `ready`** (and is not `in-progress`, `blocked` or `agent-failed`). The session is named `<sessionPrefix>-<issue>` (e.g. `ttrpg-12`) and runs `work-ticket`.
+A ticket is picked up when it is **open**, authored by the repo's configured `owner`, and labelled **`agent-ok` + `ready`** (and is not `in-progress`, `blocked` or `agent-failed`). The session is named `<sessionPrefix>-<issue>` (e.g. `app-12`) and runs `work-ticket`.
 
 The poller, installer and config live in this repo and run from the local clone (`~/Projects/claude-workflow`), not from the plugin cache: a LaunchAgent needs a stable path. See epic #12 and tickets #13/#14 for the build; the paths and names below follow that design.
 
@@ -77,16 +77,14 @@ The poller, installer and config live in this repo and run from the local clone 
 3. Add the label-cleanup caller workflow (below).
 4. Add the repo to `~/.config/claude-workflow/repos.json`:
 
-        {
-          "repos": [
-            {
-              "repo": "askrzypczak/ttrpg-agents",
-              "dir": "/Users/tony/Projects/ttrpg-agents",
-              "sessionPrefix": "ttrpg",
-              "owner": "askrzypczak"
-            }
-          ]
-        }
+        [
+          {
+            "repo": "example-owner/example-app",
+            "dir": "~/Projects/example-app",
+            "sessionPrefix": "app",
+            "owner": "example-owner"
+          }
+        ]
 
    `repo` is `owner/name`; `dir` is the main checkout the sessions start in (not a worktree); `sessionPrefix` names sessions and must be unique per repo; `owner` is the only ticket author whose tickets are launched; `bgFlags` (optional) adds `claude --bg` flags for that repo, e.g. `--permission-mode acceptEdits`.
 5. Trust the directory: run `claude` once in `dir`, accept the prompt, exit. `claude --bg` fails in an untrusted workspace.
@@ -142,7 +140,7 @@ When an issue is closed (e.g. by merging a PR with `Closes #N`), a workflow:
 - for each open `blocked` issue whose body has `Blocked by #N`, removes `blocked` once every referenced blocker is closed (issues closed as not planned count as closed);
 - never adds `ready`.
 
-It is a reusable workflow (`workflow_call`) in this repo (ticket #15). A consuming repo adds a short caller, `.github/workflows/ticket-labels.yml`, triggered on `issues: closed` that calls `askrzypczak/claude-workflow/.github/workflows/ticket-labels.yml@main`, with `issues: write` and `contents: read` permissions. Because this repo is private, enable *Settings > Actions > General > Access* ("Accessible from repositories owned by the user") here so other repos can call it. If that is unavailable, copy the workflow in instead.
+It is a reusable workflow (`workflow_call`) in this repo (ticket #15). A consuming repo adds a short caller, `.github/workflows/ticket-labels.yml`, triggered on `issues: closed` that calls `askrzypczak/claude-workflow/.github/workflows/ticket-labels.yml@main`, with `issues: write` and `contents: read` permissions. This repo is public, so a caller's default `GITHUB_TOKEN` can use it and no Actions access setting is needed.
 
 ## Workflow
 
@@ -155,3 +153,7 @@ It is a reusable workflow (`workflow_call`) in this repo (ticket #15). A consumi
 7. Open an active (non-draft) PR with CI green.
 8. Human review, then address-feedback.
 9. Human merges.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
