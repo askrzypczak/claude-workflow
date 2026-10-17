@@ -1,0 +1,44 @@
+name: ticket-labels
+
+# Reusable workflow: on issue close, strip state labels and unblock dependents.
+# Caller (in the consuming repo, e.g. .github/workflows/ticket-labels.yml):
+#   on: { issues: { types: [closed] } }
+#   permissions: { contents: read, issues: write }
+#   jobs:
+#     cleanup:
+#       uses: askrzypczak/claude-workflow/.github/workflows/ticket-labels.yml@main
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        description: Issue to clean up; defaults to the issue in the triggering event
+        type: number
+        required: false
+      ref:
+        description: Ref of askrzypczak/claude-workflow to take ticket-labels.ts from
+        type: string
+        default: main
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: askrzypczak/claude-workflow
+          ref: ${{ inputs.ref }}
+          path: claude-workflow
+          sparse-checkout: plugins/ticket-workflow/scripts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Strip state labels and unblock dependents
+        run: node claude-workflow/plugins/ticket-workflow/scripts/ticket-labels.ts "$ISSUE_NUMBER"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}

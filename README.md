@@ -33,6 +33,31 @@ Local development:
     /reload-plugins
     claude plugin validate .
 
+## Shared label tooling
+
+Create the ticket labels in any repo (run once, from your machine; idempotent):
+
+    plugins/ticket-workflow/scripts/setup-labels.sh owner/repo
+
+Close-time cleanup (strips `ready`/`in-progress`/`needs-review`/`blocked` from the closed issue and removes `blocked` from dependents whose blockers are all closed) is a reusable workflow. A consuming repo adds `.github/workflows/ticket-labels.yml`:
+
+    name: ticket-labels
+    on:
+      issues:
+        types: [closed]
+    permissions:
+      contents: read
+      issues: write
+    jobs:
+      cleanup:
+        uses: askrzypczak/claude-workflow/.github/workflows/ticket-labels.yml@main
+
+Setup notes:
+
+- The workflow checks out this (public) repo and runs `plugins/ticket-workflow/scripts/ticket-labels.ts`; callers need no secrets or special Actions settings.
+- The workflow sets up Node 24 itself (the script runs TypeScript directly).
+- Tests: `npm test`.
+
 ## What a project must provide
 
 - An `npm run check` command that runs build, lint, typecheck, and tests. It is the definition of done and what CI runs.

@@ -1,0 +1,11 @@
+{
+  "name": "claude-workflow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run plugins && node --test dispatch/*.test.mjs"
+  },
+  "devDependencies": {
+    "vitest": "^5.0.5"
+  }
+}

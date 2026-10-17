@@ -9,3 +9,4 @@ Claude Code plugin marketplace (`askrzypczak-plugins`) holding the `ticket-workf
 - Guardrails (git guard hook, deny rules) live in each consuming project, not here.
 - Maintainer: `askrzypczak`. Branch per change, PR to `main`; humans merge.
 - **Public repo**: tracked files must not contain home-directory paths, personal emails (GitHub noreply is fine), tokens, names of unpublished repos or projects, or role references to a named person (use "the human" / "the maintainer").
+- `.github/workflows/ticket-labels.yml` is a reusable workflow that checks out this repo and runs `plugins/ticket-workflow/scripts/ticket-labels.ts`; callers need no secrets.
