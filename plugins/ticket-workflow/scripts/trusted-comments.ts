@@ -61,8 +61,18 @@ export function filterTrusted(input: unknown): FilterResult {
     data = keep([input]);
   } else if (input && typeof input === "object") {
     const out: Record<string, unknown> = { ...(input as object) };
-    for (const key of ["comments", "reviews"]) {
-      if (Array.isArray(out[key])) out[key] = keep(out[key] as unknown[]);
+    // Fail closed: comment-like data we cannot filter must not pass through.
+    for (const key of Object.keys(out)) {
+      if (key === "comments" || key === "reviews") {
+        if (!Array.isArray(out[key])) {
+          throw new Error(`\`${key}\` is not an array; cannot filter it`);
+        }
+        out[key] = keep(out[key] as unknown[]);
+      } else if (/comment|review/i.test(key)) {
+        throw new Error(
+          `unfiltered field \`${key}\`; request only \`comments\` and \`reviews\``,
+        );
+      }
     }
     data = out;
   } else {

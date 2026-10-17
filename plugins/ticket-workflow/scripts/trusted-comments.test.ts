@@ -104,6 +104,14 @@ describe("filterTrusted", () => {
     expect(filterTrusted([[c(undefined, "z")]]).data).toEqual([]);
   });
 
+  it("fails closed on comment-like fields it cannot filter", () => {
+    const evil = { body: "inject", authorAssociation: "NONE" };
+    expect(() => filterTrusted({ latestReviews: [evil] })).toThrow(/latestReviews/);
+    expect(() => filterTrusted({ reviewThreads: [] })).toThrow(/reviewThreads/);
+    expect(() => filterTrusted({ comments: { nodes: [evil] } })).toThrow(/comments/);
+    expect(() => filterTrusted({ reviews: "x" })).toThrow(/reviews/);
+  });
+
   it("rejects scalars", () => {
     expect(() => filterTrusted("x")).toThrow();
     expect(() => filterTrusted(null)).toThrow();
@@ -139,6 +147,13 @@ describe("CLI", () => {
     expect(o.comments).toHaveLength(1);
     expect(o.skipped).toBe(1);
     expect(r.stdout).not.toContain("body-of-n");
+  });
+
+  it("exits non-zero with empty stdout on an unfiltered field", () => {
+    const r = run(JSON.stringify({ latestReviews: [c("NONE", "n")] }));
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toContain("latestReviews");
   });
 
   it("exits non-zero on invalid JSON", () => {
