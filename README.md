@@ -10,6 +10,10 @@ Plugin `ticket-workflow`:
 - Subagents: `implementer` (haiku, xhigh; sonnet or opus per the approved plan) builds code and tests; `reviewer` (opus, medium, read-only) reviews complex diffs.
 - `scripts/grg.sh`: mechanical green/red/green test check. Self-test: `scripts/test-grg.sh`.
 
+## Dispatch
+
+`dispatch/` holds `agent-poller.sh`, a multi-repo poller that starts background sessions for `ready` + `agent-ok` tickets. It runs from this clone, not from the plugin. See `dispatch/README.md`.
+
 ## Install
 
 In Claude Code:
