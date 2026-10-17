@@ -1,0 +1,12 @@
+{
+  "name": "askrzypczak-plugins",
+  "owner": { "name": "Tony Skrzypczak" },
+  "metadata": { "description": "Tony's personal Claude Code plugins: orchestrated agent workflows." },
+  "plugins": [
+    {
+      "name": "ticket-workflow",
+      "source": "./plugins/ticket-workflow",
+      "description": "Orchestrated GitHub-issue workflow: plan gate, implementer and reviewer subagents, green/red/green test proof, PR, feedback loop."
+    }
+  ]
+}
