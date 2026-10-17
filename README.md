@@ -69,7 +69,7 @@ A poller runs every 3 minutes from a macOS LaunchAgent and starts one interactiv
 
 A ticket is picked up when it is **open**, authored by the repo's configured `owner`, and labelled **`agent-ok` + `ready`** (and is not `in-progress`, `blocked` or `agent-failed`). The session is named `<sessionPrefix>-<issue>` (e.g. `app-12`) and runs `work-ticket`.
 
-The poller, installer and config live in this repo and run from the local clone (`~/Projects/claude-workflow`), not from the plugin cache: a LaunchAgent needs a stable path. See epic #12 and tickets #13/#14 for the build; the paths and names below follow that design.
+The poller, installer and config live in this repo and run from the local clone (`~/Projects/claude-workflow`), not from the plugin cache: a LaunchAgent needs a stable path.
 
 ### Onboarding a new repo
 1. Make sure the repo provides what the previous section lists (`npm run check`, guard hook, plugin enabled).
@@ -88,7 +88,8 @@ The poller, installer and config live in this repo and run from the local clone 
 
    `repo` is `owner/name`; `dir` is the main checkout the sessions start in (not a worktree); `sessionPrefix` names sessions and must be unique per repo; `owner` is the only ticket author whose tickets are launched; `bgFlags` (optional) adds `claude --bg` flags for that repo, e.g. `--permission-mode acceptEdits`.
 5. Trust the directory: run `claude` once in `dir`, accept the prompt, exit. `claude --bg` fails in an untrusted workspace.
-6. Install the LaunchAgent once, from the main clone of this repo (not a worktree): `dispatch/install-launchd.sh`. Remove with `dispatch/install-launchd.sh uninstall`. Adding more repos later only needs a config edit.
+6. Install the LaunchAgent once, from the main clone of this repo (not a worktree): `dispatch/install-launchd.sh`. Remove with `dispatch/install-launchd.sh uninstall`. Adding more repos later only needs a config edit. `dispatch/repos.example.json` is a starting point for the config (the installer refuses to run without it).
+   Migrating from an older single-repo poller: pass `--legacy-label <its launchd label>` (booted out, plist removed) and `--migrate-state <its state dir> <sessionPrefix>` (copies `launched.json` / `conflicts.json` into this poller's per-repo state, never overwriting) so in-flight tickets are not relaunched. Keep the old session naming as `sessionPrefix` so reconciliation finds the live sessions.
 7. Check with `dispatch/agent-poller.sh --dry-run`.
 
 ### Daily use

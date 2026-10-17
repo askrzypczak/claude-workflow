@@ -1,0 +1,15 @@
+[
+  {
+    "repo": "example-owner/example-app",
+    "dir": "~/Projects/example-app",
+    "sessionPrefix": "app",
+    "owner": "example-owner"
+  },
+  {
+    "repo": "example-owner/example-tools",
+    "dir": "~/Projects/example-tools",
+    "sessionPrefix": "tools",
+    "owner": "example-owner",
+    "bgFlags": "--permission-mode acceptEdits"
+  }
+]

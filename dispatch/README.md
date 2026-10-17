@@ -54,7 +54,17 @@ repos/<sessionPrefix>/launched.json   {"<N>": {name, at}, "conflict-<N>": {name,
 repos/<sessionPrefix>/conflicts.json  {"<N>": {pr, mainSha}}  last conflict attempt per ticket
 ```
 
-Migrating from a single-repo poller: copy its `launched.json` and `conflicts.json` into `repos/<sessionPrefix>/` (entry shapes are unchanged).
+Migrating from a single-repo poller: copy its `launched.json` and `conflicts.json` into `repos/<sessionPrefix>/` (entry shapes are unchanged), or let the installer do it (below).
+
+### install-launchd.sh
+
+    dispatch/install-launchd.sh [install|uninstall] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]...
+
+Installs `~/Library/LaunchAgents/com.askrzypczak.claude-workflow-poller.plist` (from `launchd/`, filled in with this clone's path) and bootstraps it: the poller runs at load and every 3 minutes, logging to `~/Library/Logs/claude-workflow-poller.log`. Rerunning `install` regenerates the plist and reloads it. It refuses to run from a worktree (the plist would point at a path that disappears) or without a config file; start from `repos.example.json`.
+
+- `--legacy-label LABEL` (repeatable): boot out and delete an older LaunchAgent, before the new one starts.
+- `--migrate-state DIR PREFIX` (repeatable): copy `launched.json` and `conflicts.json` from an old poller's state dir to `repos/PREFIX/`, skipping files that already exist. `PREFIX` is the `sessionPrefix` whose sessions that poller named (`<PREFIX>-N`).
+- `uninstall` boots out and removes the plist (and any `--legacy-label` jobs).
 
 ### Running
 
@@ -75,3 +85,5 @@ Requires `bash` (3.2 compatible), `jq`, `gh` and `claude` on `PATH`.
 Plain `node:test`, no dependencies (Node 24; there is no `package.json`). Fake `gh` and `claude` binaries are put on `PATH`.
 
     node --test dispatch/*.test.mjs
+
+`install-launchd.test.mjs` runs a copy of the installer against a fake `launchctl`; nothing real is touched.
