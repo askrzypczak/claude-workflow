@@ -308,7 +308,7 @@ describe("install-launchd.sh", () => {
   });
 
   describe("plist templating", () => {
-    const SPECIAL = "we&ird|dir <x> y";
+    const SPECIAL = "we&ird|dir <x> y--z";
     const pl = () => p("agents", `${LABEL}.plist`);
     const unescape = (s) =>
       s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");

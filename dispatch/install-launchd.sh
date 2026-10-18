@@ -122,7 +122,6 @@ write_plist() {
 # Print what uninstall does not remove (and, with --purge, remove the files it owns).
 report_leftovers() {
   local f names n log="$LOG_DIR/claude-workflow-poller.log" found=0 nojq=0
-  echo "Not removed by the LaunchAgent uninstall:"
   # Sessions are read before a purge deletes the state dir.
   names=""
   for f in "$STATE_DIR"/repos/*/launched.json; do
@@ -136,8 +135,10 @@ report_leftovers() {
   if [ "$purge" = 1 ]; then
     rm -rf "${STATE_DIR:?}"
     rm -f "$CONFIG" "$log"
-    echo "  Purged: state dir $STATE_DIR, config $CONFIG, log $log"
+    echo "Purged: state dir $STATE_DIR, config $CONFIG, log $log"
+    echo "Still to clean up by hand:"
   else
+    echo "Not removed by the LaunchAgent uninstall:"
     echo "  State dir: $STATE_DIR"
     echo "  Config:    $CONFIG"
     echo "  Log:       $log"
