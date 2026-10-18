@@ -263,7 +263,7 @@ describe("agent-poller conflict phase", () => {
   }
 
   const CONFLICT_LAUNCH =
-    "--bg --name app-5-conflict /ticket-workflow:resolve-conflicts 5";
+    "--bg --name app-5-conflict --model sonnet --effort xhigh /ticket-workflow:resolve-conflicts 5";
 
   it("launches resolve-conflicts for a CONFLICTING issue PR and records it", () => {
     const r = runConflict({});
@@ -574,13 +574,13 @@ describe("agent-poller multiple repos", () => {
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.ok(
       r.stdout.includes(
-        `[dry-run] (cd ${ea.dir} && claude --bg --name a-3  "/ticket-workflow:work-ticket 3")`,
+        `[dry-run] (cd ${ea.dir} && claude --bg --name a-3 --model sonnet --effort xhigh "/ticket-workflow:work-ticket 3")`,
       ),
       r.stdout,
     );
     assert.ok(
       r.stdout.includes(
-        `[dry-run] (cd ${eb.dir} && claude --bg --name b-6  "/ticket-workflow:work-ticket 6 auto")`,
+        `[dry-run] (cd ${eb.dir} && claude --bg --name b-6 --model sonnet --effort xhigh "/ticket-workflow:work-ticket 6 auto")`,
       ),
       r.stdout,
     );
@@ -603,8 +603,8 @@ describe("agent-poller multiple repos", () => {
     const r = exec();
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.deepEqual(readLines("claude.log").sort(), [
-      "--bg --name a-5 /ticket-workflow:work-ticket 5",
-      "--bg --name b-5 /ticket-workflow:work-ticket 5",
+      "--bg --name a-5 --model sonnet --effort xhigh /ticket-workflow:work-ticket 5",
+      "--bg --name b-5 --model sonnet --effort xhigh /ticket-workflow:work-ticket 5",
     ]);
     const cwds = readLines("claude.cwd.log");
     assert.ok(cwds.some((l) => l.startsWith(`${realpath(ea.dir)}|`) && l.includes("a-5")));
@@ -655,7 +655,7 @@ describe("agent-poller multiple repos", () => {
     assert.notEqual(r.status, 0);
     assert.ok(/\[a\] .*poll failed/.test(r.stdout), r.stdout);
     assert.deepEqual(readLines("claude.log"), [
-      "--bg --name b-6 /ticket-workflow:work-ticket 6",
+      "--bg --name b-6 --model sonnet --effort xhigh /ticket-workflow:work-ticket 6",
     ]);
     // errexit is active inside the failed repo: it stopped at the failing call.
     assert.ok(!gh().some((c) => c.startsWith("pr list --repo org/alpha")));
@@ -669,8 +669,8 @@ describe("agent-poller multiple repos", () => {
     const r = exec({ env: { CLAUDE_BG_FLAGS: "--permission-mode plan" } });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.deepEqual(readLines("claude.log").sort(), [
-      "--bg --name a-1 --permission-mode plan --model opus /ticket-workflow:work-ticket 1",
-      "--bg --name b-2 --permission-mode plan /ticket-workflow:work-ticket 2",
+      "--bg --name a-1 --model sonnet --effort xhigh --permission-mode plan --model opus /ticket-workflow:work-ticket 1",
+      "--bg --name b-2 --model sonnet --effort xhigh --permission-mode plan /ticket-workflow:work-ticket 2",
     ]);
   });
 });
@@ -713,7 +713,7 @@ describe("agent-poller bypass-flag refusal", () => {
       assert.notEqual(r.status, 0);
       assert.match(r.stdout, /\[a\] refusing bypass flags/);
       assert.deepEqual(readLines("claude.log"), [
-        "--bg --name b-2 /ticket-workflow:work-ticket 2",
+        "--bg --name b-2 --model sonnet --effort xhigh /ticket-workflow:work-ticket 2",
       ]);
     });
   }
@@ -730,11 +730,11 @@ describe("agent-poller bypass-flag refusal", () => {
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.doesNotMatch(r.stdout, /refusing/);
     assert.deepEqual(readLines("claude.log"), [
-      "--bg --name a-1 --dangerously-skip-permissions --permission-mode bypassPermissions /ticket-workflow:work-ticket 1",
+      "--bg --name a-1 --model sonnet --effort xhigh --dangerously-skip-permissions --permission-mode bypassPermissions /ticket-workflow:work-ticket 1",
     ]);
     assert.match(
       r.stdout,
-      /#1: launching a-1 \(flags: --dangerously-skip-permissions --permission-mode bypassPermissions\)/,
+      /#1: launching a-1 \(flags: --model sonnet --effort xhigh --dangerously-skip-permissions --permission-mode bypassPermissions\)/,
     );
   });
 
@@ -756,15 +756,15 @@ describe("agent-poller bypass-flag refusal", () => {
     writeIssues(A.repo, [ready(1)]);
     const r = exec();
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /#1: launching a-1 \(flags: --permission-mode acceptEdits\)/);
+    assert.match(r.stdout, /#1: launching a-1 \(flags: --model sonnet --effort xhigh --permission-mode acceptEdits\)/);
     assert.equal(readLines("claude.log").length, 1);
   });
 
-  it("logs <none> when there are no flags", () => {
+  it("logs the default model and effort when no flags are set", () => {
     configure([A]);
     writeIssues(A.repo, [ready(1)]);
     const r = exec();
-    assert.match(r.stdout, /#1: launching a-1 \(flags: <none>\)/);
+    assert.match(r.stdout, /#1: launching a-1 \(flags: --model sonnet --effort xhigh\)/);
   });
 
   it("logs the effective flags on conflict launches too", () => {
@@ -794,7 +794,7 @@ describe("agent-poller bypass-flag refusal", () => {
     );
     const r = exec();
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /launching a-5-conflict \(flags: --model opus\)/);
+    assert.match(r.stdout, /launching a-5-conflict \(flags: --model sonnet --effort xhigh --model opus\)/);
   });
 });
 
@@ -869,7 +869,7 @@ describe("agent-poller session cap", () => {
     r = exec({ env });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.deepEqual(readLines("claude.log"), [
-      "--bg --name a-3 /ticket-workflow:work-ticket 3",
+      "--bg --name a-3 --model sonnet --effort xhigh /ticket-workflow:work-ticket 3",
     ]);
     assert.deepEqual(tracked("a").sort(), ["1", "3"]);
   });
@@ -912,8 +912,8 @@ describe("agent-poller session cap", () => {
     const r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.deepEqual(readLines("claude.log"), [
-      "--bg --name a-1 /ticket-workflow:work-ticket 1",
-      "--bg --name a-2 /ticket-workflow:work-ticket 2",
+      "--bg --name a-1 --model sonnet --effort xhigh /ticket-workflow:work-ticket 1",
+      "--bg --name a-2 --model sonnet --effort xhigh /ticket-workflow:work-ticket 2",
     ]);
     assert.match(r.stdout, /\[b\] deferred #3: at session cap/);
   });
@@ -928,8 +928,8 @@ describe("agent-poller session cap", () => {
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.match(r.stdout, /\[a\] deferred #2: at session cap/);
     assert.deepEqual(readLines("claude.log"), [
-      "--bg --name b-3 /ticket-workflow:work-ticket 3",
-      "--bg --name b-4 /ticket-workflow:work-ticket 4",
+      "--bg --name b-3 --model sonnet --effort xhigh /ticket-workflow:work-ticket 3",
+      "--bg --name b-4 --model sonnet --effort xhigh /ticket-workflow:work-ticket 4",
     ]);
   });
 
@@ -938,7 +938,7 @@ describe("agent-poller session cap", () => {
     writeIssues(A.repo, [ready(1), ready(2)]);
     const r = exec();
     assert.deepEqual(readLines("claude.log"), [
-      "--bg --name a-1 /ticket-workflow:work-ticket 1",
+      "--bg --name a-1 --model sonnet --effort xhigh /ticket-workflow:work-ticket 1",
     ]);
     assert.match(r.stdout, /deferred #2: at session cap/);
   });
@@ -974,7 +974,7 @@ describe("agent-poller session cap", () => {
     const r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.deepEqual(readLines("claude.log"), [
-      "--bg --name a-3 /ticket-workflow:work-ticket 3",
+      "--bg --name a-3 --model sonnet --effort xhigh /ticket-workflow:work-ticket 3",
     ]);
   });
 
@@ -1025,7 +1025,7 @@ describe("agent-poller session cap", () => {
     r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.deepEqual(readLines("claude.log"), [
-      "--bg --name a-5-conflict /ticket-workflow:resolve-conflicts 5",
+      "--bg --name a-5-conflict --model sonnet --effort xhigh /ticket-workflow:resolve-conflicts 5",
     ]);
   });
 
