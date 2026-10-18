@@ -1,6 +1,5 @@
-// Tests for dispatch/agent-poller.sh. Run: node --test dispatch/
+// Tests for dispatch/agent-poller.sh. Run: npx vitest run dispatch/agent-poller
 // Fake `gh` and `claude` binaries are put on PATH; per-repo fake data lives in <dir>/r/<owner>_<name>/.
-import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -14,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const SCRIPT = join(import.meta.dirname, "agent-poller.sh");
 const APP = {
@@ -23,14 +22,23 @@ const APP = {
   owner: "example-owner",
 };
 
-let dir;
+interface Repo {
+  repo: string;
+  sessionPrefix: string;
+  owner: string;
+  bgFlags?: string;
+  maxSessions?: unknown;
+}
+type Entry = Repo & { dir: string };
 
-const slug = (repo) => repo.replaceAll("/", "_");
-const rdir = (repo) => join(dir, "r", slug(repo));
-const state = (prefix) => join(dir, "state", "repos", prefix);
-const readLines = (f) =>
+let dir: string;
+
+const slug = (repo: string) => repo.replaceAll("/", "_");
+const rdir = (repo: string) => join(dir, "r", slug(repo));
+const state = (prefix: string) => join(dir, "state", "repos", prefix);
+const readLines = (f: string) =>
   readFileSync(join(dir, f), "utf8").split("\n").filter(Boolean);
-const readJson = (f) => JSON.parse(readFileSync(f, "utf8"));
+const readJson = (f: string) => JSON.parse(readFileSync(f, "utf8"));
 // The shim puts fnm, Homebrew and /usr/local/bin before the inherited PATH (for launchd), and a
 // CI runner can have an older node there. EXTRA_PATH comes first: the fake gh/claude (and any
 // fake node) win, then the node running these tests.
@@ -76,7 +84,7 @@ afterEach(() => {
 });
 
 // Writes the config (adding a real working dir per repo) and creates the fake data dirs.
-function configure(repos = [APP]) {
+function configure(repos: Repo[] = [APP]): Entry[] {
   const entries = repos.map((r) => {
     const work = join(dir, "work", r.sessionPrefix);
     mkdirSync(work, { recursive: true });
@@ -87,7 +95,12 @@ function configure(repos = [APP]) {
   return entries;
 }
 
-function exec({ dry = false, env = {} } = {}) {
+interface ExecOpts {
+  dry?: boolean;
+  env?: Record<string, string>;
+}
+
+function exec({ dry = false, env = {} }: ExecOpts = {}) {
   return spawnSync("bash", [SCRIPT, ...(dry ? ["--dry-run"] : [])], {
     encoding: "utf8",
     env: {
@@ -106,7 +119,14 @@ function exec({ dry = false, env = {} } = {}) {
 const gh = () => readLines("gh.log");
 
 describe("agent-poller reconcile", () => {
-  function run(opts) {
+  interface ReconcileOpts {
+    state?: string;
+    ageSec?: number;
+    issueState?: string;
+    labels?: string[];
+  }
+
+  function run(opts: ReconcileOpts) {
     configure();
     const repoDir = rdir(APP.repo);
     const sessions = opts.state
@@ -127,7 +147,7 @@ describe("agent-poller reconcile", () => {
       }),
     );
     const res = exec();
-    assert.equal(res.status, 0, res.stdout + res.stderr);
+    expect(res.status, res.stdout + res.stderr).toBe(0);
     const calls = gh();
     const launched = readJson(join(state("app"), "launched.json"));
     return {
@@ -141,61 +161,82 @@ describe("agent-poller reconcile", () => {
   for (const st of ["waiting", "idle", "something-new", "working", "blocked"]) {
     it(`keeps a session in state ${st} without failing it`, () => {
       const r = run({ state: st });
-      assert.equal(r.failed, false);
-      assert.equal(r.commented, false);
-      assert.equal(r.kept, true);
+      expect(r.failed).toBe(false);
+      expect(r.commented).toBe(false);
+      expect(r.kept).toBe(true);
     });
   }
 
   it("removes the entry without failure when done and needs-review", () => {
     const r = run({ state: "done", labels: ["needs-review"] });
-    assert.equal(r.failed, false);
-    assert.equal(r.kept, false);
+    expect(r.failed).toBe(false);
+    expect(r.kept).toBe(false);
   });
 
   it("removes the entry without failure when done and issue closed", () => {
     const r = run({ state: "done", issueState: "CLOSED", labels: [] });
-    assert.equal(r.failed, false);
-    assert.equal(r.kept, false);
+    expect(r.failed).toBe(false);
+    expect(r.kept).toBe(false);
   });
 
   it("fails a done session whose ticket was not handed off", () => {
     const r = run({ state: "done" });
-    assert.equal(r.failed, true);
-    assert.equal(r.commented, true);
-    assert.equal(r.kept, false);
+    expect(r.failed).toBe(true);
+    expect(r.commented).toBe(true);
+    expect(r.kept).toBe(false);
   });
 
   for (const st of ["failed", "stopped"]) {
     it(`fails a ${st} session`, () => {
       const r = run({ state: st });
-      assert.equal(r.failed, true);
-      assert.equal(r.commented, true);
-      assert.equal(r.kept, false);
+      expect(r.failed).toBe(true);
+      expect(r.commented).toBe(true);
+      expect(r.kept).toBe(false);
     });
   }
 
   it("fails a missing session older than 10 minutes", () => {
     const r = run({ ageSec: 700 });
-    assert.equal(r.failed, true);
-    assert.equal(r.kept, false);
+    expect(r.failed).toBe(true);
+    expect(r.kept).toBe(false);
   });
 
   it("keeps a missing session younger than 10 minutes", () => {
     const r = run({ ageSec: 60 });
-    assert.equal(r.failed, false);
-    assert.equal(r.kept, true);
+    expect(r.failed).toBe(false);
+    expect(r.kept).toBe(true);
   });
 
   it("logs the observed state, prefixed with the repo", () => {
     const out = run({ state: "waiting" }).stdout;
-    assert.match(out, /\[app\] #5: app-5 state=waiting/);
-    assert.ok(run({ ageSec: 60 }).stdout.includes("state=<none>"));
+    expect(out).toMatch(/\[app\] #5: app-5 state=waiting/);
+    expect(run({ ageSec: 60 }).stdout.includes("state=<none>")).toBe(true);
   });
 });
 
 describe("agent-poller conflict phase", () => {
-  function runConflict(opts) {
+  interface ConflictOpts {
+    sessions?: { name: string; state: string }[];
+    launched?: Record<string, unknown>;
+    attempts?: Record<string, unknown>;
+    sha?: string;
+    branch?: string;
+    mergeable?: string;
+    crossRepo?: boolean;
+    prAuthor?: string;
+    extraPrs?: { number: number; headRefName: string }[];
+    prViewState?: string;
+    prViewMergeable?: string;
+    failIssues?: number[];
+    failApi?: boolean;
+    issueState?: string;
+    author?: string;
+    labels?: string[];
+    dry?: boolean;
+    status?: number;
+  }
+
+  function runConflict(opts: ConflictOpts) {
     configure();
     const repoDir = rdir(APP.repo);
     writeFileSync(
@@ -215,7 +256,7 @@ describe("agent-poller conflict phase", () => {
     );
     writeFileSync(join(repoDir, "sha"), opts.sha ?? "sha1");
     // Same-repo, owner-authored and conflicting unless the test says otherwise.
-    const prRow = (p) => ({
+    const prRow = (p: Record<string, unknown>) => ({
       isCrossRepository: false,
       author: { login: "example-owner" },
       mergeable: "CONFLICTING",
@@ -257,7 +298,7 @@ describe("agent-poller conflict phase", () => {
       }),
     );
     const res = exec({ dry: opts.dry });
-    assert.equal(res.status, opts.status ?? 0, res.stdout + res.stderr);
+    expect(res.status, res.stdout + res.stderr).toBe(opts.status ?? 0);
     return {
       stdout: res.stdout,
       launches: readLines("claude.log"),
@@ -272,39 +313,39 @@ describe("agent-poller conflict phase", () => {
 
   it("launches resolve-conflicts for a CONFLICTING issue PR and records it", () => {
     const r = runConflict({});
-    assert.deepEqual(r.launches, [CONFLICT_LAUNCH]);
-    assert.partialDeepStrictEqual(r.state["conflict-5"], {
+    expect(r.launches).toStrictEqual([CONFLICT_LAUNCH]);
+    expect(r.state["conflict-5"]).toMatchObject({
       name: "app-5-conflict",
       pr: "9",
       mainSha: "sha1",
     });
-    assert.deepEqual(r.attempts["5"], { pr: "9", mainSha: "sha1" });
+    expect(r.attempts["5"]).toStrictEqual({ pr: "9", mainSha: "sha1" });
   });
 
   for (const mergeable of ["UNKNOWN", "MERGEABLE"]) {
     it(`does not launch for ${mergeable}`, () => {
       const r = runConflict({ mergeable });
-      assert.deepEqual(r.launches, []);
+      expect(r.launches).toStrictEqual([]);
       if (mergeable === "UNKNOWN")
-        assert.ok(r.stdout.includes("retry next poll"));
+        expect(r.stdout.includes("retry next poll")).toBe(true);
     });
   }
 
   it("ignores branches that are not issue-N-*", () => {
-    assert.deepEqual(runConflict({ branch: "feature-x" }).launches, []);
+    expect(runConflict({ branch: "feature-x" }).launches).toStrictEqual([]);
   });
 
   for (const st of ["working", "blocked"]) {
     it(`skips when the ticket session is ${st}`, () => {
       const r = runConflict({ sessions: [{ name: "app-5", state: st }] });
-      assert.deepEqual(r.launches, []);
+      expect(r.launches).toStrictEqual([]);
     });
   }
 
   for (const st of ["idle", "done"]) {
     it(`still launches when the ticket session is ${st}`, () => {
       const r = runConflict({ sessions: [{ name: "app-5", state: st }] });
-      assert.equal(r.launches.length, 1);
+      expect(r.launches.length).toBe(1);
     });
   }
 
@@ -312,7 +353,7 @@ describe("agent-poller conflict phase", () => {
     const r = runConflict({
       sessions: [{ name: "app-5-conflict", state: "working" }],
     });
-    assert.deepEqual(r.launches, []);
+    expect(r.launches).toStrictEqual([]);
   });
 
   it("skips when a conflict entry is already tracked", () => {
@@ -326,12 +367,12 @@ describe("agent-poller conflict phase", () => {
         },
       },
     });
-    assert.deepEqual(r.launches, []);
+    expect(r.launches).toStrictEqual([]);
   });
 
   it("does not repeat an attempt against the same main SHA", () => {
     const r = runConflict({ attempts: { 5: { pr: "9", mainSha: "sha1" } } });
-    assert.deepEqual(r.launches, []);
+    expect(r.launches).toStrictEqual([]);
   });
 
   it("retries when main has moved", () => {
@@ -339,8 +380,8 @@ describe("agent-poller conflict phase", () => {
       attempts: { 5: { pr: "9", mainSha: "old" } },
       sha: "sha2",
     });
-    assert.equal(r.launches.length, 1);
-    assert.deepEqual(r.attempts["5"], { pr: "9", mainSha: "sha2" });
+    expect(r.launches.length).toBe(1);
+    expect(r.attempts["5"]).toStrictEqual({ pr: "9", mainSha: "sha2" });
   });
 
   it("skips a PR whose issue cannot be read and still launches later ones", () => {
@@ -349,65 +390,59 @@ describe("agent-poller conflict phase", () => {
       failIssues: [7],
       extraPrs: [{ number: 10, headRefName: "issue-5-thing" }],
     });
-    assert.ok(r.stdout.includes("#7: cannot read issue"));
-    assert.deepEqual(r.launches, [CONFLICT_LAUNCH]);
+    expect(r.stdout.includes("#7: cannot read issue")).toBe(true);
+    expect(r.launches).toStrictEqual([CONFLICT_LAUNCH]);
   });
 
   it("skips the phase without failing when main SHA cannot be read", () => {
     const r = runConflict({ failApi: true });
-    assert.ok(r.stdout.includes("cannot read main SHA"));
-    assert.deepEqual(r.launches, []);
+    expect(r.stdout.includes("cannot read main SHA")).toBe(true);
+    expect(r.launches).toStrictEqual([]);
   });
 
   it("skips tickets that are not agent-ok", () => {
-    assert.deepEqual(runConflict({ labels: ["needs-review"] }).launches, []);
+    expect(runConflict({ labels: ["needs-review"] }).launches).toStrictEqual([]);
   });
 
   it("skips tickets with agent-failed", () => {
-    assert.deepEqual(
-      runConflict({ labels: ["agent-ok", "agent-failed"] }).launches,
-      [],
-    );
+    expect(runConflict({ labels: ["agent-ok", "agent-failed"] }).launches).toStrictEqual([]);
   });
 
   it("skips tickets by another author", () => {
-    assert.deepEqual(runConflict({ author: "someone" }).launches, []);
+    expect(runConflict({ author: "someone" }).launches).toStrictEqual([]);
   });
 
   it("skips a PR from a fork, even on an issue-N-* branch", () => {
     const r = runConflict({ crossRepo: true });
-    assert.deepEqual(r.launches, []);
-    assert.ok(r.stdout.includes("#5: PR #9 is from a fork; skipping"), r.stdout);
-    assert.deepEqual(r.state, {});
-    assert.deepEqual(r.attempts, {});
+    expect(r.launches).toStrictEqual([]);
+    expect(r.stdout.includes("#5: PR #9 is from a fork; skipping"), r.stdout).toBe(true);
+    expect(r.state).toStrictEqual({});
+    expect(r.attempts).toStrictEqual({});
   });
 
   it("never resolves a PR without isCrossRepository: the repo's poll fails", () => {
     const r = runConflict({ crossRepo: undefined, status: 1 });
-    assert.deepEqual(r.launches, []);
-    assert.match(r.stdout, /\[app\] poll failed: gh pr list: \[0\]\.isCrossRepository/);
-    assert.ok(!r.calls.some((c) => c.startsWith("issue view")), r.calls.join("\n"));
-    assert.deepEqual(r.attempts, {});
+    expect(r.launches).toStrictEqual([]);
+    expect(r.stdout).toMatch(/\[app\] poll failed: gh pr list: \[0\]\.isCrossRepository/);
+    expect(!r.calls.some((c) => c.startsWith("issue view")), r.calls.join("\n")).toBe(true);
+    expect(r.attempts).toStrictEqual({});
   });
 
   it("skips a same-repo PR by another author", () => {
     const r = runConflict({ prAuthor: "someone" });
-    assert.deepEqual(r.launches, []);
-    assert.ok(
-      r.stdout.includes("#5: PR #9 author someone is not example-owner; skipping"),
-      r.stdout,
-    );
+    expect(r.launches).toStrictEqual([]);
+    expect(r.stdout.includes("#5: PR #9 author someone is not example-owner; skipping"), r.stdout).toBe(true);
   });
 
   it("does not read the issue for an untrusted PR", () => {
     const r = runConflict({ crossRepo: true });
-    assert.ok(!r.calls.some((c) => c.startsWith("issue view")), r.calls.join("\n"));
+    expect(!r.calls.some((c) => c.startsWith("issue view")), r.calls.join("\n")).toBe(true);
   });
 
   it("skips a closed ticket", () => {
     const r = runConflict({ issueState: "CLOSED" });
-    assert.deepEqual(r.launches, []);
-    assert.ok(r.stdout.includes("#5: issue is not open"), r.stdout);
+    expect(r.launches).toStrictEqual([]);
+    expect(r.stdout.includes("#5: issue is not open"), r.stdout).toBe(true);
   });
 
   it("skips a fork PR and still launches for the owner's PR on the same ticket", () => {
@@ -417,18 +452,18 @@ describe("agent-poller conflict phase", () => {
       prAuthor: "someone",
       extraPrs: [{ number: 10, headRefName: "issue-5-thing" }],
     });
-    assert.deepEqual(r.launches, [CONFLICT_LAUNCH]);
-    assert.equal(r.state["conflict-5"].pr, "10");
-    assert.deepEqual(r.attempts["5"], { pr: "10", mainSha: "sha1" });
+    expect(r.launches).toStrictEqual([CONFLICT_LAUNCH]);
+    expect(r.state["conflict-5"].pr).toBe("10");
+    expect(r.attempts["5"]).toStrictEqual({ pr: "10", mainSha: "sha1" });
   });
 
   it("dry-run logs the launch without launching or writing state", () => {
     const r = runConflict({ dry: true });
-    assert.ok(r.stdout.includes("[dry-run]"));
-    assert.ok(r.stdout.includes("resolve-conflicts 5"));
-    assert.deepEqual(r.launches, []);
-    assert.deepEqual(r.state, {});
-    assert.deepEqual(r.attempts, {});
+    expect(r.stdout.includes("[dry-run]")).toBe(true);
+    expect(r.stdout.includes("resolve-conflicts 5")).toBe(true);
+    expect(r.launches).toStrictEqual([]);
+    expect(r.state).toStrictEqual({});
+    expect(r.attempts).toStrictEqual({});
   });
 });
 
@@ -445,7 +480,14 @@ describe("agent-poller conflict reconcile", () => {
   const attempts = { 5: { pr: "9", mainSha: "sha1" } };
 
   // Reuses the conflict-phase setup through a fresh describe-local helper.
-  function runConflict(opts) {
+  interface ConflictReconcileOpts {
+    sessions: { name: string; state: string }[];
+    mergeable?: string;
+    prViewState?: string;
+    prViewMergeable?: string;
+  }
+
+  function runConflict(opts: ConflictReconcileOpts) {
     configure();
     const repoDir = rdir(APP.repo);
     writeFileSync(
@@ -491,7 +533,7 @@ describe("agent-poller conflict reconcile", () => {
       }),
     );
     const res = exec();
-    assert.equal(res.status, 0, res.stdout + res.stderr);
+    expect(res.status, res.stdout + res.stderr).toBe(0);
     return {
       calls: gh(),
       state: readJson(join(state("app"), "launched.json")),
@@ -503,14 +545,14 @@ describe("agent-poller conflict reconcile", () => {
       const r = runConflict({
         sessions: [{ name: "app-5-conflict", state: st }],
       });
-      assert.ok(
+      expect(
         r.calls.includes(
           "issue edit 5 --repo example-owner/example-app --add-label agent-failed",
         ),
-      );
-      assert.ok(r.calls.some((c) => c.startsWith("pr comment 9")));
-      assert.ok(r.calls.some((c) => c.startsWith("issue comment 5")));
-      assert.deepEqual(r.state, {});
+      ).toBe(true);
+      expect(r.calls.some((c) => c.startsWith("pr comment 9"))).toBe(true);
+      expect(r.calls.some((c) => c.startsWith("issue comment 5"))).toBe(true);
+      expect(r.state).toStrictEqual({});
     });
   }
 
@@ -518,9 +560,9 @@ describe("agent-poller conflict reconcile", () => {
     const r = runConflict({
       sessions: [{ name: "app-5-conflict", state: "done" }],
     });
-    assert.ok(r.calls.some((c) => c.includes("agent-failed")));
-    assert.ok(r.calls.some((c) => c.startsWith("pr comment 9")));
-    assert.deepEqual(r.state, {});
+    expect(r.calls.some((c) => c.includes("agent-failed"))).toBe(true);
+    expect(r.calls.some((c) => c.startsWith("pr comment 9"))).toBe(true);
+    expect(r.state).toStrictEqual({});
   });
 
   it("cleans up a done session whose conflict is resolved", () => {
@@ -529,8 +571,8 @@ describe("agent-poller conflict reconcile", () => {
       prViewMergeable: "MERGEABLE",
       mergeable: "MERGEABLE",
     });
-    assert.ok(!r.calls.some((c) => c.includes("agent-failed")));
-    assert.deepEqual(r.state, {});
+    expect(!r.calls.some((c) => c.includes("agent-failed"))).toBe(true);
+    expect(r.state).toStrictEqual({});
   });
 
   for (const prViewState of ["CLOSED", "MERGED"]) {
@@ -540,8 +582,8 @@ describe("agent-poller conflict reconcile", () => {
         prViewState,
         mergeable: "MERGEABLE",
       });
-      assert.ok(!r.calls.some((c) => c.includes("agent-failed")));
-      assert.deepEqual(r.state, {});
+      expect(!r.calls.some((c) => c.includes("agent-failed"))).toBe(true);
+      expect(r.state).toStrictEqual({});
     });
   }
 
@@ -549,8 +591,8 @@ describe("agent-poller conflict reconcile", () => {
     const r = runConflict({
       sessions: [{ name: "app-5-conflict", state: "working" }],
     });
-    assert.ok(!r.calls.some((c) => c.includes("agent-failed")));
-    assert.ok(r.state["conflict-5"]);
+    expect(!r.calls.some((c) => c.includes("agent-failed"))).toBe(true);
+    expect(r.state["conflict-5"]).toBeTruthy();
   });
 });
 
@@ -558,12 +600,12 @@ describe("agent-poller multiple repos", () => {
   const A = { repo: "org/alpha", sessionPrefix: "a", owner: "me" };
   const B = { repo: "org/beta", sessionPrefix: "b", owner: "you" };
 
-  const issue = (number, author, labels) => ({
+  const issue = (number: number, author: string, labels: string[]) => ({
     number,
     author: { login: author },
     labels: labels.map((name) => ({ name })),
   });
-  const writeIssues = (repo, issues) =>
+  const writeIssues = (repo: string, issues: unknown[]) =>
     writeFileSync(join(rdir(repo), "issues.json"), JSON.stringify(issues));
 
   it("dry-run picks the right tickets per repo", () => {
@@ -578,29 +620,26 @@ describe("agent-poller multiple repos", () => {
       issue(7, "me", ["agent-ok", "ready"]), // wrong owner for beta
     ]);
     const r = exec({ dry: true });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.ok(
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(
       r.stdout.includes(
         `[dry-run] (cd ${ea.dir} && claude --bg --name a-3 --model sonnet --effort xhigh "/ticket-workflow:work-ticket 3")`,
       ),
       r.stdout,
-    );
-    assert.ok(
+    ).toBe(true);
+    expect(
       r.stdout.includes(
         `[dry-run] (cd ${eb.dir} && claude --bg --name b-6 --model sonnet --effort xhigh "/ticket-workflow:work-ticket 6 auto")`,
       ),
       r.stdout,
-    );
-    assert.equal(r.stdout.match(/--bg --name/g).length, 2);
-    assert.equal(readLines("claude.log").length, 0);
+    ).toBe(true);
+    expect(r.stdout.match(/--bg --name/g)!.length).toBe(2);
+    expect(readLines("claude.log").length).toBe(0);
     const calls = gh();
     for (const repo of [A.repo, B.repo])
-      assert.ok(
-        calls.some((c) => c.startsWith(`issue list --repo ${repo} `)),
-        `issue list for ${repo}`,
-      );
-    assert.ok(r.stdout.includes("[a] "));
-    assert.ok(r.stdout.includes("[b] "));
+      expect(calls.some((c) => c.startsWith(`issue list --repo ${repo} `)), `issue list for ${repo}`).toBe(true);
+    expect(r.stdout.includes("[a] ")).toBe(true);
+    expect(r.stdout.includes("[b] ")).toBe(true);
   });
 
   it("same ticket number in two repos gets distinct names and separate state", () => {
@@ -608,20 +647,20 @@ describe("agent-poller multiple repos", () => {
     writeIssues(A.repo, [issue(5, "me", ["agent-ok", "ready"])]);
     writeIssues(B.repo, [issue(5, "you", ["agent-ok", "ready"])]);
     const r = exec();
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.deepEqual(readLines("claude.log").sort(), [
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log").sort()).toStrictEqual([
       "--bg --name a-5 --model sonnet --effort xhigh /ticket-workflow:work-ticket 5",
       "--bg --name b-5 --model sonnet --effort xhigh /ticket-workflow:work-ticket 5",
     ]);
     const cwds = readLines("claude.cwd.log");
-    assert.ok(cwds.some((l) => l.startsWith(`${realpath(ea.dir)}|`) && l.includes("a-5")));
-    assert.ok(cwds.some((l) => l.startsWith(`${realpath(eb.dir)}|`) && l.includes("b-5")));
+    expect(cwds.some((l) => l.startsWith(`${realpath(ea.dir)}|`) && l.includes("a-5"))).toBe(true);
+    expect(cwds.some((l) => l.startsWith(`${realpath(eb.dir)}|`) && l.includes("b-5"))).toBe(true);
     const sa = readJson(join(state("a"), "launched.json"));
     const sb = readJson(join(state("b"), "launched.json"));
-    assert.equal(sa["5"].name, "a-5");
-    assert.equal(sb["5"].name, "b-5");
-    assert.ok(existsSync(join(state("a"), "conflicts.json")));
-    assert.ok(existsSync(join(state("b"), "conflicts.json")));
+    expect(sa["5"].name).toBe("a-5");
+    expect(sb["5"].name).toBe("b-5");
+    expect(existsSync(join(state("a"), "conflicts.json"))).toBe(true);
+    expect(existsSync(join(state("b"), "conflicts.json"))).toBe(true);
   });
 
   it("reconciles each repo against its own state", () => {
@@ -646,12 +685,12 @@ describe("agent-poller multiple repos", () => {
       );
     }
     const r = exec();
-    assert.equal(r.status, 0, r.stdout + r.stderr);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
     const calls = gh();
-    assert.ok(calls.some((c) => c.startsWith("issue edit 5 --repo org/alpha")));
-    assert.ok(!calls.some((c) => c.startsWith("issue edit 5 --repo org/beta")));
-    assert.deepEqual(readJson(join(state("a"), "launched.json")), {});
-    assert.ok(readJson(join(state("b"), "launched.json"))["5"]);
+    expect(calls.some((c) => c.startsWith("issue edit 5 --repo org/alpha"))).toBe(true);
+    expect(!calls.some((c) => c.startsWith("issue edit 5 --repo org/beta"))).toBe(true);
+    expect(readJson(join(state("a"), "launched.json"))).toStrictEqual({});
+    expect(readJson(join(state("b"), "launched.json"))["5"]).toBeTruthy();
   });
 
   it("one repo failing does not stop the others", () => {
@@ -659,14 +698,14 @@ describe("agent-poller multiple repos", () => {
     writeFileSync(join(rdir(A.repo), "fail-all"), "");
     writeIssues(B.repo, [issue(6, "you", ["agent-ok", "ready"])]);
     const r = exec();
-    assert.notEqual(r.status, 0);
-    assert.ok(/\[a\] .*poll failed/.test(r.stdout), r.stdout);
-    assert.deepEqual(readLines("claude.log"), [
+    expect(r.status).not.toBe(0);
+    expect(/\[a\] .*poll failed/.test(r.stdout), r.stdout).toBe(true);
+    expect(readLines("claude.log")).toStrictEqual([
       "--bg --name b-6 --model sonnet --effort xhigh /ticket-workflow:work-ticket 6",
     ]);
     // errexit is active inside the failed repo: it stopped at the failing call.
-    assert.ok(!gh().some((c) => c.startsWith("pr list --repo org/alpha")));
-    assert.ok(gh().some((c) => c.startsWith("pr list --repo org/beta")));
+    expect(!gh().some((c) => c.startsWith("pr list --repo org/alpha"))).toBe(true);
+    expect(gh().some((c) => c.startsWith("pr list --repo org/beta"))).toBe(true);
   });
 
   it("per-repo bgFlags are appended to CLAUDE_BG_FLAGS", () => {
@@ -674,8 +713,8 @@ describe("agent-poller multiple repos", () => {
     writeIssues(A.repo, [issue(1, "me", ["agent-ok", "ready"])]);
     writeIssues(B.repo, [issue(2, "you", ["agent-ok", "ready"])]);
     const r = exec({ env: { CLAUDE_BG_FLAGS: "--permission-mode plan" } });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.deepEqual(readLines("claude.log").sort(), [
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log").sort()).toStrictEqual([
       "--bg --name a-1 --model sonnet --effort xhigh --permission-mode plan --model opus /ticket-workflow:work-ticket 1",
       "--bg --name b-2 --model sonnet --effort xhigh --permission-mode plan /ticket-workflow:work-ticket 2",
     ]);
@@ -685,12 +724,12 @@ describe("agent-poller multiple repos", () => {
 describe("agent-poller bypass-flag refusal", () => {
   const A = { repo: "org/alpha", sessionPrefix: "a", owner: "me" };
   const B = { repo: "org/beta", sessionPrefix: "b", owner: "me" };
-  const ready = (number) => ({
+  const ready = (number: number) => ({
     number,
     author: { login: "me" },
     labels: [{ name: "agent-ok" }, { name: "ready" }],
   });
-  const writeIssues = (repo, issues) =>
+  const writeIssues = (repo: string, issues: unknown[]) =>
     writeFileSync(join(rdir(repo), "issues.json"), JSON.stringify(issues));
 
   const BYPASS = [
@@ -705,11 +744,11 @@ describe("agent-poller bypass-flag refusal", () => {
       configure([A]);
       writeIssues(A.repo, [ready(1)]);
       const r = exec({ env: { CLAUDE_BG_FLAGS: flags } });
-      assert.notEqual(r.status, 0);
-      assert.match(r.stdout, /\[a\] refusing bypass flags/);
-      assert.match(r.stdout, /CLAUDE_ALLOW_BYPASS_PERMISSIONS=1/);
-      assert.deepEqual(readLines("claude.log"), []);
-      assert.ok(!gh().some((c) => c.startsWith("issue list")));
+      expect(r.status).not.toBe(0);
+      expect(r.stdout).toMatch(/\[a\] refusing bypass flags/);
+      expect(r.stdout).toMatch(/CLAUDE_ALLOW_BYPASS_PERMISSIONS=1/);
+      expect(readLines("claude.log")).toStrictEqual([]);
+      expect(!gh().some((c) => c.startsWith("issue list"))).toBe(true);
     });
 
     it(`refuses ${label} in a repo's bgFlags; other repos still run`, () => {
@@ -717,9 +756,9 @@ describe("agent-poller bypass-flag refusal", () => {
       writeIssues(A.repo, [ready(1)]);
       writeIssues(B.repo, [ready(2)]);
       const r = exec();
-      assert.notEqual(r.status, 0);
-      assert.match(r.stdout, /\[a\] refusing bypass flags/);
-      assert.deepEqual(readLines("claude.log"), [
+      expect(r.status).not.toBe(0);
+      expect(r.stdout).toMatch(/\[a\] refusing bypass flags/);
+      expect(readLines("claude.log")).toStrictEqual([
         "--bg --name b-2 --model sonnet --effort xhigh /ticket-workflow:work-ticket 2",
       ]);
     });
@@ -734,15 +773,12 @@ describe("agent-poller bypass-flag refusal", () => {
         CLAUDE_BG_FLAGS: "--dangerously-skip-permissions",
       },
     });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.doesNotMatch(r.stdout, /refusing/);
-    assert.deepEqual(readLines("claude.log"), [
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).not.toMatch(/refusing/);
+    expect(readLines("claude.log")).toStrictEqual([
       "--bg --name a-1 --model sonnet --effort xhigh --dangerously-skip-permissions --permission-mode bypassPermissions /ticket-workflow:work-ticket 1",
     ]);
-    assert.match(
-      r.stdout,
-      /#1: launching a-1 \(flags: --model sonnet --effort xhigh --dangerously-skip-permissions --permission-mode bypassPermissions\)/,
-    );
+    expect(r.stdout).toMatch(/#1: launching a-1 \(flags: --model sonnet --effort xhigh --dangerously-skip-permissions --permission-mode bypassPermissions\)/);
   });
 
   it("only the exact opt-in value 1 allows them", () => {
@@ -754,24 +790,24 @@ describe("agent-poller bypass-flag refusal", () => {
         CLAUDE_BG_FLAGS: "--dangerously-skip-permissions",
       },
     });
-    assert.notEqual(r.status, 0);
-    assert.deepEqual(readLines("claude.log"), []);
+    expect(r.status).not.toBe(0);
+    expect(readLines("claude.log")).toStrictEqual([]);
   });
 
   it("leaves other permission modes alone and logs the effective flags", () => {
     configure([{ ...A, bgFlags: "--permission-mode acceptEdits" }]);
     writeIssues(A.repo, [ready(1)]);
     const r = exec();
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /#1: launching a-1 \(flags: --model sonnet --effort xhigh --permission-mode acceptEdits\)/);
-    assert.equal(readLines("claude.log").length, 1);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/#1: launching a-1 \(flags: --model sonnet --effort xhigh --permission-mode acceptEdits\)/);
+    expect(readLines("claude.log").length).toBe(1);
   });
 
   it("logs the default model and effort when no flags are set", () => {
     configure([A]);
     writeIssues(A.repo, [ready(1)]);
     const r = exec();
-    assert.match(r.stdout, /#1: launching a-1 \(flags: --model sonnet --effort xhigh\)/);
+    expect(r.stdout).toMatch(/#1: launching a-1 \(flags: --model sonnet --effort xhigh\)/);
   });
 
   it("logs the effective flags on conflict launches too", () => {
@@ -800,52 +836,52 @@ describe("agent-poller bypass-flag refusal", () => {
       }),
     );
     const r = exec();
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /launching a-5-conflict \(flags: --model sonnet --effort xhigh --model opus\)/);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/launching a-5-conflict \(flags: --model sonnet --effort xhigh --model opus\)/);
   });
 });
 
 describe("agent-poller session cap", () => {
   const A = { repo: "org/alpha", sessionPrefix: "a", owner: "me" };
   const B = { repo: "org/beta", sessionPrefix: "b", owner: "me" };
-  const ready = (number) => ({
+  const ready = (number: number) => ({
     number,
     author: { login: "me" },
     labels: [{ name: "agent-ok" }, { name: "ready" }],
   });
-  const writeIssues = (repo, issues) =>
+  const writeIssues = (repo: string, issues: unknown[]) =>
     writeFileSync(join(rdir(repo), "issues.json"), JSON.stringify(issues));
-  const launchedState = (prefix, names) => {
+  const launchedState = (prefix: string, names: string[]) => {
     mkdirSync(state(prefix), { recursive: true });
     const at = Math.floor(Date.now() / 1000) - 60;
-    const o = {};
+    const o: Record<string, { name: string; at: number }> = {};
     for (const name of names) o[name.split("-")[1]] = { name, at };
     writeFileSync(join(state(prefix), "launched.json"), JSON.stringify(o));
   };
-  const sessions = (list) =>
+  const sessions = (list: [string, string][]) =>
     writeFileSync(
       join(dir, "sessions.json"),
       JSON.stringify(list.map(([name, st]) => ({ name, state: st, startedAt: 1 }))),
     );
-  const tracked = (prefix) =>
+  const tracked = (prefix: string) =>
     Object.keys(readJson(join(state(prefix), "launched.json")));
 
   it("defaults to 10 sessions: the 11th ready ticket is deferred", () => {
     configure([A]);
     writeIssues(A.repo, Array.from({ length: 11 }, (_, i) => ready(i + 1)));
     const r = exec();
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.equal(readLines("claude.log").length, 10);
-    assert.match(r.stdout, /deferred #11: at session cap/);
-    assert.equal(tracked("a").includes("11"), false);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log").length).toBe(10);
+    expect(r.stdout).toMatch(/deferred #11: at session cap/);
+    expect(tracked("a").includes("11")).toBe(false);
   });
 
   it("CLAUDE_MAX_SESSIONS raises the default", () => {
     configure([A]);
     writeIssues(A.repo, Array.from({ length: 11 }, (_, i) => ready(i + 1)));
     const r = exec({ env: { CLAUDE_MAX_SESSIONS: "11" } });
-    assert.equal(readLines("claude.log").length, 11);
-    assert.doesNotMatch(r.stdout, /deferred/);
+    expect(readLines("claude.log").length).toBe(11);
+    expect(r.stdout).not.toMatch(/deferred/);
   });
 
   it("global cap counts live sessions across repos; defers without recording, resumes once one ends", () => {
@@ -859,10 +895,10 @@ describe("agent-poller session cap", () => {
     writeIssues(A.repo, [ready(3)]);
     const env = { CLAUDE_MAX_SESSIONS: "2" };
     let r = exec({ env });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.deepEqual(readLines("claude.log"), []);
-    assert.match(r.stdout, /\[a\] deferred #3: at session cap/);
-    assert.deepEqual(tracked("a"), ["1"]);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log")).toStrictEqual([]);
+    expect(r.stdout).toMatch(/\[a\] deferred #3: at session cap/);
+    expect(tracked("a")).toStrictEqual(["1"]);
 
     // b-2 finishes (handed off); the deferred ticket launches on the next poll.
     sessions([
@@ -874,11 +910,11 @@ describe("agent-poller session cap", () => {
       JSON.stringify({ state: "OPEN", labels: [{ name: "needs-review" }] }),
     );
     r = exec({ env });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.deepEqual(readLines("claude.log"), [
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log")).toStrictEqual([
       "--bg --name a-3 --model sonnet --effort xhigh /ticket-workflow:work-ticket 3",
     ]);
-    assert.deepEqual(tracked("a").sort(), ["1", "3"]);
+    expect(tracked("a").sort()).toStrictEqual(["1", "3"]);
   });
 
   it("counts a just-launched session that is not listed yet; ignores done/failed/stopped", () => {
@@ -896,8 +932,8 @@ describe("agent-poller session cap", () => {
     );
     // a-1 is unlisted (young) so it counts; the other three do not.
     const r = exec({ env: { CLAUDE_MAX_SESSIONS: "1" } });
-    assert.match(r.stdout, /deferred #9: at session cap/);
-    assert.deepEqual(readLines("claude.log"), []);
+    expect(r.stdout).toMatch(/deferred #9: at session cap/);
+    expect(readLines("claude.log")).toStrictEqual([]);
   });
 
   for (const st of ["done", "failed", "stopped", "working"]) {
@@ -907,8 +943,8 @@ describe("agent-poller session cap", () => {
       sessions([["b-1", st]]);
       writeIssues(A.repo, [ready(2)]);
       const r = exec({ env: { CLAUDE_MAX_SESSIONS: "1" } });
-      assert.equal(readLines("claude.log").length, st === "working" ? 0 : 1);
-      if (st === "working") assert.match(r.stdout, /deferred #2/);
+      expect(readLines("claude.log").length).toBe(st === "working" ? 0 : 1);
+      if (st === "working") expect(r.stdout).toMatch(/deferred #2/);
     });
   }
 
@@ -917,12 +953,12 @@ describe("agent-poller session cap", () => {
     writeIssues(A.repo, [ready(1), ready(2)]);
     writeIssues(B.repo, [ready(3)]);
     const r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.deepEqual(readLines("claude.log"), [
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log")).toStrictEqual([
       "--bg --name a-1 --model sonnet --effort xhigh /ticket-workflow:work-ticket 1",
       "--bg --name a-2 --model sonnet --effort xhigh /ticket-workflow:work-ticket 2",
     ]);
-    assert.match(r.stdout, /\[b\] deferred #3: at session cap/);
+    expect(r.stdout).toMatch(/\[b\] deferred #3: at session cap/);
   });
 
   it("per-repo maxSessions caps only that repo", () => {
@@ -932,9 +968,9 @@ describe("agent-poller session cap", () => {
     writeIssues(A.repo, [ready(2)]);
     writeIssues(B.repo, [ready(3), ready(4)]);
     const r = exec();
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /\[a\] deferred #2: at session cap/);
-    assert.deepEqual(readLines("claude.log"), [
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/\[a\] deferred #2: at session cap/);
+    expect(readLines("claude.log")).toStrictEqual([
       "--bg --name b-3 --model sonnet --effort xhigh /ticket-workflow:work-ticket 3",
       "--bg --name b-4 --model sonnet --effort xhigh /ticket-workflow:work-ticket 4",
     ]);
@@ -944,10 +980,10 @@ describe("agent-poller session cap", () => {
     configure([{ ...A, maxSessions: 1 }]);
     writeIssues(A.repo, [ready(1), ready(2)]);
     const r = exec();
-    assert.deepEqual(readLines("claude.log"), [
+    expect(readLines("claude.log")).toStrictEqual([
       "--bg --name a-1 --model sonnet --effort xhigh /ticket-workflow:work-ticket 1",
     ]);
-    assert.match(r.stdout, /deferred #2: at session cap/);
+    expect(r.stdout).toMatch(/deferred #2: at session cap/);
   });
 
   it("accepts maxSessions written as 1.0 and still enforces it", () => {
@@ -958,13 +994,13 @@ describe("agent-poller session cap", () => {
       '"maxSessions":1',
       '"maxSessions":1.0',
     );
-    assert.match(cfg, /1\.0/);
+    expect(cfg).toMatch(/1\.0/);
     writeFileSync(join(dir, "repos.json"), cfg);
     writeIssues(A.repo, [ready(1), ready(2)]);
     const r = exec();
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.equal(readLines("claude.log").length, 1);
-    assert.match(r.stdout, /deferred #2: at session cap/);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log").length).toBe(1);
+    expect(r.stdout).toMatch(/deferred #2: at session cap/);
   });
 
   it("does not count an unlisted entry older than 10 minutes as live", () => {
@@ -979,8 +1015,8 @@ describe("agent-poller session cap", () => {
     writeIssues(A.repo, [ready(3)]);
     // b-1 is dead (unlisted, old): only b-2 counts, so cap 2 leaves room for one launch.
     const r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.deepEqual(readLines("claude.log"), [
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log")).toStrictEqual([
       "--bg --name a-3 --model sonnet --effort xhigh /ticket-workflow:work-ticket 3",
     ]);
   });
@@ -989,10 +1025,10 @@ describe("agent-poller session cap", () => {
     configure([A]);
     writeIssues(A.repo, [ready(1), ready(2)]);
     const r = exec({ dry: true, env: { CLAUDE_MAX_SESSIONS: "1" } });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.equal(r.stdout.match(/\[dry-run\] \(cd/g).length, 1);
-    assert.match(r.stdout, /deferred #2: at session cap/);
-    assert.equal(existsSync(state("a")), false, "a dry run writes no state files");
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout.match(/\[dry-run\] \(cd/g)!.length).toBe(1);
+    expect(r.stdout).toMatch(/deferred #2: at session cap/);
+    expect(existsSync(state("a")), "a dry run writes no state files").toBe(false);
   });
 
   it("conflict launches respect the cap and are retried once there is room", () => {
@@ -1023,15 +1059,15 @@ describe("agent-poller session cap", () => {
       }),
     );
     let r = exec({ env: { CLAUDE_MAX_SESSIONS: "1" } });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /deferred #5: at session cap/);
-    assert.deepEqual(readLines("claude.log"), []);
-    assert.equal(existsSync(join(state("a"), "conflicts.json")), false, "no attempt recorded");
-    assert.deepEqual(tracked("a"), ["7"]);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/deferred #5: at session cap/);
+    expect(readLines("claude.log")).toStrictEqual([]);
+    expect(existsSync(join(state("a"), "conflicts.json")), "no attempt recorded").toBe(false);
+    expect(tracked("a")).toStrictEqual(["7"]);
 
     r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.deepEqual(readLines("claude.log"), [
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log")).toStrictEqual([
       "--bg --name a-5-conflict --model sonnet --effort xhigh /ticket-workflow:resolve-conflicts 5",
     ]);
   });
@@ -1041,9 +1077,9 @@ describe("agent-poller session cap", () => {
       configure([A]);
       writeIssues(A.repo, [ready(1)]);
       const r = exec({ env: { CLAUDE_MAX_SESSIONS: v } });
-      assert.notEqual(r.status, 0);
-      assert.match(r.stdout, /CLAUDE_MAX_SESSIONS=.* is not a positive integer/);
-      assert.deepEqual(readLines("claude.log"), []);
+      expect(r.status).not.toBe(0);
+      expect(r.stdout).toMatch(/CLAUDE_MAX_SESSIONS=.* is not a positive integer/);
+      expect(readLines("claude.log")).toStrictEqual([]);
     });
   }
 
@@ -1051,9 +1087,9 @@ describe("agent-poller session cap", () => {
     it(`rejects maxSessions=${JSON.stringify(bad)} in the config`, () => {
       configure([{ ...A, maxSessions: bad }]);
       const r = exec();
-      assert.notEqual(r.status, 0);
-      assert.match(r.stdout, /\[0\]\.maxSessions: expected a positive integer/);
-      assert.deepEqual(readLines("claude.log"), []);
+      expect(r.status).not.toBe(0);
+      expect(r.stdout).toMatch(/\[0\]\.maxSessions: expected a positive integer/);
+      expect(readLines("claude.log")).toStrictEqual([]);
     });
   }
 });
@@ -1068,9 +1104,9 @@ describe("agent-poller entrypoint", () => {
     );
     chmodSync(join(dir, "bin", "node"), 0o755);
     const r = exec();
-    assert.equal(r.status, 1, r.stdout + r.stderr);
-    assert.match(r.stdout, /node v22\.9\.0 at .*\/bin\/node is too old; the poller needs Node 24 or later; aborting/);
-    assert.deepEqual(gh(), []);
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(r.stdout).toMatch(/node v22\.9\.0 at .*\/bin\/node is too old; the poller needs Node 24 or later; aborting/);
+    expect(gh()).toStrictEqual([]);
   });
 
   it("logs and exits 1 when the clone's dependencies are not installed", () => {
@@ -1088,17 +1124,17 @@ describe("agent-poller entrypoint", () => {
         CLAUDE_WORKFLOW_CONFIG: join(dir, "repos.json"),
       },
     });
-    assert.equal(r.status, 1, r.stdout + r.stderr);
-    assert.match(r.stdout, /dependencies are not installed in .*clone \(run npm ci there/);
-    assert.deepEqual(gh(), []);
-    assert.equal(existsSync(join(dir, "state")), false);
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(r.stdout).toMatch(/dependencies are not installed in .*clone \(run npm ci there/);
+    expect(gh()).toStrictEqual([]);
+    expect(existsSync(join(dir, "state"))).toBe(false);
   });
 });
 
 describe("agent-poller failed tickets and broken state", () => {
   const A = { repo: "org/alpha", sessionPrefix: "a", owner: "me" };
   const B = { repo: "org/beta", sessionPrefix: "b", owner: "me" };
-  const ready = (number) => ({
+  const ready = (number: number) => ({
     number,
     author: { login: "me" },
     labels: [{ name: "agent-ok" }, { name: "ready" }],
@@ -1113,11 +1149,11 @@ describe("agent-poller failed tickets and broken state", () => {
     // The issue still looks ready: in a dry run the agent-failed label is never applied.
     writeFileSync(join(rdir(A.repo), "issues.json"), JSON.stringify([ready(5)]));
     const r = exec({ dry: true });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /\[dry-run\] gh issue edit 5 --repo org\/alpha --add-label agent-failed/);
-    assert.match(r.stdout, /#5: failed earlier in this poll; not relaunching/);
-    assert.doesNotMatch(r.stdout, /\[dry-run\] \(cd/);
-    assert.equal(readFileSync(join(state("a"), "launched.json"), "utf8"), launched);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/\[dry-run\] gh issue edit 5 --repo org\/alpha --add-label agent-failed/);
+    expect(r.stdout).toMatch(/#5: failed earlier in this poll; not relaunching/);
+    expect(r.stdout).not.toMatch(/\[dry-run\] \(cd/);
+    expect(readFileSync(join(state("a"), "launched.json"), "utf8")).toBe(launched);
   });
 
   it("a repo with unreadable state fails, and its listed live sessions still count toward the global cap", () => {
@@ -1127,16 +1163,16 @@ describe("agent-poller failed tickets and broken state", () => {
     writeFileSync(join(dir, "sessions.json"), JSON.stringify([{ name: "b-1", state: "working", startedAt: 1 }]));
     writeFileSync(join(rdir(A.repo), "issues.json"), JSON.stringify([ready(2)]));
     const r = exec({ env: { CLAUDE_MAX_SESSIONS: "1" } });
-    assert.equal(r.status, 1, r.stdout + r.stderr);
-    assert.match(r.stdout, /\[b\] poll failed: .*launched\.json: not valid JSON/);
-    assert.match(r.stdout, /\[a\] deferred #2: at session cap/);
-    assert.deepEqual(readLines("claude.log"), []);
-    assert.ok(!gh().some((c) => c.includes("org/beta")), "nothing is read for the broken repo");
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(r.stdout).toMatch(/\[b\] poll failed: .*launched\.json: not valid JSON/);
+    expect(r.stdout).toMatch(/\[a\] deferred #2: at session cap/);
+    expect(readLines("claude.log")).toStrictEqual([]);
+    expect(!gh().some((c) => c.includes("org/beta")), "nothing is read for the broken repo").toBe(true);
   });
 });
 
 describe("agent-poller run lock", () => {
-  const lockWith = (pid) => {
+  const lockWith = (pid: string | number) => {
     mkdirSync(join(dir, "state", "lock"), { recursive: true });
     writeFileSync(join(dir, "state", "lock", "pid"), `${pid}\n`);
   };
@@ -1147,10 +1183,10 @@ describe("agent-poller run lock", () => {
     writeFileSync(join(rdir(APP.repo), "issues.json"), JSON.stringify(readyIssue));
     lockWith(process.pid); // this test process: alive
     const r = exec();
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, new RegExp(`another run is active \\(pid ${process.pid}\\); exiting`));
-    assert.deepEqual(gh(), []);
-    assert.equal(readFileSync(join(dir, "state", "lock", "pid"), "utf8"), `${process.pid}\n`);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(new RegExp(`another run is active \\(pid ${process.pid}\\); exiting`));
+    expect(gh()).toStrictEqual([]);
+    expect(readFileSync(join(dir, "state", "lock", "pid"), "utf8")).toBe(`${process.pid}\n`);
   });
 
   it("takes over a lock left by a process that is gone, and releases it after the run", () => {
@@ -1159,22 +1195,22 @@ describe("agent-poller run lock", () => {
     const gone = spawnSync("bash", ["-c", "echo $$"], { encoding: "utf8" }).stdout.trim();
     lockWith(gone);
     const r = exec();
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.equal(readLines("claude.log").length, 1);
-    assert.equal(existsSync(join(dir, "state", "lock")), false);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log").length).toBe(1);
+    expect(existsSync(join(dir, "state", "lock"))).toBe(false);
   });
 });
 
 describe("agent-poller config validation", () => {
   const ok = { repo: "org/alpha", dir: "/tmp", sessionPrefix: "a", owner: "me" };
 
-  function expectAbort(content, pattern) {
+  function expectAbort(content: string | null, pattern: RegExp) {
     if (content !== null) writeFileSync(join(dir, "repos.json"), content);
     const r = exec();
-    assert.notEqual(r.status, 0, r.stdout);
-    assert.match(r.stdout, pattern);
-    assert.equal(readLines("claude.log").length, 0);
-    assert.equal(readLines("gh.log").length, 0);
+    expect(r.status, r.stdout).not.toBe(0);
+    expect(r.stdout).toMatch(pattern);
+    expect(readLines("claude.log").length).toBe(0);
+    expect(readLines("gh.log").length).toBe(0);
   }
 
   it("aborts on a missing config file", () => {
@@ -1191,7 +1227,7 @@ describe("agent-poller config validation", () => {
 
   for (const field of ["repo", "dir", "sessionPrefix", "owner"]) {
     it(`aborts when ${field} is missing`, () => {
-      const entry = { ...ok };
+      const entry: Record<string, unknown> = { ...ok };
       delete entry[field];
       expectAbort(
         JSON.stringify([entry]),
@@ -1247,11 +1283,11 @@ describe("agent-poller config validation", () => {
   it("accepts an empty array and does nothing", () => {
     writeFileSync(join(dir, "repos.json"), "[]");
     const r = exec();
-    assert.equal(r.status, 0);
+    expect(r.status).toBe(0);
   });
 });
 
-function realpath(p) {
+function realpath(p: string): string {
   return spawnSync("bash", ["-c", `cd ${JSON.stringify(p)} && pwd -P`], {
     encoding: "utf8",
   }).stdout.trim();

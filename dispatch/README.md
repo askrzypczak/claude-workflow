@@ -107,12 +107,13 @@ Requires Node 24 (`node` on the `PATH` above, which is what the LaunchAgent sees
 
 ### Tests
 
-Both run from `npm test` (after `npm ci`; Node 24):
+Both groups run from `npm test` (after `npm ci`; Node 24), one vitest runner:
 
-- `dispatch/poller/*.test.ts`: vitest unit tests for the config, the decisions, and one repo's poll against a fake `PollerIo`.
-- `dispatch/*.test.mjs`: `node:test` suites that run the real entrypoint (`agent-poller.test.mjs`) and the installer (`install-launchd.test.mjs`) with fake `gh`, `claude`, `launchctl` and `npm` binaries; nothing real is touched.
+- `dispatch/poller/*.test.ts`: unit tests for the config, the decisions, and one repo's poll against a fake `PollerIo`.
+- `dispatch/*.test.ts`: end-to-end suites that run the real entrypoint (`agent-poller.test.ts`) and the installer (`install-launchd.test.ts`) with fake `gh`, `claude`, `launchctl` and `npm` binaries; nothing real is touched.
 
 To run one part:
 
     npx vitest run dispatch/poller
-    node --test dispatch/*.test.mjs
+    npx vitest run dispatch/agent-poller
+    npx vitest run dispatch/install-launchd
