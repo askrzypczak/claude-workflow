@@ -17,5 +17,5 @@ jobs:
         with:
           node-version: 24
       - run: npm ci && npm test
-      - run: .claude/hooks/test-guard-git.sh
+      - run: plugins/ticket-workflow/hooks/test-guard-git.sh
       - run: plugins/ticket-workflow/hooks/test-guard-comments.sh
