@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
 const SCRIPT = join(import.meta.dirname, "agent-poller.sh");
@@ -31,6 +31,10 @@ const state = (prefix) => join(dir, "state", "repos", prefix);
 const readLines = (f) =>
   readFileSync(join(dir, f), "utf8").split("\n").filter(Boolean);
 const readJson = (f) => JSON.parse(readFileSync(f, "utf8"));
+// The shim puts fnm, Homebrew and /usr/local/bin before the inherited PATH (for launchd), and a
+// CI runner can have an older node there. EXTRA_PATH comes first: the fake gh/claude (and any
+// fake node) win, then the node running these tests.
+const extraPath = () => [join(dir, "bin"), dirname(process.execPath)].join(delimiter);
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "poller-"));
@@ -88,7 +92,7 @@ function exec({ dry = false, env = {} } = {}) {
     encoding: "utf8",
     env: {
       ...process.env,
-      EXTRA_PATH: join(dir, "bin"),
+      EXTRA_PATH: extraPath(),
       STATE_DIR: join(dir, "state"),
       CLAUDE_WORKFLOW_CONFIG: join(dir, "repos.json"),
       CLAUDE_BG_FLAGS: "",
@@ -1057,7 +1061,7 @@ describe("agent-poller session cap", () => {
 describe("agent-poller entrypoint", () => {
   it("logs and exits 1 when node is older than 24", () => {
     configure();
-    // EXTRA_PATH comes first on PATH, so this fake node wins.
+    // The fake bin dir is first on PATH, ahead of the runner's node, so this fake node wins.
     writeFileSync(
       join(dir, "bin", "node"),
       `#!/usr/bin/env bash\nif [ "$1" = "--version" ]; then echo v22.9.0; else echo 22; fi\n`,
@@ -1079,7 +1083,7 @@ describe("agent-poller entrypoint", () => {
       encoding: "utf8",
       env: {
         ...process.env,
-        EXTRA_PATH: join(dir, "bin"),
+        EXTRA_PATH: extraPath(),
         STATE_DIR: join(dir, "state"),
         CLAUDE_WORKFLOW_CONFIG: join(dir, "repos.json"),
       },
