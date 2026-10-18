@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Table-driven test for guard-git.sh. Usage: .claude/hooks/test-guard-git.sh
+# Table-driven test for guard-git.sh. Usage: plugins/ticket-workflow/hooks/test-guard-git.sh
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -51,6 +51,36 @@ check deny "$F" 'echo $(git push origin main)'
 check deny "$F" 'git add . && git push origin main'
 check deny "$F" 'gh pr merge 7 --squash'
 check deny "$F" 'gh api -X PUT repos/o/r/pulls/7/merge'
+check deny "$F" '/opt/homebrew/bin/gh pr merge 7 --squash'
+check deny "$F" 'gh -R o/r pr merge 7'
+check deny "$F" 'gh --repo=o/r pr merge 7'
+check deny "$F" 'gh --repo o/r pr merge 7'
+check deny "$F" 'B=main; git push origin $B'
+check deny "$F" "git push origin HEAD:ma''in"
+check deny "$F" 'git push origin HEAD:$(echo main)'
+check deny "$F" 'git push origin HEAD:`echo main`'
+check deny "$F" 'git -c alias.p=push p origin HEAD:main'
+check deny "$F" 'git --config alias.p=push p origin HEAD:main'
+check deny "$F" '/usr/bin/git push origin main'
+check deny "$F" 'gh -R o/r api -X PUT repos/o/r/pulls/7/merge'
+
+# allowed (hardening must not over-match)
+check allow "$F" 'gh -R o/r pr view 7'
+check allow "$F" '/opt/homebrew/bin/gh pr create --title x'
+check allow "$F" '/usr/bin/git push origin issue-7-feature'
+
+check allow "$F" 'git commit -m "Harden git push guard"'
+check allow "$F" 'gh pr create --title "Fix git push check" --body x'
+check allow "$F" 'FOO=1 git push origin issue-7-feature'
+check deny "$F" 'git -c "alias.p=push" p origin HEAD:main'
+check deny "$F" "git -c 'alias.p=!git push' p origin HEAD:main"
+check deny "$F" 'git --config-env=alias.p=X p origin HEAD:main'
+check deny "$F" 'GIT_CONFIG_KEY_0=alias.p GIT_CONFIG_VALUE_0=push GIT_CONFIG_COUNT=1 git p origin HEAD:main'
+check deny "$F" 'git push origin HEAD:ma\\in'
+check deny "$F" 'git push origin HEAD:ma{,}in'
+check deny "$F" 'FOO=1 git push origin HEAD:ma{,}in'
+check deny "$F" 'gh pr -R o/r merge 7'
+check deny "$F" "gh api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:1}){clientMutationId}}'"
 
 [ $fail -eq 0 ] && echo "guard-git: all cases pass"
 exit $fail

@@ -54,5 +54,5 @@ CI must pass before the human reviews. Check with `gh pr checks`; if it fails, f
 Tell the human the PR is ready for review. Their feedback is handled in a separate session with the `address-feedback` skill. If you cannot finish, comment what was done on the issue, remove `in-progress`, and add `blocked` with the reason.
 
 ## Hard rules
-- Push only your own `issue-N-*` branch. Never push to `main`/`master`, force-push, or merge: the project's PreToolUse git guard hook enforces this (see this plugin's README), and a denial means stop, not work around.
+- Push only your own `issue-N-*` branch. Never push to `main`/`master`, force-push, or merge: the plugin's PreToolUse git guard hook (plus the project's deny rules) enforces this, and a denial means stop, not work around.
 - Humans merge.
