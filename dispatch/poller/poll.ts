@@ -1,230 +1,107 @@
-// One repo's poll: reconcile tracked sessions, launch ready tickets, resolve PR conflicts.
-// Any throw aborts this repo only (main.ts logs it and moves on).
+// One repo's poll: reconcile the sessions it launched, launch ready tickets, then resolve
+// conflicting agent PRs. Any throw aborts this repo only (main.ts logs it and moves on).
+import type { RepoConfig } from "./config.ts";
 import {
   alreadyAttempted,
   atCap,
-  conflictIssueEligible,
-  conflictSessionGate,
-  conflictStillOpen,
-  epoch,
+  conflictIssueVerdict,
+  conflictRemains,
+  conflictVerdict,
   handedOff,
-  parseStateKey,
-  prCandidate,
-  reconcileDecision,
+  reconcileAction,
   sessionState,
-  stateKeys,
-  ticketLaunchDecision,
+  ticketPrompt,
+  ticketVerdict,
 } from "./decide.ts";
 import type { PollerIo } from "./io.ts";
-import { field, isAbsent, jqRaw } from "./jq.ts";
-import type {
-  ConflictAttempts,
-  IssueRow,
-  IssueView,
-  LaunchedEntry,
-  LaunchedState,
-  PrRow,
-  PrView,
-  RepoRun,
-  RunContext,
-} from "./types.ts";
+import type { Issue, RepoState, Session } from "./schemas.ts";
 
-/** Everything one repo's poll works with, passed explicitly to each phase and helper. */
-export interface RepoPoll {
+/** A configured repo with its combined launch flags. */
+export type RepoRun = RepoConfig & { flags: string[] };
+
+/** Shared by every repo in one run. */
+export interface RunContext {
+  sessions: Session[];
+  maxSessions: number;
+  /** Live sessions per session prefix: counted before the first repo, bumped by each launch (dry-run too). */
+  live: Map<string, number>;
+}
+
+interface RepoPoll {
   repo: RepoRun;
-  ctx: RunContext;
+  state: RepoState;
+  run: RunContext;
   io: PollerIo;
-  /** Logs with this repo's `[prefix] `. */
   log: (message: string) => void;
+  /**
+   * Tickets reconcile failed in this poll. They are never relaunched in the same poll: the
+   * agent-failed label may not have been applied (a failed edit, or a dry run).
+   */
+  failed: Set<number>;
 }
 
-/** Rows of a gh list result; anything that is not a JSON array yields no rows. */
-function parseRows(text: string): unknown[] {
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+export function pollRepo(repo: RepoRun, state: RepoState, run: RunContext, io: PollerIo): void {
+  const log = (m: string) => io.log(`[${repo.sessionPrefix}] ${m}`);
+  const p: RepoPoll = { repo, state, run, io, log, failed: new Set() };
+  reconcile(p);
+  launchTickets(p);
+  resolveConflicts(p);
 }
 
-/** Parsed JSON, or {} when it does not parse (where jq's failure was swallowed in a test). */
-function parseOrEmpty(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return {};
-  }
-}
-
-/**
- * A tracked entry's launch time. Without a usable `at` the age is unknown, so the repo is
- * aborted rather than guessing (failing the ticket, or waiting on it forever).
- */
-function entryTime(at: unknown, key: string): number {
-  const t = epoch(at);
-  if (t === undefined) throw new Error(`launched.json entry ${key} has no launch time (at)`);
-  return t;
-}
-
-// --- Per-repo helpers. State writes are no-ops in dry-run. ------------------------
-
-function setEntry(p: RepoPoll, state: LaunchedState, key: string, entry: LaunchedEntry): void {
-  if (p.ctx.dry) return;
-  state[key] = entry;
-  p.io.writeState(p.repo.prefix, state);
-}
-
-function deleteEntry(p: RepoPoll, state: LaunchedState, key: string): void {
-  if (p.ctx.dry) return;
-  delete state[key];
-  p.io.writeState(p.repo.prefix, state);
-}
-
-function setAttempt(
-  p: RepoPoll,
-  attempts: ConflictAttempts,
-  n: string,
-  pr: string,
-  mainSha: string,
-): void {
-  if (p.ctx.dry) return;
-  attempts[n] = { pr, mainSha };
-  p.io.writeAttempts(p.repo.prefix, attempts);
-}
-
-/** A side-effect gh command, or its `[dry-run]` log line. */
-function runGh(p: RepoPoll, args: string[]): void {
-  if (p.ctx.dry) p.log(`[dry-run] gh ${args.join(" ")}`);
-  else p.io.ghRun(args);
-}
-
-/** `|| true`: this step may fail without aborting the repo. */
-function tolerate(fn: () => void): void {
-  try {
-    fn();
-  } catch {
-    // ignored on purpose
-  }
-}
-
-function failIssue(p: RepoPoll, n: string, name: string, reason: string): void {
-  const repo = p.repo.repo;
-  p.log(`#${n}: ${reason} -> agent-failed`);
-  tolerate(() =>
-    runGh(p, ["issue", "edit", n, "--repo", repo, "--add-label", "agent-failed", "--remove-label", "in-progress"]),
-  );
-  runGh(p, [
-    "issue", "comment", n, "--repo", repo, "--body",
-    `Background session \`${name}\` ended without finishing: ${reason}. See \`claude logs ${name}\` or \`claude agents\`. To retry, remove \`agent-failed\` and add \`ready\`.`,
-  ]);
-}
-
-function failConflict(p: RepoPoll, n: string, name: string, pr: string, reason: string): void {
-  const repo = p.repo.repo;
-  p.log(`#${n}: ${reason} (PR #${pr}) -> agent-failed`);
-  const body = `Conflict-resolution session \`${name}\` ended without resolving the conflict on PR #${pr}: ${reason}. See \`claude logs ${name}\`. It will not be retried against the same main; remove \`agent-failed\` to allow a retry once main moves.`;
-  tolerate(() => runGh(p, ["issue", "edit", n, "--repo", repo, "--add-label", "agent-failed"]));
-  tolerate(() => runGh(p, ["pr", "comment", pr, "--repo", repo, "--body", body]));
-  runGh(p, ["issue", "comment", n, "--repo", repo, "--body", body]);
-}
-
-function capReached(p: RepoPoll): boolean {
-  let total = 0;
-  for (const c of p.ctx.launches.values()) total += c;
-  return atCap({
-    repoMax: p.repo.maxSessions,
-    repoLive: p.repo.repoLive,
-    repoLaunches: p.ctx.launches.get(p.repo.prefix) ?? 0,
-    globalLive: p.ctx.globalLive,
-    totalLaunches: total,
-    max: p.ctx.maxSessions,
-  });
-}
-
-function flagsText(p: RepoPoll): string {
-  return p.repo.flags.join(" ") || "<none>";
-}
-
-/** Starts `claude --bg` (or logs it in dry-run) and counts the launch either way. */
-function startSession(p: RepoPoll, name: string, prompt: string): void {
-  const { repo, ctx } = p;
-  if (ctx.dry) {
-    p.log(`[dry-run] (cd ${repo.dir} && claude --bg --name ${name} ${repo.flags.join(" ")} "${prompt}")`);
-  } else {
-    p.io.launch(repo.dir, ["--bg", "--name", name, ...repo.flags, prompt]);
-  }
-}
-
-function noteLaunch(p: RepoPoll): void {
-  p.ctx.launches.set(p.repo.prefix, (p.ctx.launches.get(p.repo.prefix) ?? 0) + 1);
-}
-
-// --- Phases --------------------------------------------------------------------------
-
-/** Fails or clears sessions this poller launched earlier. */
-export function reconcile(p: RepoPoll, state: LaunchedState): void {
-  const { repo, ctx, io, log } = p;
+/** Fails or clears the sessions this poller launched earlier. */
+function reconcile(p: RepoPoll): void {
+  const { repo, state, io, log } = p;
   const now = io.now();
-  for (const key of stateKeys(state)) {
-    const { n, conflict } = parseStateKey(key);
-    const entry = state[key];
-    const pr = conflict ? jqRaw(field(entry, "pr")) : "";
-    const name = jqRaw(field(entry, "name"));
-    const age = now - entryTime(field(entry, "at"), key);
-    const st = sessionState(ctx.sessions, name);
-    log(`#${n}: ${name} state=${st || "<none>"}`);
-    const fail = (reason: string) =>
-      conflict ? failConflict(p, n, name, pr, reason) : failIssue(p, n, name, reason);
+  for (const [key, entry] of Object.entries(state.launched)) {
+    const conflict = key.startsWith("conflict-");
+    const n = Number(conflict ? key.slice("conflict-".length) : key);
+    const pr = conflict ? Number(entry.pr) : undefined;
+    const st = sessionState(p.run.sessions, entry.name);
+    log(`#${n}: ${entry.name} state=${st ?? "<none>"}`);
 
-    const decision = reconcileDecision(st, age);
-    if (decision.kind === "wait" || decision.kind === "leave") continue;
-    if (decision.kind === "fail") {
-      fail(decision.reason);
-    } else if (conflict) {
-      // A failing `gh pr view` aborts the repo; output that does not parse counts as
-      // not OPEN+CONFLICTING, as the original jq test did.
-      const view = parseOrEmpty(
-        io.gh(["pr", "view", pr, "--repo", repo.repo, "--json", "state,mergeable"]),
-      ) as PrView;
-      if (conflictStillOpen(view)) fail("session finished but the conflict remains");
-    } else {
-      const issue = JSON.parse(
-        io.gh(["issue", "view", n, "--repo", repo.repo, "--json", "state,labels"]),
-      ) as IssueView;
-      if (!handedOff(issue)) fail("session finished but the ticket was not handed off");
-    }
-    deleteEntry(p, state, key);
+    const next = reconcileAction(st, now - entry.at);
+    if (next.action === "keep") continue;
+    const failure = next.action === "fail" ? next.reason : finishedFailure(p, n, pr);
+    if (failure !== undefined && pr !== undefined) failConflict(p, n, entry.name, pr, failure);
+    else if (failure !== undefined) failTicket(p, n, entry.name, failure);
+    delete state.launched[key];
+    io.saveState(repo.sessionPrefix, state);
   }
+}
+
+/** Why a finished session failed (its ticket was not handed off, or its PR still conflicts), if it did. */
+function finishedFailure(p: RepoPoll, n: number, conflictPr: number | undefined): string | undefined {
+  if (conflictPr !== undefined) {
+    const pr = p.io.viewPr(p.repo.repo, conflictPr);
+    return conflictRemains(pr) ? "session finished but the conflict remains" : undefined;
+  }
+  const issue = p.io.viewIssue(p.repo.repo, n);
+  return handedOff(issue) ? undefined : "session finished but the ticket was not handed off";
 }
 
 /** Launches a session per ready ticket, up to the caps. */
-export function launchTickets(p: RepoPoll, state: LaunchedState): void {
-  const { repo, io, log } = p;
-  const rows = parseRows(
-    io.gh([
-      "issue", "list", "--repo", repo.repo, "--state", "open", "--label", "agent-ok",
-      "--limit", "50", "--json", "number,author,labels",
-    ]),
-  );
-  for (const row of rows) {
-    const d = ticketLaunchDecision(row as IssueRow, {
-      owner: repo.owner,
-      prefix: repo.prefix,
-      launched: state,
-    });
-    if (d.kind === "skip") {
-      if (d.log) log(d.log);
+function launchTickets(p: RepoPoll): void {
+  const { repo, state, io, log } = p;
+  for (const issue of io.listIssues(repo.repo)) {
+    const verdict = ticketVerdict(issue, repo.owner, state.launched);
+    if (!verdict.ok) {
+      if (verdict.log) log(verdict.log);
+      continue;
+    }
+    const n = issue.number;
+    if (p.failed.has(n)) {
+      log(`#${n}: failed earlier in this poll; not relaunching`);
       continue;
     }
     if (capReached(p)) {
-      log(`deferred #${d.n}: at session cap`);
+      log(`deferred #${n}: at session cap`);
       continue;
     }
-    log(`#${d.n}: launching ${d.name} (flags: ${flagsText(p)})`);
-    startSession(p, d.name, `/ticket-workflow:work-ticket ${d.arg}`);
-    setEntry(p, state, d.n, { name: d.name, at: io.now() });
-    noteLaunch(p);
+    const name = `${repo.sessionPrefix}-${n}`;
+    log(`#${n}: launching ${name} (flags: ${flagsText(repo)})`);
+    start(p, name, ticketPrompt(issue));
+    state.launched[n] = { name, at: io.now() };
+    io.saveState(repo.sessionPrefix, state);
   }
 }
 
@@ -232,83 +109,107 @@ export function launchTickets(p: RepoPoll, state: LaunchedState): void {
  * Launches `<prefix>-N-conflict` for same-repo, owner-authored `issue-N-*` PRs that conflict
  * with main, at most once per main SHA. Detection is plain gh (no model tokens).
  */
-export function resolveConflicts(p: RepoPoll, state: LaunchedState): void {
-  const { repo, ctx, io, log } = p;
-  const rows = parseRows(
-    io.gh([
-      "pr", "list", "--repo", repo.repo, "--state", "open", "--limit", "100", "--json",
-      "number,headRefName,mergeable,mergeStateStatus,isCrossRepository,author",
-    ]),
-  );
-  // Both read lazily: only a PR that reaches the attempt check needs them.
-  let mainSha = "";
-  let attempts: ConflictAttempts | undefined;
-  for (const row of rows) {
-    const c = prCandidate(row as PrRow, repo.owner);
-    if (c.kind === "skip") {
-      if (c.log) log(c.log);
+function resolveConflicts(p: RepoPoll): void {
+  const { repo, state, io, log } = p;
+  let mainSha: string | undefined; // read once, and only if a PR gets this far
+  for (const pr of io.listPrs(repo.repo)) {
+    const verdict = conflictVerdict(pr, {
+      owner: repo.owner,
+      prefix: repo.sessionPrefix,
+      sessions: p.run.sessions,
+      launched: state.launched,
+    });
+    if (!verdict.ok) {
+      if (verdict.log) log(verdict.log);
       continue;
     }
-    const { n, pr } = c;
-    const gate = conflictSessionGate({
-      n,
-      pr,
-      prefix: repo.prefix,
-      sessions: ctx.sessions,
-      launched: state,
-    });
-    if (gate.kind === "skip") {
-      if (gate.log) log(gate.log);
+    const { n } = verdict;
+    if (p.failed.has(n)) {
+      log(`#${n}: failed earlier in this poll; skipping conflict resolution`);
       continue;
     }
 
-    let issueText: string;
+    let issue: Issue;
     try {
-      issueText = io.gh(["issue", "view", n, "--repo", repo.repo, "--json", "author,labels,state"]);
+      issue = io.viewIssue(repo.repo, n);
     } catch {
       log(`#${n}: cannot read issue; skipping`);
       continue;
     }
-    const eligible = conflictIssueEligible(parseOrEmpty(issueText) as IssueView, n, repo.owner);
-    if (eligible.kind === "skip") {
-      if (eligible.log) log(eligible.log);
+    const issueVerdict = conflictIssueVerdict(issue, n, repo.owner);
+    if (!issueVerdict.ok) {
+      if (issueVerdict.log) log(issueVerdict.log);
       continue;
     }
 
-    if (mainSha === "") {
-      try {
-        const sha = field(JSON.parse(io.gh(["api", `repos/${repo.repo}/commits/main`])), "sha");
-        if (isAbsent(sha)) throw new Error("no sha");
-        mainSha = jqRaw(sha);
-      } catch {
-        log("cannot read main SHA; skipping conflict phase");
-        break;
-      }
+    try {
+      mainSha ??= io.mainSha(repo.repo);
+    } catch {
+      log("cannot read main SHA; skipping conflict phase");
+      return;
     }
-    attempts ??= io.readAttempts(repo.prefix);
-    if (alreadyAttempted(attempts, n, pr, mainSha)) {
-      log(`#${n}: PR #${pr} already attempted against main ${mainSha.slice(0, 7)}; skipping`);
+    if (alreadyAttempted(state.attempts, n, pr.number, mainSha)) {
+      log(`#${n}: PR #${pr.number} already attempted against main ${mainSha.slice(0, 7)}; skipping`);
       continue;
     }
-
     if (capReached(p)) {
-      log(`deferred #${n}: at session cap (conflict resolution for PR #${pr})`);
+      log(`deferred #${n}: at session cap (conflict resolution for PR #${pr.number})`);
       continue;
     }
-    const cname = `${repo.prefix}-${n}-conflict`;
-    log(`#${n}: PR #${pr} conflicts with main; launching ${cname} (flags: ${flagsText(p)})`);
-    startSession(p, cname, `/ticket-workflow:resolve-conflicts ${n}`);
-    setEntry(p, state, `conflict-${n}`, { name: cname, at: io.now(), pr, mainSha });
-    setAttempt(p, attempts, n, pr, mainSha);
-    noteLaunch(p);
+    const name = `${repo.sessionPrefix}-${n}-conflict`;
+    log(`#${n}: PR #${pr.number} conflicts with main; launching ${name} (flags: ${flagsText(repo)})`);
+    start(p, name, `/ticket-workflow:resolve-conflicts ${n}`);
+    state.launched[`conflict-${n}`] = { name, at: io.now(), pr: String(pr.number), mainSha };
+    state.attempts[n] = { pr: String(pr.number), mainSha };
+    io.saveState(repo.sessionPrefix, state);
   }
 }
 
-/** Polls one repo. Its state files must exist (main.ts creates them, even in dry-run). */
-export function pollRepo(repo: RepoRun, ctx: RunContext, io: PollerIo): void {
-  const p: RepoPoll = { repo, ctx, io, log: (message) => io.log(`[${repo.prefix}] ${message}`) };
-  const state = io.readState(repo.prefix);
-  reconcile(p, state);
-  launchTickets(p, state);
-  resolveConflicts(p, state);
+function capReached(p: RepoPoll): boolean {
+  return atCap(p.run.live, p.repo.sessionPrefix, {
+    repoMax: p.repo.maxSessions,
+    globalMax: p.run.maxSessions,
+  });
+}
+
+function start(p: RepoPoll, name: string, prompt: string): void {
+  p.io.launch(p.repo.dir, name, p.repo.flags, prompt);
+  p.run.live.set(p.repo.sessionPrefix, (p.run.live.get(p.repo.sessionPrefix) ?? 0) + 1);
+}
+
+function flagsText(repo: RepoRun): string {
+  return repo.flags.join(" ") || "<none>";
+}
+
+/** A best-effort step: a failure is logged and the reconcile carries on. */
+function tryTo(p: RepoPoll, what: string, step: () => void): void {
+  try {
+    step();
+  } catch (err) {
+    p.log(`could not ${what}: ${(err as Error).message}`);
+  }
+}
+
+// The issue comment is the step that must succeed: if it throws, the entry stays tracked and
+// the failure is reported again on the next poll.
+function failTicket(p: RepoPoll, n: number, name: string, reason: string): void {
+  const repo = p.repo.repo;
+  p.failed.add(n);
+  p.log(`#${n}: ${reason} -> agent-failed`);
+  tryTo(p, `label #${n}`, () => p.io.editLabels(repo, n, ["agent-failed"], ["in-progress"]));
+  p.io.commentOnIssue(
+    repo,
+    n,
+    `Background session \`${name}\` ended without finishing: ${reason}. See \`claude logs ${name}\` or \`claude agents\`. To retry, remove \`agent-failed\` and add \`ready\`.`,
+  );
+}
+
+function failConflict(p: RepoPoll, n: number, name: string, pr: number, reason: string): void {
+  const repo = p.repo.repo;
+  p.failed.add(n);
+  p.log(`#${n}: ${reason} (PR #${pr}) -> agent-failed`);
+  const body = `Conflict-resolution session \`${name}\` ended without resolving the conflict on PR #${pr}: ${reason}. See \`claude logs ${name}\`. It will not be retried against the same main; remove \`agent-failed\` to allow a retry once main moves.`;
+  tryTo(p, `label #${n}`, () => p.io.editLabels(repo, n, ["agent-failed"], []));
+  tryTo(p, `comment on PR #${pr}`, () => p.io.commentOnPr(repo, pr, body));
+  p.io.commentOnIssue(repo, n, body);
 }

@@ -10,6 +10,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -37,6 +38,12 @@ beforeEach(() => {
     `#!/usr/bin/env bash\necho "poller $*" >>"${p("order.log")}"\necho "WOULD LAUNCH app-1"\necho "ENV bg=\${CLAUDE_BG_FLAGS-unset} bypass=\${CLAUDE_ALLOW_BYPASS_PERMISSIONS-unset} max=\${CLAUDE_MAX_SESSIONS-unset} keep=\${KEEP_ME-unset}"\n[ -f "${p("poller-busy")}" ] && echo "another run is active (pid 1); exiting"\n[ -f "${p("poller-fail")}" ] && exit 3\nexit 0\n`,
   );
   chmodSync(p("poller"), 0o755);
+  // Fake npm: records its args and working dir, fails if npm-fail exists.
+  writeFileSync(
+    p("npm"),
+    `#!/usr/bin/env bash\necho "npm $*" >>"${p("order.log")}"\npwd -P >>"${p("npm.cwd")}"\n[ -f "${p("npm-fail")}" ] && exit 1\nexit 0\n`,
+  );
+  chmodSync(p("npm"), 0o755);
   // The installer derives the clone from its own path and refuses worktrees, so run a copy.
   mkdirSync(p("clone", "dispatch", "launchd"), { recursive: true });
   copyFileSync(
@@ -66,6 +73,7 @@ const runWith = (opts, ...args) =>
       STATE_DIR: p("state"),
       CLAUDE_WORKFLOW_CONFIG: p("cfg", "repos.json"),
       POLLER: p("poller"),
+      NPM: p("npm"),
       ...opts.env,
     },
   });
@@ -154,6 +162,7 @@ describe("install-launchd.sh", () => {
           ...process.env,
           CLAUDE_WORKFLOW_CONFIG: p("cfg", "repos.json"),
           LAUNCHCTL: p("launchctl"),
+          NPM: p("npm"),
         },
       },
     );
@@ -173,7 +182,7 @@ describe("install-launchd.sh", () => {
       assert.match(r.stdout, /WOULD LAUNCH app-1/);
       assert.match(r.stdout, /Install and start polling\? \[y\/N\]/);
       const o = order();
-      assert.equal(o[0], "poller --dry-run");
+      assert.deepEqual(o.slice(0, 2), ["npm ci", "poller --dry-run"]);
       assert.ok(o.findIndex((l) => l.startsWith("launchctl bootstrap")) > 0);
       assert.ok(existsSync(p("agents", `${LABEL}.plist`)));
     });
@@ -193,12 +202,34 @@ describe("install-launchd.sh", () => {
       });
     }
 
+    it("runs npm ci in the clone before the dry run", () => {
+      const r = run("install", "--yes");
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(order()[0], "npm ci");
+      const cwd = readFileSync(p("npm.cwd"), "utf8").trim();
+      assert.equal(cwd, realpathSync(p("clone")));
+    });
+
+    it("aborts with nothing installed (and no dry run) when npm ci fails", () => {
+      writeFileSync(p("npm-fail"), "");
+      const r = run("install", "--yes");
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /npm ci failed/);
+      assert.ok(!order().some((l) => l.startsWith("poller")));
+      notInstalled();
+    });
+
+    it("uninstall does not run npm", () => {
+      assert.equal(run("uninstall").status, 0);
+      assert.equal(existsSync(p("npm.cwd")), false);
+    });
+
     it("--yes skips the prompt but still runs the dry run first", () => {
       const r = run("install", "--yes");
       assert.equal(r.status, 0, r.stderr);
       assert.match(r.stdout, /WOULD LAUNCH app-1/);
       assert.doesNotMatch(r.stdout, /\[y\/N\]/);
-      assert.equal(order()[0], "poller --dry-run");
+      assert.deepEqual(order().slice(0, 2), ["npm ci", "poller --dry-run"]);
       assert.ok(order().some((l) => l.startsWith("launchctl bootstrap")));
     });
 
@@ -337,6 +368,7 @@ describe("install-launchd.sh", () => {
             STATE_DIR: p("state"),
             CLAUDE_WORKFLOW_CONFIG: p("cfg", "repos.json"),
             POLLER: p("poller"),
+            NPM: p("npm"),
             ...env,
           },
         },

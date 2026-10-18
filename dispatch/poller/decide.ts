@@ -1,285 +1,153 @@
-// Pure decisions: session state, caps, bypass flags, reconcile, ticket launch and conflict
-// eligibility. Log lines are returned without the timestamp or `[prefix] `.
-import {
-  authorLogin,
-  field,
-  jqCompare,
-  jqRaw,
-  labelNames,
-} from "./jq.ts";
-import type {
-  ConflictAttempts,
-  IssueRow,
-  IssueView,
-  LaunchedState,
-  PrRow,
-  PrView,
-} from "./types.ts";
+// Pure decisions: session states, caps, bypass flags, reconcile outcomes, and which tickets
+// and PRs get a session. Skip log lines are returned without the timestamp or `[prefix] `.
+import type { Attempts, Issue, IssueRow, Launched, PrRow, PrStatus, Session } from "./schemas.ts";
 
 /** An unlisted session younger than this may just not be listed yet. */
 export const LISTING_GRACE_SEC = 600;
 
-/**
- * A launch time from launched.json as epoch seconds: a number, or a string of digits (shell
- * arithmetic accepted both). Anything else is undefined.
- */
-export function epoch(at: unknown): number | undefined {
-  if (typeof at === "number") return at;
-  if (typeof at === "string" && /^[0-9]+$/.test(at)) return Number(at);
-  return undefined;
-}
+const ENDED = ["done", "failed", "stopped"];
+const HANDED_OFF = ["needs-review", "blocked", "agent-failed"];
+const BYPASS_FLAGS = [
+  "--dangerously-skip-permissions",
+  "--allow-dangerously-skip-permissions",
+  "--permission-mode=bypassPermissions",
+];
 
-const ENDED = new Set(["done", "failed", "stopped"]);
+/** Go ahead (with any extra data), or skip, with a log line when the skip is worth reporting. */
+export type Verdict<T = object> = ({ ok: true } & T) | { ok: false; log?: string };
 
-/** State of the newest session (by startedAt) with that name, or "" if there is none. */
-export function sessionState(sessions: readonly unknown[], name: string): string {
-  const matching = sessions.filter((s) => field(s, "name") === name);
-  if (matching.length === 0) return "";
-  const newest = matching
-    .map((s, i) => ({ s, i }))
-    .sort(
-      (a, b) =>
-        jqCompare(field(a.s, "startedAt"), field(b.s, "startedAt")) || a.i - b.i,
-    )
-    .at(-1)?.s;
-  const st = field(newest, "state");
-  if (st === undefined || st === null || st === false) return "";
-  return jqRaw(st);
-}
-
-/**
- * Entries whose session is not done/failed/stopped, plus unlisted entries younger than
- * the grace period (a missing `at` counts as 0, so those are not live).
- */
-export function liveCount(
-  state: Record<string, unknown>,
-  sessions: readonly unknown[],
-  now: number,
-): number {
-  let count = 0;
-  for (const entry of Object.values(state)) {
-    const name = field(entry, "name");
-    if (typeof name !== "string" || name === "") continue;
-    const at = field(entry, "at");
-    const st = sessionState(sessions, name);
-    if (ENDED.has(st)) continue;
-    if (st === "") {
-      if (now - (epoch(at) ?? 0) < LISTING_GRACE_SEC) count++;
-      continue;
-    }
-    count++;
+/** State of the newest listed session with this name, or undefined when none is listed. */
+export function sessionState(sessions: readonly Session[], name: string): string | undefined {
+  let newest: Session | undefined;
+  for (const s of sessions) {
+    if (s.name === name && (newest === undefined || s.startedAt >= newest.startedAt)) newest = s;
   }
-  return count;
+  return newest?.state;
 }
 
-/** True when starting another session would hit the repo's or the global cap. */
-export function atCap(opts: {
-  repoMax?: number;
-  repoLive: number;
-  repoLaunches: number;
-  globalLive: number;
-  totalLaunches: number;
-  max: number;
-}): boolean {
-  if (
-    opts.repoMax !== undefined &&
-    opts.repoLive + opts.repoLaunches >= opts.repoMax
-  ) {
-    return true;
-  }
-  return opts.globalLive + opts.totalLaunches >= opts.max;
+/** Tracked sessions still taking a slot: listed and not ended, or unlisted but launched within the grace period. */
+export function liveCount(launched: Launched, sessions: readonly Session[], now: number): number {
+  return Object.values(launched).filter(({ name, at }) => {
+    const state = sessionState(sessions, name);
+    return state === undefined ? now - at < LISTING_GRACE_SEC : !ENDED.includes(state);
+  }).length;
+}
+
+/**
+ * Listed sessions named `<prefix>-...` that have not ended: the live count for a repo whose
+ * launched.json cannot be read. It may overcount (any session with that name), never under.
+ */
+export function liveByPrefix(sessions: readonly Session[], prefix: string): number {
+  return sessions.filter((s) => s.name?.startsWith(`${prefix}-`) && !ENDED.includes(s.state)).length;
+}
+
+/** True when another session for `prefix` would exceed its repo cap or the global cap. */
+export function atCap(
+  live: ReadonlyMap<string, number>,
+  prefix: string,
+  caps: { repoMax?: number; globalMax: number },
+): boolean {
+  let total = 0;
+  for (const count of live.values()) total += count;
+  const repoLive = live.get(prefix) ?? 0;
+  return (caps.repoMax !== undefined && repoLive >= caps.repoMax) || total >= caps.globalMax;
 }
 
 /** True if any flag grants bypassPermissions. */
 export function hasBypassFlag(flags: readonly string[]): boolean {
-  let prev = "";
-  for (const f of flags) {
-    if (
-      f === "--dangerously-skip-permissions" ||
-      f === "--allow-dangerously-skip-permissions" ||
-      f === "--permission-mode=bypassPermissions"
-    ) {
-      return true;
-    }
-    if (f === "bypassPermissions" && prev === "--permission-mode") return true;
-    prev = f;
-  }
-  return false;
+  return flags.some(
+    (f, i) =>
+      BYPASS_FLAGS.includes(f) || (f === "bypassPermissions" && flags[i - 1] === "--permission-mode"),
+  );
 }
 
-/** launched.json keys in plain string order (as jq `keys`), not JS integer-key order. */
-export function stateKeys(state: Record<string, unknown>): string[] {
-  return Object.keys(state).sort();
-}
+export type ReconcileAction =
+  | { action: "keep" }
+  | { action: "fail"; reason: string }
+  | { action: "check" };
 
-/** `conflict-N` -> ticket N of a conflict session; any other key is a ticket number. */
-export function parseStateKey(key: string): { n: string; conflict: boolean } {
-  if (key.startsWith("conflict-")) {
-    return { n: key.slice("conflict-".length), conflict: true };
-  }
-  return { n: key, conflict: false };
-}
-
-export type ReconcileDecision =
-  | { kind: "wait" }
-  | { kind: "fail"; reason: string }
-  | { kind: "check" }
-  | { kind: "leave" };
-
-/**
- * What to do with a tracked session given its state ("" when unlisted) and age in seconds.
- * "check" means it finished: look at the ticket or PR to see if it handed off.
- */
-export function reconcileDecision(st: string, ageSec: number): ReconcileDecision {
-  if (st === "") {
+/** What to do with a tracked session; "check" means it finished: see whether it handed off. */
+export function reconcileAction(state: string | undefined, ageSec: number): ReconcileAction {
+  if (state === undefined) {
     return ageSec < LISTING_GRACE_SEC
-      ? { kind: "wait" }
-      : { kind: "fail", reason: "no session found" };
+      ? { action: "keep" }
+      : { action: "fail", reason: "no session found" };
   }
-  if (st === "failed" || st === "stopped") {
-    return { kind: "fail", reason: `session ${st}` };
-  }
-  if (st === "done") return { kind: "check" };
-  return { kind: "leave" };
+  if (state === "failed" || state === "stopped") return { action: "fail", reason: `session ${state}` };
+  if (state === "done") return { action: "check" };
+  return { action: "keep" };
 }
 
 /** A finished ticket session handed off if the issue is closed or labelled for a human. */
-export function handedOff(issue: IssueView): boolean {
-  if (jqRaw(field(issue, "state")) === "CLOSED") return true;
-  const labels = labelNames(issue);
-  return ["needs-review", "blocked", "agent-failed"].some((l) =>
-    labels.includes(l),
-  );
+export function handedOff(issue: Issue): boolean {
+  return issue.state === "CLOSED" || issue.labels.some((l) => HANDED_OFF.includes(l));
 }
 
 /** A finished conflict session failed if its PR is still open and conflicting. */
-export function conflictStillOpen(pr: PrView): boolean {
-  return (
-    jqRaw(field(pr, "state")) === "OPEN" &&
-    jqRaw(field(pr, "mergeable")) === "CONFLICTING"
-  );
+export function conflictRemains(pr: PrStatus): boolean {
+  return pr.state === "OPEN" && pr.mergeable === "CONFLICTING";
 }
 
-export type Skip = { kind: "skip"; log?: string };
-
-export type TicketDecision =
-  | Skip
-  | { kind: "launch"; n: string; name: string; arg: string };
-
-/** Whether an `agent-ok` issue row should get a session (before the cap check). */
-export function ticketLaunchDecision(
-  row: IssueRow,
-  opts: { owner: string; prefix: string; launched: LaunchedState },
-): TicketDecision {
-  const n = jqRaw(field(row, "number"));
-  const labels = labelNames(row);
-  const has = (l: string) => labels.includes(l);
-  if (has("in-progress") || has("blocked") || has("agent-failed")) {
-    return { kind: "skip" };
+/** Whether an open `agent-ok` issue gets a ticket session (before the cap check). */
+export function ticketVerdict(issue: IssueRow, owner: string, launched: Launched): Verdict {
+  const has = (label: string) => issue.labels.includes(label);
+  if (!has("ready") || has("in-progress") || has("blocked") || has("agent-failed")) return { ok: false };
+  if (issue.author.login !== owner) {
+    return { ok: false, log: `#${issue.number}: author ${issue.author.login} is not ${owner}; skipping` };
   }
-  if (!has("ready")) return { kind: "skip" };
-  const author = authorLogin(row);
-  if (author !== opts.owner) {
-    return {
-      kind: "skip",
-      log: `#${n}: author ${author} is not ${opts.owner}; skipping`,
-    };
-  }
-  if (Object.hasOwn(opts.launched, n)) return { kind: "skip" };
-  return {
-    kind: "launch",
-    n,
-    name: `${opts.prefix}-${n}`,
-    arg: has("skip-plan") ? `${n} auto` : n,
-  };
+  if (String(issue.number) in launched) return { ok: false };
+  return { ok: true };
 }
 
-export type PrCandidate = Skip | { kind: "candidate"; n: string; pr: string };
-
-/** First conflict filter: an `issue-N-*` branch, same repo, by the owner, CONFLICTING. */
-export function prCandidate(row: PrRow, owner: string): PrCandidate {
-  const pr = jqRaw(field(row, "number"));
-  const branch = field(row, "headRefName");
-  const match =
-    typeof branch === "string" ? /^issue-([0-9]+)-/.exec(branch) : null;
-  if (!match) return { kind: "skip" };
-  const n = match[1] as string;
-  // Anyone can open a PR from a fork and name its branch issue-N-*: only same-repo PRs
-  // by the owner are resolved. A missing isCrossRepository counts as a fork.
-  if (field(row, "isCrossRepository") !== false) {
-    return { kind: "skip", log: `#${n}: PR #${pr} is from a fork; skipping` };
-  }
-  const prAuthor = authorLogin(row);
-  if (prAuthor !== owner) {
-    return {
-      kind: "skip",
-      log: `#${n}: PR #${pr} author ${prAuthor} is not ${owner}; skipping`,
-    };
-  }
-  const mergeable = jqRaw(field(row, "mergeable"));
-  if (mergeable === "UNKNOWN") {
-    return {
-      kind: "skip",
-      log: `#${n}: PR #${pr} mergeability unknown; retry next poll`,
-    };
-  }
-  if (mergeable !== "CONFLICTING") return { kind: "skip" };
-  return { kind: "candidate", n, pr };
+/** The work-ticket command for an issue; `skip-plan` adds `auto` (no plan sign-off). */
+export function ticketPrompt(issue: IssueRow): string {
+  const auto = issue.labels.includes("skip-plan") ? " auto" : "";
+  return `/ticket-workflow:work-ticket ${issue.number}${auto}`;
 }
 
-/** Session gating: the ticket session owns the branch while active; one conflict session at a time. */
-export function conflictSessionGate(opts: {
-  n: string;
-  pr: string;
-  prefix: string;
-  sessions: readonly unknown[];
-  launched: LaunchedState;
-}): Skip | { kind: "ok" } {
-  const ticket = `${opts.prefix}-${opts.n}`;
+/**
+ * Whether a PR gets a conflict session, before its issue is read: an `issue-N-*` branch in
+ * this repo (anyone can name a fork's branch that way), by the owner, CONFLICTING, while
+ * ticket N's session is not active and no conflict session for N is live or tracked.
+ */
+export function conflictVerdict(
+  pr: PrRow,
+  opts: { owner: string; prefix: string; sessions: readonly Session[]; launched: Launched },
+): Verdict<{ n: number }> {
+  const match = /^issue-([0-9]+)-/.exec(pr.headRefName);
+  if (!match) return { ok: false };
+  const n = Number(match[1]);
+  const at = `#${n}: PR #${pr.number}`;
+  if (pr.isCrossRepository) return { ok: false, log: `${at} is from a fork; skipping` };
+  if (pr.author.login !== opts.owner) {
+    return { ok: false, log: `${at} author ${pr.author.login} is not ${opts.owner}; skipping` };
+  }
+  if (pr.mergeable === "UNKNOWN") return { ok: false, log: `${at} mergeability unknown; retry next poll` };
+  if (pr.mergeable !== "CONFLICTING") return { ok: false };
+
+  const ticket = `${opts.prefix}-${n}`;
   const ticketState = sessionState(opts.sessions, ticket);
   if (ticketState === "working" || ticketState === "blocked") {
-    return {
-      kind: "skip",
-      log: `#${opts.n}: PR #${opts.pr} conflicts but ${ticket} is active; skipping`,
-    };
+    return { ok: false, log: `${at} conflicts but ${ticket} is active; skipping` };
   }
   const conflictState = sessionState(opts.sessions, `${ticket}-conflict`);
-  if (conflictState !== "" && !ENDED.has(conflictState)) return { kind: "skip" };
-  if (Object.hasOwn(opts.launched, `conflict-${opts.n}`)) return { kind: "skip" };
-  return { kind: "ok" };
+  if (conflictState !== undefined && !ENDED.includes(conflictState)) return { ok: false };
+  if (`conflict-${n}` in opts.launched) return { ok: false };
+  return { ok: true, n };
 }
 
 /** The ticket behind a conflicting PR must be open, agent-ok, not agent-failed, by the owner. */
-export function conflictIssueEligible(
-  issue: IssueView,
-  n: string,
-  owner: string,
-): Skip | { kind: "ok" } {
-  if (jqRaw(field(issue, "state")) !== "OPEN") {
-    return {
-      kind: "skip",
-      log: `#${n}: issue is not open; skipping conflict resolution`,
-    };
+export function conflictIssueVerdict(issue: Issue, n: number, owner: string): Verdict {
+  if (issue.state !== "OPEN") return { ok: false, log: `#${n}: issue is not open; skipping conflict resolution` };
+  if (!issue.labels.includes("agent-ok") || issue.labels.includes("agent-failed")) return { ok: false };
+  if (issue.author?.login !== owner) {
+    return { ok: false, log: `#${n}: author is not ${owner}; skipping conflict resolution` };
   }
-  const labels = labelNames(issue);
-  if (!labels.includes("agent-ok")) return { kind: "skip" };
-  if (labels.includes("agent-failed")) return { kind: "skip" };
-  if (authorLogin(issue) !== owner) {
-    return {
-      kind: "skip",
-      log: `#${n}: author is not ${owner}; skipping conflict resolution`,
-    };
-  }
-  return { kind: "ok" };
+  return { ok: true };
 }
 
-/** True if this PR was already tried against this main SHA (compared as strings). */
-export function alreadyAttempted(
-  attempts: ConflictAttempts,
-  n: string,
-  pr: string,
-  mainSha: string,
-): boolean {
-  const last = Object.hasOwn(attempts, n) ? attempts[n] : undefined;
-  return field(last, "pr") === pr && field(last, "mainSha") === mainSha;
+/** True if this PR was already tried against this main SHA. */
+export function alreadyAttempted(attempts: Attempts, n: number, pr: number, mainSha: string): boolean {
+  const last = attempts[String(n)];
+  return last?.pr === String(pr) && last.mainSha === mainSha;
 }

@@ -1,138 +1,117 @@
 // Entry point, run by dispatch/agent-poller.sh: node dispatch/poller/main.ts [--dry-run]
 // Validates the config, takes the lock, fetches sessions once, then polls each repo.
 // A failure in one repo is logged and the others still run; the exit code is then 1.
-import { combinedFlags, expandHome, parseMaxSessions, validateConfig } from "./config.ts";
-import { hasBypassFlag, liveCount } from "./decide.ts";
-import { CommandError, realIo, writeFd } from "./io.ts";
-import type { SystemIo } from "./io.ts";
+import { parseArgs } from "node:util";
+import { launchFlags, loadConfig, parseMaxSessions } from "./config.ts";
+import type { RepoConfig } from "./config.ts";
+import { hasBypassFlag, liveByPrefix, liveCount } from "./decide.ts";
+import { acquireLock, createIo, listSessions, loadState, log, releaseLock } from "./io.ts";
 import { pollRepo } from "./poll.ts";
-import type { RepoConfig, RepoRun, RunContext } from "./types.ts";
+import type { Session } from "./schemas.ts";
 
-type Env = Record<string, string | undefined>;
+const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
-function repoRun(entry: RepoConfig, env: Env, home: string): Omit<RepoRun, "repoLive"> {
-  return {
-    repo: entry.repo,
-    dir: expandHome(entry.dir, home),
-    prefix: entry.sessionPrefix,
-    owner: entry.owner,
-    flags: combinedFlags(env.CLAUDE_BG_FLAGS || "", entry.bgFlags),
-    ...(entry.maxSessions !== undefined ? { maxSessions: entry.maxSessions } : {}),
-  };
+interface RunOptions {
+  stateDir: string;
+  dryRun: boolean;
+  maxSessions: number;
+  /** CLAUDE_BG_FLAGS */
+  envFlags: string | undefined;
+  /** CLAUDE_ALLOW_BYPASS_PERMISSIONS=1 */
+  allowBypass: boolean;
 }
 
-/** Exit status of a failed repo poll: the failing command's, else 1. */
-function failureStatus(err: unknown): number {
-  if (err instanceof CommandError) return err.status;
-  // Not a command failure (the command has already printed its own error): show it.
-  writeFd(2, `poller: ${err instanceof Error ? err.message : String(err)}\n`);
-  return 1;
-}
-
-/** Everything after the lock is held. */
-function pollAll(
-  repos: RepoConfig[],
-  opts: { dry: boolean; maxSessions: number; env: Env; home: string },
-  io: SystemIo,
-): number {
-  // Abort (rather than guess) if we cannot read the session list: a wrong empty
-  // answer would relaunch everything. Fetched once and shared by all repos.
-  let agentsText: string;
+function pollAll(repos: RepoConfig[], opts: RunOptions): number {
+  // Abort (rather than guess) if the session list cannot be read: a wrong empty answer
+  // would relaunch everything.
+  let sessions: Session[];
   try {
-    agentsText = io.claudeAgents();
-  } catch {
-    io.log("claude agents --json failed; aborting");
-    return 1;
-  }
-  let sessions: unknown;
-  try {
-    sessions = JSON.parse(agentsText);
-  } catch {
-    sessions = undefined;
-  }
-  if (!Array.isArray(sessions)) {
-    io.log("unexpected agents output; aborting");
+    sessions = listSessions();
+  } catch (err) {
+    log(`cannot read sessions (${message(err)}); aborting`);
     return 1;
   }
 
-  let globalLive = 0;
-  for (const entry of repos) {
-    globalLive += liveCount(io.readStateForCount(entry.sessionPrefix), sessions, io.now());
+  // A repo whose state cannot be read fails below; for the caps, its live sessions are
+  // counted from the session list by name instead.
+  const now = Math.floor(Date.now() / 1000);
+  const loaded = repos.map((entry) => {
+    try {
+      return { entry, state: loadState(opts.stateDir, entry.sessionPrefix) };
+    } catch (error) {
+      return { entry, error };
+    }
+  });
+  const live = new Map<string, number>();
+  for (const { entry, state } of loaded) {
+    const count = state ? liveCount(state.launched, sessions, now) : liveByPrefix(sessions, entry.sessionPrefix);
+    live.set(entry.sessionPrefix, count);
   }
-  const ctx: RunContext = {
-    dry: opts.dry,
-    maxSessions: opts.maxSessions,
-    globalLive,
-    sessions,
-    launches: new Map(),
-  };
 
+  const io = createIo(opts.stateDir, opts.dryRun);
+  const run = { sessions, maxSessions: opts.maxSessions, live };
   let failures = 0;
-  for (const entry of repos) {
-    const run = repoRun(entry, opts.env, opts.home);
-    const log = (message: string) => io.log(`[${run.prefix}] ${message}`);
-    if (opts.env.CLAUDE_ALLOW_BYPASS_PERMISSIONS !== "1" && hasBypassFlag(run.flags)) {
-      log(
-        `refusing bypass flags (${run.flags.join(" ")}); set CLAUDE_ALLOW_BYPASS_PERMISSIONS=1 to allow; skipping this repo`,
+  for (const { entry, state, error } of loaded) {
+    const repoLog = (m: string) => log(`[${entry.sessionPrefix}] ${m}`);
+    const flags = launchFlags(opts.envFlags, entry.bgFlags);
+    if (!opts.allowBypass && hasBypassFlag(flags)) {
+      repoLog(
+        `refusing bypass flags (${flags.join(" ")}); set CLAUDE_ALLOW_BYPASS_PERMISSIONS=1 to allow; skipping this repo`,
       );
       failures++;
       continue;
     }
-    io.ensureRepoState(run.prefix);
-    const repoLive = liveCount(io.readStateForCount(run.prefix), sessions, io.now());
     try {
-      pollRepo({ ...run, repoLive }, ctx, io);
+      if (!state) throw error;
+      pollRepo({ ...entry, flags }, state, run, io);
     } catch (err) {
-      log(`poll failed (exit ${failureStatus(err)}); continuing with the next repo`);
+      repoLog(`poll failed: ${message(err)}; continuing with the next repo`);
       failures++;
     }
   }
-
-  io.log("done");
+  log("done");
   return failures === 0 ? 0 : 1;
 }
 
-function main(argv: string[], env: Env): number {
+function main(): number {
+  const { values } = parseArgs({ options: { "dry-run": { type: "boolean", default: false } } });
+  const env = process.env;
   const home = env.HOME ?? "";
   const configPath = env.CLAUDE_WORKFLOW_CONFIG || `${home}/.config/claude-workflow/repos.json`;
   const stateDir = env.STATE_DIR || `${home}/.local/state/claude-workflow`;
-  const dry = argv[0] === "--dry-run";
-  const io = realIo(stateDir);
 
-  const max = parseMaxSessions(env.CLAUDE_MAX_SESSIONS);
-  if (!max.ok) {
-    io.log(max.message);
+  let repos: RepoConfig[];
+  let maxSessions: number;
+  try {
+    maxSessions = parseMaxSessions(env.CLAUDE_MAX_SESSIONS);
+    repos = loadConfig(configPath, home);
+  } catch (err) {
+    log(`${message(err)}; aborting`);
     return 1;
   }
-  const config = validateConfig(io.readConfig(configPath), {
-    path: configPath,
-    home,
-    dirExists: io.dirExists,
-  });
-  if (!config.ok) {
-    io.log(config.message);
-    return config.exitCode;
-  }
-
-  const lock = io.acquireLock();
-  if (lock.kind === "busy") {
-    io.log(`another run is active (pid ${lock.pid}); exiting`);
+  if (repos.length === 0) {
+    log(`config ${configPath} has no repos; nothing to do`);
     return 0;
   }
-  const onSignal = (signal: NodeJS.Signals, code: number) => {
-    process.on(signal, () => {
-      io.releaseLock();
-      process.exit(code);
-    });
-  };
-  onSignal("SIGINT", 130);
-  onSignal("SIGTERM", 143);
-  onSignal("SIGHUP", 129);
+
+  // No signal handlers: a signal ends the run at once, and the next run takes over the lock
+  // its gone pid left behind.
+  const lock = acquireLock(stateDir);
+  if (!lock.acquired) {
+    log(`another run is active (pid ${lock.pid}); exiting`);
+    return 0;
+  }
   try {
-    return pollAll(config.repos, { dry, maxSessions: max.value, env, home }, io);
+    return pollAll(repos, {
+      stateDir,
+      dryRun: values["dry-run"],
+      maxSessions,
+      envFlags: env.CLAUDE_BG_FLAGS,
+      allowBypass: env.CLAUDE_ALLOW_BYPASS_PERMISSIONS === "1",
+    });
   } finally {
-    io.releaseLock();
+    releaseLock(stateDir);
   }
 }
 
-process.exitCode = main(process.argv.slice(2), process.env);
+process.exitCode = main();
