@@ -22,7 +22,8 @@ Polls every configured GitHub repo for agent-ready tickets and starts one intera
 | `dir`           | yes      | Local checkout the sessions start in (`~/` is expanded)                        |
 | `sessionPrefix` | yes      | Session name prefix and state dir name; `[A-Za-z0-9_-]+`, unique across repos, case-insensitively |
 | `owner`         | yes      | Only tickets (and, for conflict resolution, PRs) authored by this login are picked up |
-| `bgFlags`       | no       | Extra `claude --bg` flags for this repo, appended after `CLAUDE_BG_FLAGS`      |
+| `bgFlags`       | no       | Extra `claude --bg` flags for this repo, appended after `CLAUDE_BG_FLAGS`; bypass flags are refused (below) |
+| `maxSessions`   | no       | Positive integer: most live sessions for this repo (on top of the global `CLAUDE_MAX_SESSIONS`) |
 
 ```json
 [
@@ -42,7 +43,7 @@ Polls every configured GitHub repo for agent-ready tickets and starts one intera
 ]
 ```
 
-The run aborts non-zero (with a log line, before launching anything) if the file is missing or unreadable, is not an array, an entry lacks a required string field, `repo` is not `owner/name`, `dir` does not exist, or two entries share a `sessionPrefix` (compared case-insensitively). Unique prefixes guarantee session names (`<prefix>-N`) never collide across repos.
+The run aborts non-zero (with a log line, before launching anything) if the file is missing or unreadable, is not an array, an entry lacks a required string field, `repo` is not `owner/name`, `dir` does not exist, `maxSessions` is present but not a positive integer, or two entries share a `sessionPrefix` (compared case-insensitively). Unique prefixes guarantee session names (`<prefix>-N`) never collide across repos.
 
 ### State
 
@@ -58,10 +59,11 @@ Migrating from a single-repo poller: copy its `launched.json` and `conflicts.jso
 
 ### install-launchd.sh
 
-    dispatch/install-launchd.sh [install|uninstall] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]...
+    dispatch/install-launchd.sh [install|uninstall] [--yes] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]...
 
-Installs `~/Library/LaunchAgents/com.askrzypczak.claude-workflow-poller.plist` (from `launchd/`, filled in with this clone's path) and bootstraps it: the poller runs at load and every 3 minutes, logging to `~/Library/Logs/claude-workflow-poller.log`. Rerunning `install` regenerates the plist and reloads it. It refuses to run from a worktree (the plist would point at a path that disappears) or without a config file; start from `repos.example.json`.
+Before writing or starting anything, `install` runs `agent-poller.sh --dry-run`, prints the output and asks `Install and start polling? [y/N]`: the LaunchAgent runs the poller at load, so this is the first look at what would launch. Anything but `y` (or EOF on stdin) exits 1 with nothing written. A failing dry run always aborts, even with `--yes`. Installs `~/Library/LaunchAgents/com.askrzypczak.claude-workflow-poller.plist` (from `launchd/`, filled in with this clone's path) and bootstraps it: the poller runs at load and every 3 minutes, logging to `~/Library/Logs/claude-workflow-poller.log`. Rerunning `install` regenerates the plist and reloads it. It refuses to run from a worktree (the plist would point at a path that disappears) or without a config file; start from `repos.example.json`.
 
+- `--yes`: skip the confirmation question (the dry run is still run and shown), e.g. for scripted reinstalls.
 - `--legacy-label LABEL` (repeatable): boot out and delete an older LaunchAgent, before the new one starts.
 - `--migrate-state DIR PREFIX` (repeatable): copy `launched.json` and `conflicts.json` from an old poller's state dir to `repos/PREFIX/`, skipping files that already exist. `PREFIX` is the `sessionPrefix` whose sessions that poller named (`<PREFIX>-N`).
 - `uninstall` boots out and removes the plist (and any `--legacy-label` jobs).
@@ -76,6 +78,9 @@ Environment:
 - `CLAUDE_WORKFLOW_CONFIG`: config path (above).
 - `STATE_DIR`: state root (above).
 - `CLAUDE_BG_FLAGS`: default extra flags for every `claude --bg`, e.g. `--permission-mode acceptEdits`.
+- `CLAUDE_ALLOW_BYPASS_PERMISSIONS`: set to `1` to allow `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` and `--permission-mode bypassPermissions` (also the `=` form) in the combined flags. Without it a repo with such flags is skipped, logged (`refusing bypass flags ...`) and counted as a failure (non-zero exit); other repos still run.
+- `CLAUDE_MAX_SESSIONS`: positive integer, default `10`. Live sessions are tracked entries in `launched.json` (tickets and conflict sessions) whose session is not `done`, `failed` or `stopped`; unlisted just-launched ones count. The global cap counts across all repos, a repo's `maxSessions` only that repo. At a cap the poller logs `deferred #N: at session cap` and leaves state untouched, so the launch is retried next poll. `--dry-run` applies the same caps. An invalid value aborts the run.
+- The effective flags are logged on every launch line (`flags: ...`, or `<none>`).
 - `EXTRA_PATH`: prepended to `PATH` (the script also adds the fnm default bin dir, `~/.local/bin` and Homebrew, since launchd does not read your shell profile). Used by the tests to inject fake binaries.
 
 Requires `bash` (3.2 compatible), `jq`, `gh` and `claude` on `PATH`.
