@@ -35,7 +35,7 @@ Enter the existing worktree for the PR branch (or create one from the PR's head 
 - Launch the `ticket-workflow:implementer` (tier as agreed; default haiku xhigh) with the fix list.
 - `npm run check`, then `${CLAUDE_PLUGIN_ROOT}/scripts/grg.sh` for any new or changed tests.
 - `ticket-workflow:reviewer` for complex changes, self-check for simple ones.
-Commit, push the same branch, and reply on the PR threads you resolved (`gh pr comment`), noting which items were done and which were deferred to new issues.
+The PR already carries its version bump (one per PR, relative to `origin/main`); do not bump again for review fixes unless they raise the level (patch -> minor). Commit, push the same branch, and reply on the PR threads you resolved (`gh pr comment`), noting which items were done and which were deferred to new issues.
 
 ## 4. Hand off
 Confirm CI passes on the new commits (`gh pr checks`), then tell the human what changed and what remains. Re-add `needs-review` to the issue. Humans merge; do not merge the PR.
