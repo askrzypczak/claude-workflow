@@ -63,7 +63,15 @@ Setup notes:
 - An `npm run check` command that runs build, lint, typecheck, and tests. It is the definition of done and what CI runs.
 - The ticket labels (see [Ticket conventions](#ticket-conventions)), created with `setup-labels.sh [owner/repo]` from this repo.
 - `gh` authenticated (SSH remote, `gh auth login`).
-- A project-level PreToolUse git guard hook that blocks pushes to `main`/`master`, force pushes and PR merges via `gh`, plus matching deny rules in `.claude/settings.json`. The repo-guard (pushes, merges) deliberately stays in each project, e.g. `.claude/hooks/guard-git.sh`. The comment guard (see [Trust rule](#trust-rule-for-public-repos)) is different: it ships with the plugin (`hooks/hooks.json`), so no project setup is needed. It needs `jq` on PATH.
+- Deny rules for the git guard in the project's `.claude/settings.json`. The guards themselves ship with the plugin (`hooks/hooks.json`): the git guard blocks pushes to `main`/`master`, force pushes and PR merges via `gh`, and the comment guard covers the [Trust rule](#trust-rule-for-public-repos). Both need `jq` on PATH. The project only adds the deny rules:
+
+        "permissions": {
+          "deny": [
+            "Bash(gh pr merge *)",
+            "Bash(git push --force*)",
+            "Bash(git push -f*)"
+          ]
+        }
 - The plugin enabled in the project's `.claude/settings.json` (`enabledPlugins` with `ticket-workflow@askrzypczak-plugins`, plus the `extraKnownMarketplaces` entry for `askrzypczak/claude-workflow`).
 - For automatic dispatch: an entry for the repo in the poller config, and the directory trusted by Claude Code (see [Dispatch](#dispatch-automatic-ticket-pickup)).
 - For label cleanup on close: a caller workflow for the shared ticket-labels workflow (see [Label cleanup](#label-cleanup-on-close)).
@@ -106,7 +114,7 @@ A ticket is picked up when it is **open**, authored by the repo's configured `ow
 The poller, installer and config live in this repo and run from the local clone (`~/Projects/claude-workflow`), not from the plugin cache: a LaunchAgent needs a stable path.
 
 ### Onboarding a new repo
-1. Make sure the repo provides what the previous section lists (`npm run check`, guard hook, plugin enabled).
+1. Make sure the repo provides what the previous section lists (`npm run check`, deny rules, plugin enabled; the guard hooks come with the plugin).
 2. Create the labels: `setup-labels.sh owner/repo`.
 3. Add the label-cleanup caller workflow (below).
 4. Add the repo to `~/.config/claude-workflow/repos.json`:
