@@ -106,6 +106,8 @@ A ticket is picked up when it is open, authored by the repo's configured `owner`
 
 The poller, installer and config run from the local clone of this repo, not the plugin cache: a LaunchAgent needs a stable path.
 
+The poller is TypeScript run by Node 24. It needs `node` on the launchd `PATH`, which is minimal (the entrypoint adds fnm's default bin, `~/.local/bin` and Homebrew to it), and the clone's npm dependencies: the installer runs `npm ci` in the clone; rerun it (or the installer) after pulling a change to `package-lock.json`. It also needs `gh` and `claude`.
+
 ### What this can do on your machine
 
 Labels on GitHub start unattended agent sessions locally:
@@ -140,8 +142,9 @@ Labels on GitHub start unattended agent sessions locally:
    - `bgFlags` (optional): extra `claude --bg` flags for this repo, e.g. `--permission-mode acceptEdits`.
    - `maxSessions` (optional, positive integer): cap on live sessions for this repo.
 5. Trust the directory: run `claude` once in `dir`, accept the prompt, exit. `claude --bg` fails in an untrusted workspace.
-6. Dry run: `dispatch/agent-poller.sh --dry-run` logs which tickets would launch and with which flags, and launches nothing.
+6. Dry run: `npm ci` in the clone once, then `dispatch/agent-poller.sh --dry-run` logs which tickets would launch and with which flags, and launches nothing.
 7. Install the LaunchAgent once, from the main clone (not a worktree): `dispatch/install-launchd.sh`.
+   - The installer first runs `npm ci` in the clone (a failure aborts with nothing installed).
    - The agent polls as soon as it loads, so the installer repeats the dry run, shows its output and asks `Install and start polling? [y/N]` before writing or starting anything. Anything but `y`, no input, a failing dry run, or a poll already running aborts. `--yes` skips the question for scripted reinstalls.
    - launchd only gives the job `HOME` and `PATH`, so the dry run drops `CLAUDE_BG_FLAGS`, `CLAUDE_ALLOW_BYPASS_PERMISSIONS` and `CLAUDE_MAX_SESSIONS` from your shell. Set them in the plist's `EnvironmentVariables` for the real poller.
    - Remove with `dispatch/install-launchd.sh uninstall`. Adding repos later only needs a config edit.

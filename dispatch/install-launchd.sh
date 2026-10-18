@@ -12,7 +12,8 @@
 #   --migrate-state DIR PREFIX  copy launched.json / conflicts.json from an older poller's state dir into
 #                             <state>/repos/PREFIX/ (never overwrites), so in-flight tickets are not relaunched;
 #                             PREFIX is letters, digits, _ - only
-# Test overrides: POLLER, LAUNCHCTL, LAUNCH_AGENTS_DIR, LOG_DIR, STATE_DIR, CLAUDE_WORKFLOW_CONFIG.
+# Before the dry run, install runs `npm ci` in the clone: the poller needs its runtime dependencies.
+# Test overrides: NPM, POLLER, LAUNCHCTL, LAUNCH_AGENTS_DIR, LOG_DIR, STATE_DIR, CLAUDE_WORKFLOW_CONFIG.
 set -euo pipefail
 
 LABEL=com.askrzypczak.claude-workflow-poller
@@ -23,6 +24,7 @@ LOG_DIR="${LOG_DIR:-$HOME/Library/Logs}"
 STATE_DIR="${STATE_DIR:-$HOME/.local/state/claude-workflow}"
 CONFIG="${CLAUDE_WORKFLOW_CONFIG:-$HOME/.config/claude-workflow/repos.json}"
 POLLER="${POLLER:-$CLONE/dispatch/agent-poller.sh}"
+NPM="${NPM:-npm}"
 PLIST="$AGENTS_DIR/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
 
@@ -164,6 +166,11 @@ case "$cmd" in
     esac
     if [ ! -f "$CONFIG" ]; then
       echo "No config at $CONFIG. Copy $CLONE/dispatch/repos.example.json there and edit it." >&2
+      exit 1
+    fi
+    echo "Installing dependencies (npm ci in $CLONE):"
+    if ! (cd "$CLONE" && "$NPM" ci); then
+      echo "npm ci failed in $CLONE; fix it and retry. Nothing was installed." >&2
       exit 1
     fi
     # Show what the poller would launch right now, and ask, before anything is written or started:

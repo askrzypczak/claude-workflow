@@ -10,7 +10,24 @@ Polls every configured GitHub repo for agent-ready tickets and starts one intera
 2. Launches `<prefix>-N` (`/ticket-workflow:work-ticket N`, or `N auto` with the `skip-plan` label) for each open issue authored by the repo's `owner` with `agent-ok` + `ready` and none of `in-progress`, `blocked`, `agent-failed`.
 3. Launches `<prefix>-N-conflict` (`/ticket-workflow:resolve-conflicts N`) for open, same-repo `issue-N-*` PRs authored by `owner` that conflict with main, while ticket N is open, at most once per main SHA. Fork PRs and other authors' PRs are skipped: a fork can use any branch name.
 
-`claude agents --json --all` is fetched once per run and shared. Each repo is polled in its own subshell: a failure in one repo is logged (`[prefix] poll failed ...`), the others still run, and the run exits non-zero at the end.
+`claude agents --json --all` is fetched once per run and shared. A failure in one repo is logged (`[prefix] poll failed ...`), the others still run, and the run exits non-zero at the end.
+
+### Layout
+
+`agent-poller.sh` is a thin entrypoint (the path the LaunchAgent runs): it sets `PATH` and runs the TypeScript poller with Node 24 (type stripping, no build step). If `node` is not on `PATH` or older than 24, or the clone has no `node_modules` (dependencies not installed), it logs one line and exits 1.
+
+```
+agent-poller.sh        entrypoint: PATH setup, then exec node poller/main.ts
+poller/main.ts         startup checks, lock, session list, repo loop, exit code
+poller/poll.ts         one repo's poll: reconcile, launch tickets, resolve conflicts
+poller/decide.ts       pure decisions: session state, caps, bypass flags, reconcile, eligibility
+poller/config.ts       the repos config (zod schema), CLAUDE_MAX_SESSIONS and launch flags
+poller/schemas.ts      zod schemas for gh / claude output and the state files
+poller/io.ts           side effects (gh, claude, state files, lock, log) behind PollerIo
+poller/*.test.ts       vitest unit tests
+```
+
+Every JSON input (the config, `gh` and `claude agents` output, the state files) is parsed once against its schema, and nothing launches from input that does not match. A bad config or session list aborts the run. A bad `gh` answer (e.g. a PR row without `isCrossRepository`) or state file fails that repo's poll (`[prefix] poll failed: ...`, non-zero exit); the other repos still run, and a repo with an unreadable `launched.json` still counts its listed sessions (`<prefix>-...`) toward the global cap.
 
 ### Config
 
@@ -43,7 +60,7 @@ Polls every configured GitHub repo for agent-ready tickets and starts one intera
 ]
 ```
 
-The run aborts non-zero (with a log line, before launching anything) if the file is missing or unreadable, is not an array, an entry lacks a required string field, `repo` is not `owner/name`, `dir` does not exist, `maxSessions` is present but not a positive integer, or two entries share a `sessionPrefix` (compared case-insensitively). Unique prefixes guarantee session names (`<prefix>-N`) never collide across repos.
+The run aborts non-zero (with a log line naming each bad field, e.g. `[0].repo: not of the form owner/name`, before launching anything) if the file is missing or unreadable, is not valid JSON or not an array, an entry lacks a required non-empty string field, `sessionPrefix` has characters outside `[A-Za-z0-9_-]`, `repo` is not `owner/name`, `bgFlags` is present but not a string, `maxSessions` is present but not a positive integer, `dir` does not exist, or two entries share a `sessionPrefix` (compared case-insensitively). Unknown fields are ignored. Unique prefixes guarantee session names (`<prefix>-N`) never collide across repos.
 
 ### State
 
@@ -61,7 +78,7 @@ Migrating from a single-repo poller: copy its `launched.json` and `conflicts.jso
 
     dispatch/install-launchd.sh [install|uninstall] [--yes] [--purge] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]...
 
-Before writing or starting anything, `install` runs `agent-poller.sh --dry-run`, prints the output and asks `Install and start polling? [y/N]`: the LaunchAgent runs the poller at load, so this is the first look at what would launch. Anything but `y` (or EOF on stdin) exits 1 with nothing written. A failing dry run always aborts, even with `--yes`. Installs `~/Library/LaunchAgents/com.askrzypczak.claude-workflow-poller.plist` (from `launchd/`, filled in with this clone's path) and bootstraps it: the poller runs at load and every 3 minutes, logging to `~/Library/Logs/claude-workflow-poller.log`. Rerunning `install` regenerates the plist and reloads it. It refuses to run from a worktree (the plist would point at a path that disappears) or without a config file; start from `repos.example.json`.
+`install` first runs `npm ci` in the clone (the poller's runtime dependencies; a failure aborts with nothing installed). Before writing or starting anything, it then runs `agent-poller.sh --dry-run`, prints the output and asks `Install and start polling? [y/N]`: the LaunchAgent runs the poller at load, so this is the first look at what would launch. Anything but `y` (or EOF on stdin) exits 1 with nothing written. A failing dry run always aborts, even with `--yes`. Installs `~/Library/LaunchAgents/com.askrzypczak.claude-workflow-poller.plist` (from `launchd/`, filled in with this clone's path) and bootstraps it: the poller runs at load and every 3 minutes, logging to `~/Library/Logs/claude-workflow-poller.log`. Rerunning `install` regenerates the plist and reloads it. It refuses to run from a worktree (the plist would point at a path that disappears) or without a config file; start from `repos.example.json`.
 
 - `--yes`: skip the confirmation question (the dry run is still run and shown), e.g. for scripted reinstalls.
 - `--legacy-label LABEL` (repeatable): boot out and delete an older LaunchAgent, before the new one starts. `LABEL` becomes a file name, so only letters, digits, `.`, `_` and `-` are accepted (exit 2 otherwise).
@@ -73,7 +90,7 @@ The plist is filled in with the clone path and `$HOME` XML-escaped, written to a
 
 ### Running
 
-    dispatch/agent-poller.sh --dry-run   # log what would happen; no launches, labels or comments, and no changes to session or ticket tracking (it still creates the lock and empty state files)
+    dispatch/agent-poller.sh --dry-run   # log what would happen; no launches, labels or comments, and no changes to session or ticket tracking (it still takes the lock, but writes no state files)
     dispatch/agent-poller.sh
 
 Environment:
@@ -86,12 +103,16 @@ Environment:
 - The effective flags are logged on every launch line (`flags: ...`, or `<none>`).
 - `EXTRA_PATH`: prepended to `PATH` (the script also adds the fnm default bin dir, `~/.local/bin` and Homebrew, since launchd does not read your shell profile). Used by the tests to inject fake binaries.
 
-Requires `bash` (3.2 compatible), `jq`, `gh` and `claude` on `PATH`.
+Requires Node 24 (`node` on the `PATH` above, which is what the LaunchAgent sees), the clone's npm dependencies (`npm ci`; the installer runs it, and you rerun it, or the installer, after pulling a change to `package-lock.json`), plus `gh` and `claude`. The poller itself does not need `jq` (the installer's `uninstall` uses it, if present, to list leftover sessions).
 
 ### Tests
 
-Plain `node:test`, no dependencies (Node 24; there is no `package.json`). Fake `gh` and `claude` binaries are put on `PATH`.
+Both run from `npm test` (after `npm ci`; Node 24):
 
+- `dispatch/poller/*.test.ts`: vitest unit tests for the config, the decisions, and one repo's poll against a fake `PollerIo`.
+- `dispatch/*.test.mjs`: `node:test` suites that run the real entrypoint (`agent-poller.test.mjs`) and the installer (`install-launchd.test.mjs`) with fake `gh`, `claude`, `launchctl` and `npm` binaries; nothing real is touched.
+
+To run one part:
+
+    npx vitest run dispatch/poller
     node --test dispatch/*.test.mjs
-
-`install-launchd.test.mjs` runs a copy of the installer against a fake `launchctl`; nothing real is touched.

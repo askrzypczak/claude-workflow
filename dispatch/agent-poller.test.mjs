@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -12,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
 const SCRIPT = join(import.meta.dirname, "agent-poller.sh");
@@ -30,6 +31,10 @@ const state = (prefix) => join(dir, "state", "repos", prefix);
 const readLines = (f) =>
   readFileSync(join(dir, f), "utf8").split("\n").filter(Boolean);
 const readJson = (f) => JSON.parse(readFileSync(f, "utf8"));
+// The shim puts fnm, Homebrew and /usr/local/bin before the inherited PATH (for launchd), and a
+// CI runner can have an older node there. EXTRA_PATH comes first: the fake gh/claude (and any
+// fake node) win, then the node running these tests.
+const extraPath = () => [join(dir, "bin"), dirname(process.execPath)].join(delimiter);
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "poller-"));
@@ -87,7 +92,7 @@ function exec({ dry = false, env = {} } = {}) {
     encoding: "utf8",
     env: {
       ...process.env,
-      EXTRA_PATH: join(dir, "bin"),
+      EXTRA_PATH: extraPath(),
       STATE_DIR: join(dir, "state"),
       CLAUDE_WORKFLOW_CONFIG: join(dir, "repos.json"),
       CLAUDE_BG_FLAGS: "",
@@ -252,7 +257,7 @@ describe("agent-poller conflict phase", () => {
       }),
     );
     const res = exec({ dry: opts.dry });
-    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.equal(res.status, opts.status ?? 0, res.stdout + res.stderr);
     return {
       stdout: res.stdout,
       launches: readLines("claude.log"),
@@ -377,10 +382,12 @@ describe("agent-poller conflict phase", () => {
     assert.deepEqual(r.attempts, {});
   });
 
-  it("treats a PR without isCrossRepository as a fork", () => {
-    const r = runConflict({ crossRepo: undefined });
+  it("never resolves a PR without isCrossRepository: the repo's poll fails", () => {
+    const r = runConflict({ crossRepo: undefined, status: 1 });
     assert.deepEqual(r.launches, []);
-    assert.ok(r.stdout.includes("is from a fork"), r.stdout);
+    assert.match(r.stdout, /\[app\] poll failed: gh pr list: \[0\]\.isCrossRepository/);
+    assert.ok(!r.calls.some((c) => c.startsWith("issue view")), r.calls.join("\n"));
+    assert.deepEqual(r.attempts, {});
   });
 
   it("skips a same-repo PR by another author", () => {
@@ -985,7 +992,7 @@ describe("agent-poller session cap", () => {
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.equal(r.stdout.match(/\[dry-run\] \(cd/g).length, 1);
     assert.match(r.stdout, /deferred #2: at session cap/);
-    assert.deepEqual(readJson(join(state("a"), "launched.json")), {});
+    assert.equal(existsSync(state("a")), false, "a dry run writes no state files");
   });
 
   it("conflict launches respect the cap and are retried once there is room", () => {
@@ -1019,7 +1026,7 @@ describe("agent-poller session cap", () => {
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.match(r.stdout, /deferred #5: at session cap/);
     assert.deepEqual(readLines("claude.log"), []);
-    assert.deepEqual(readJson(join(state("a"), "conflicts.json")), {});
+    assert.equal(existsSync(join(state("a"), "conflicts.json")), false, "no attempt recorded");
     assert.deepEqual(tracked("a"), ["7"]);
 
     r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
@@ -1045,10 +1052,117 @@ describe("agent-poller session cap", () => {
       configure([{ ...A, maxSessions: bad }]);
       const r = exec();
       assert.notEqual(r.status, 0);
-      assert.match(r.stdout, /positive integer maxSessions/);
+      assert.match(r.stdout, /\[0\]\.maxSessions: expected a positive integer/);
       assert.deepEqual(readLines("claude.log"), []);
     });
   }
+});
+
+describe("agent-poller entrypoint", () => {
+  it("logs and exits 1 when node is older than 24", () => {
+    configure();
+    // The fake bin dir is first on PATH, ahead of the runner's node, so this fake node wins.
+    writeFileSync(
+      join(dir, "bin", "node"),
+      `#!/usr/bin/env bash\nif [ "$1" = "--version" ]; then echo v22.9.0; else echo 22; fi\n`,
+    );
+    chmodSync(join(dir, "bin", "node"), 0o755);
+    const r = exec();
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /node v22\.9\.0 at .*\/bin\/node is too old; the poller needs Node 24 or later; aborting/);
+    assert.deepEqual(gh(), []);
+  });
+
+  it("logs and exits 1 when the clone's dependencies are not installed", () => {
+    configure();
+    // A copy of the entrypoint in a clone without node_modules.
+    const clone = join(dir, "clone");
+    mkdirSync(join(clone, "dispatch"), { recursive: true });
+    copyFileSync(SCRIPT, join(clone, "dispatch", "agent-poller.sh"));
+    const r = spawnSync("bash", [join(clone, "dispatch", "agent-poller.sh")], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        EXTRA_PATH: extraPath(),
+        STATE_DIR: join(dir, "state"),
+        CLAUDE_WORKFLOW_CONFIG: join(dir, "repos.json"),
+      },
+    });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /dependencies are not installed in .*clone \(run npm ci there/);
+    assert.deepEqual(gh(), []);
+    assert.equal(existsSync(join(dir, "state")), false);
+  });
+});
+
+describe("agent-poller failed tickets and broken state", () => {
+  const A = { repo: "org/alpha", sessionPrefix: "a", owner: "me" };
+  const B = { repo: "org/beta", sessionPrefix: "b", owner: "me" };
+  const ready = (number) => ({
+    number,
+    author: { login: "me" },
+    labels: [{ name: "agent-ok" }, { name: "ready" }],
+  });
+
+  it("dry run does not preview a relaunch of a ticket it just failed", () => {
+    configure([A]);
+    writeFileSync(join(dir, "sessions.json"), JSON.stringify([{ name: "a-5", state: "failed", startedAt: 1 }]));
+    mkdirSync(state("a"), { recursive: true });
+    const launched = JSON.stringify({ 5: { name: "a-5", at: 1 } });
+    writeFileSync(join(state("a"), "launched.json"), launched);
+    // The issue still looks ready: in a dry run the agent-failed label is never applied.
+    writeFileSync(join(rdir(A.repo), "issues.json"), JSON.stringify([ready(5)]));
+    const r = exec({ dry: true });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /\[dry-run\] gh issue edit 5 --repo org\/alpha --add-label agent-failed/);
+    assert.match(r.stdout, /#5: failed earlier in this poll; not relaunching/);
+    assert.doesNotMatch(r.stdout, /\[dry-run\] \(cd/);
+    assert.equal(readFileSync(join(state("a"), "launched.json"), "utf8"), launched);
+  });
+
+  it("a repo with unreadable state fails, and its listed live sessions still count toward the global cap", () => {
+    configure([A, B]);
+    mkdirSync(state("b"), { recursive: true });
+    writeFileSync(join(state("b"), "launched.json"), "{corrupt");
+    writeFileSync(join(dir, "sessions.json"), JSON.stringify([{ name: "b-1", state: "working", startedAt: 1 }]));
+    writeFileSync(join(rdir(A.repo), "issues.json"), JSON.stringify([ready(2)]));
+    const r = exec({ env: { CLAUDE_MAX_SESSIONS: "1" } });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /\[b\] poll failed: .*launched\.json: not valid JSON/);
+    assert.match(r.stdout, /\[a\] deferred #2: at session cap/);
+    assert.deepEqual(readLines("claude.log"), []);
+    assert.ok(!gh().some((c) => c.includes("org/beta")), "nothing is read for the broken repo");
+  });
+});
+
+describe("agent-poller run lock", () => {
+  const lockWith = (pid) => {
+    mkdirSync(join(dir, "state", "lock"), { recursive: true });
+    writeFileSync(join(dir, "state", "lock", "pid"), `${pid}\n`);
+  };
+  const readyIssue = [{ number: 1, author: { login: APP.owner }, labels: [{ name: "agent-ok" }, { name: "ready" }] }];
+
+  it("exits 0 without polling while another live run holds the lock", () => {
+    configure();
+    writeFileSync(join(rdir(APP.repo), "issues.json"), JSON.stringify(readyIssue));
+    lockWith(process.pid); // this test process: alive
+    const r = exec();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, new RegExp(`another run is active \\(pid ${process.pid}\\); exiting`));
+    assert.deepEqual(gh(), []);
+    assert.equal(readFileSync(join(dir, "state", "lock", "pid"), "utf8"), `${process.pid}\n`);
+  });
+
+  it("takes over a lock left by a process that is gone, and releases it after the run", () => {
+    configure();
+    writeFileSync(join(rdir(APP.repo), "issues.json"), JSON.stringify(readyIssue));
+    const gone = spawnSync("bash", ["-c", "echo $$"], { encoding: "utf8" }).stdout.trim();
+    lockWith(gone);
+    const r = exec();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(readLines("claude.log").length, 1);
+    assert.equal(existsSync(join(dir, "state", "lock")), false);
+  });
 });
 
 describe("agent-poller config validation", () => {
@@ -1068,7 +1182,7 @@ describe("agent-poller config validation", () => {
   });
 
   it("aborts on malformed JSON", () => {
-    expectAbort("{not json", /not a JSON array/);
+    expectAbort("{not json", /not valid JSON/);
   });
 
   it("aborts when the config is not an array", () => {
@@ -1079,14 +1193,17 @@ describe("agent-poller config validation", () => {
     it(`aborts when ${field} is missing`, () => {
       const entry = { ...ok };
       delete entry[field];
-      expectAbort(JSON.stringify([entry]), /needs string repo/);
+      expectAbort(
+        JSON.stringify([entry]),
+        new RegExp(`\\[0\\]\\.${field}: expected a non-empty string`),
+      );
     });
   }
 
   it("aborts on an unsafe sessionPrefix", () => {
     expectAbort(
       JSON.stringify([{ ...ok, sessionPrefix: "../x" }]),
-      /needs string repo/,
+      /\[0\]\.sessionPrefix: expected only letters, digits/,
     );
   });
 
