@@ -3,9 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run plugins dispatch/poller && node --test dispatch/*.test.mjs"
+    "test": "vitest run plugins dispatch/poller && node --test dispatch/*.test.mjs",
+    "typecheck": "tsc -p ."
   },
   "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2",
     "vitest": "^5.0.5"
   }
 }
