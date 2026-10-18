@@ -91,6 +91,8 @@ function exec({ dry = false, env = {} } = {}) {
       STATE_DIR: join(dir, "state"),
       CLAUDE_WORKFLOW_CONFIG: join(dir, "repos.json"),
       CLAUDE_BG_FLAGS: "",
+      CLAUDE_ALLOW_BYPASS_PERMISSIONS: "",
+      CLAUDE_MAX_SESSIONS: "",
       ...env,
     },
   });
@@ -671,6 +673,382 @@ describe("agent-poller multiple repos", () => {
       "--bg --name b-2 --permission-mode plan /ticket-workflow:work-ticket 2",
     ]);
   });
+});
+
+describe("agent-poller bypass-flag refusal", () => {
+  const A = { repo: "org/alpha", sessionPrefix: "a", owner: "me" };
+  const B = { repo: "org/beta", sessionPrefix: "b", owner: "me" };
+  const ready = (number) => ({
+    number,
+    author: { login: "me" },
+    labels: [{ name: "agent-ok" }, { name: "ready" }],
+  });
+  const writeIssues = (repo, issues) =>
+    writeFileSync(join(rdir(repo), "issues.json"), JSON.stringify(issues));
+
+  const BYPASS = [
+    ["--dangerously-skip-permissions", "--dangerously-skip-permissions"],
+    ["--allow-dangerously-skip-permissions", "--allow-dangerously-skip-permissions"],
+    ["--permission-mode bypassPermissions", "--model opus --permission-mode bypassPermissions"],
+    ["--permission-mode=bypassPermissions", "--permission-mode=bypassPermissions"],
+  ];
+
+  for (const [label, flags] of BYPASS) {
+    it(`refuses ${label} in CLAUDE_BG_FLAGS, launching nothing`, () => {
+      configure([A]);
+      writeIssues(A.repo, [ready(1)]);
+      const r = exec({ env: { CLAUDE_BG_FLAGS: flags } });
+      assert.notEqual(r.status, 0);
+      assert.match(r.stdout, /\[a\] refusing bypass flags/);
+      assert.match(r.stdout, /CLAUDE_ALLOW_BYPASS_PERMISSIONS=1/);
+      assert.deepEqual(readLines("claude.log"), []);
+      assert.ok(!gh().some((c) => c.startsWith("issue list")));
+    });
+
+    it(`refuses ${label} in a repo's bgFlags; other repos still run`, () => {
+      configure([{ ...A, bgFlags: flags }, B]);
+      writeIssues(A.repo, [ready(1)]);
+      writeIssues(B.repo, [ready(2)]);
+      const r = exec();
+      assert.notEqual(r.status, 0);
+      assert.match(r.stdout, /\[a\] refusing bypass flags/);
+      assert.deepEqual(readLines("claude.log"), [
+        "--bg --name b-2 /ticket-workflow:work-ticket 2",
+      ]);
+    });
+  }
+
+  it("allows bypass flags with CLAUDE_ALLOW_BYPASS_PERMISSIONS=1 and logs them", () => {
+    configure([{ ...A, bgFlags: "--permission-mode bypassPermissions" }]);
+    writeIssues(A.repo, [ready(1)]);
+    const r = exec({
+      env: {
+        CLAUDE_ALLOW_BYPASS_PERMISSIONS: "1",
+        CLAUDE_BG_FLAGS: "--dangerously-skip-permissions",
+      },
+    });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.doesNotMatch(r.stdout, /refusing/);
+    assert.deepEqual(readLines("claude.log"), [
+      "--bg --name a-1 --dangerously-skip-permissions --permission-mode bypassPermissions /ticket-workflow:work-ticket 1",
+    ]);
+    assert.match(
+      r.stdout,
+      /#1: launching a-1 \(flags: --dangerously-skip-permissions --permission-mode bypassPermissions\)/,
+    );
+  });
+
+  it("only the exact opt-in value 1 allows them", () => {
+    configure([A]);
+    writeIssues(A.repo, [ready(1)]);
+    const r = exec({
+      env: {
+        CLAUDE_ALLOW_BYPASS_PERMISSIONS: "true",
+        CLAUDE_BG_FLAGS: "--dangerously-skip-permissions",
+      },
+    });
+    assert.notEqual(r.status, 0);
+    assert.deepEqual(readLines("claude.log"), []);
+  });
+
+  it("leaves other permission modes alone and logs the effective flags", () => {
+    configure([{ ...A, bgFlags: "--permission-mode acceptEdits" }]);
+    writeIssues(A.repo, [ready(1)]);
+    const r = exec();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /#1: launching a-1 \(flags: --permission-mode acceptEdits\)/);
+    assert.equal(readLines("claude.log").length, 1);
+  });
+
+  it("logs <none> when there are no flags", () => {
+    configure([A]);
+    writeIssues(A.repo, [ready(1)]);
+    const r = exec();
+    assert.match(r.stdout, /#1: launching a-1 \(flags: <none>\)/);
+  });
+
+  it("logs the effective flags on conflict launches too", () => {
+    configure([{ ...A, bgFlags: "--model opus" }]);
+    const rd = rdir(A.repo);
+    writeFileSync(join(rd, "sha"), "sha1");
+    writeFileSync(
+      join(rd, "prs.json"),
+      JSON.stringify([
+        {
+          number: 9,
+          headRefName: "issue-5-x",
+          isCrossRepository: false,
+          author: { login: "me" },
+          mergeable: "CONFLICTING",
+          mergeStateStatus: "DIRTY",
+        },
+      ]),
+    );
+    writeFileSync(
+      join(rd, "issue.json"),
+      JSON.stringify({
+        state: "OPEN",
+        author: { login: "me" },
+        labels: [{ name: "agent-ok" }],
+      }),
+    );
+    const r = exec();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /launching a-5-conflict \(flags: --model opus\)/);
+  });
+});
+
+describe("agent-poller session cap", () => {
+  const A = { repo: "org/alpha", sessionPrefix: "a", owner: "me" };
+  const B = { repo: "org/beta", sessionPrefix: "b", owner: "me" };
+  const ready = (number) => ({
+    number,
+    author: { login: "me" },
+    labels: [{ name: "agent-ok" }, { name: "ready" }],
+  });
+  const writeIssues = (repo, issues) =>
+    writeFileSync(join(rdir(repo), "issues.json"), JSON.stringify(issues));
+  const launchedState = (prefix, names) => {
+    mkdirSync(state(prefix), { recursive: true });
+    const at = Math.floor(Date.now() / 1000) - 60;
+    const o = {};
+    for (const name of names) o[name.split("-")[1]] = { name, at };
+    writeFileSync(join(state(prefix), "launched.json"), JSON.stringify(o));
+  };
+  const sessions = (list) =>
+    writeFileSync(
+      join(dir, "sessions.json"),
+      JSON.stringify(list.map(([name, st]) => ({ name, state: st, startedAt: 1 }))),
+    );
+  const tracked = (prefix) =>
+    Object.keys(readJson(join(state(prefix), "launched.json")));
+
+  it("defaults to 10 sessions: the 11th ready ticket is deferred", () => {
+    configure([A]);
+    writeIssues(A.repo, Array.from({ length: 11 }, (_, i) => ready(i + 1)));
+    const r = exec();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(readLines("claude.log").length, 10);
+    assert.match(r.stdout, /deferred #11: at session cap/);
+    assert.equal(tracked("a").includes("11"), false);
+  });
+
+  it("CLAUDE_MAX_SESSIONS raises the default", () => {
+    configure([A]);
+    writeIssues(A.repo, Array.from({ length: 11 }, (_, i) => ready(i + 1)));
+    const r = exec({ env: { CLAUDE_MAX_SESSIONS: "11" } });
+    assert.equal(readLines("claude.log").length, 11);
+    assert.doesNotMatch(r.stdout, /deferred/);
+  });
+
+  it("global cap counts live sessions across repos; defers without recording, resumes once one ends", () => {
+    configure([A, B]);
+    launchedState("a", ["a-1"]);
+    launchedState("b", ["b-2"]);
+    sessions([
+      ["a-1", "working"],
+      ["b-2", "blocked"],
+    ]);
+    writeIssues(A.repo, [ready(3)]);
+    const env = { CLAUDE_MAX_SESSIONS: "2" };
+    let r = exec({ env });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.deepEqual(readLines("claude.log"), []);
+    assert.match(r.stdout, /\[a\] deferred #3: at session cap/);
+    assert.deepEqual(tracked("a"), ["1"]);
+
+    // b-2 finishes (handed off); the deferred ticket launches on the next poll.
+    sessions([
+      ["a-1", "working"],
+      ["b-2", "done"],
+    ]);
+    writeFileSync(
+      join(rdir(B.repo), "issue.json"),
+      JSON.stringify({ state: "OPEN", labels: [{ name: "needs-review" }] }),
+    );
+    r = exec({ env });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.deepEqual(readLines("claude.log"), [
+      "--bg --name a-3 /ticket-workflow:work-ticket 3",
+    ]);
+    assert.deepEqual(tracked("a").sort(), ["1", "3"]);
+  });
+
+  it("counts a just-launched session that is not listed yet; ignores done/failed/stopped", () => {
+    configure([A]);
+    launchedState("a", ["a-1", "a-2", "a-3", "a-4"]);
+    sessions([
+      ["a-2", "done"],
+      ["a-3", "failed"],
+      ["a-4", "stopped"],
+    ]);
+    writeIssues(A.repo, [ready(9)]);
+    writeFileSync(
+      join(rdir(A.repo), "issue.json"),
+      JSON.stringify({ state: "OPEN", labels: [{ name: "needs-review" }] }),
+    );
+    // a-1 is unlisted (young) so it counts; the other three do not.
+    const r = exec({ env: { CLAUDE_MAX_SESSIONS: "1" } });
+    assert.match(r.stdout, /deferred #9: at session cap/);
+    assert.deepEqual(readLines("claude.log"), []);
+  });
+
+  for (const st of ["done", "failed", "stopped", "working"]) {
+    it(`another repo's ${st} session (not yet reconciled) ${st === "working" ? "counts toward" : "does not count toward"} the global cap`, () => {
+      configure([A, B]);
+      launchedState("b", ["b-1"]);
+      sessions([["b-1", st]]);
+      writeIssues(A.repo, [ready(2)]);
+      const r = exec({ env: { CLAUDE_MAX_SESSIONS: "1" } });
+      assert.equal(readLines("claude.log").length, st === "working" ? 0 : 1);
+      if (st === "working") assert.match(r.stdout, /deferred #2/);
+    });
+  }
+
+  it("stops launching within a run once the cap is reached", () => {
+    configure([A, B]);
+    writeIssues(A.repo, [ready(1), ready(2)]);
+    writeIssues(B.repo, [ready(3)]);
+    const r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.deepEqual(readLines("claude.log"), [
+      "--bg --name a-1 /ticket-workflow:work-ticket 1",
+      "--bg --name a-2 /ticket-workflow:work-ticket 2",
+    ]);
+    assert.match(r.stdout, /\[b\] deferred #3: at session cap/);
+  });
+
+  it("per-repo maxSessions caps only that repo", () => {
+    configure([{ ...A, maxSessions: 1 }, B]);
+    launchedState("a", ["a-1"]);
+    sessions([["a-1", "working"]]);
+    writeIssues(A.repo, [ready(2)]);
+    writeIssues(B.repo, [ready(3), ready(4)]);
+    const r = exec();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /\[a\] deferred #2: at session cap/);
+    assert.deepEqual(readLines("claude.log"), [
+      "--bg --name b-3 /ticket-workflow:work-ticket 3",
+      "--bg --name b-4 /ticket-workflow:work-ticket 4",
+    ]);
+  });
+
+  it("per-repo maxSessions counts launches made earlier in the same run", () => {
+    configure([{ ...A, maxSessions: 1 }]);
+    writeIssues(A.repo, [ready(1), ready(2)]);
+    const r = exec();
+    assert.deepEqual(readLines("claude.log"), [
+      "--bg --name a-1 /ticket-workflow:work-ticket 1",
+    ]);
+    assert.match(r.stdout, /deferred #2: at session cap/);
+  });
+
+  it("accepts maxSessions written as 1.0 and still enforces it", () => {
+    writeFileSync(join(dir, "x"), "");
+    configure([{ ...A, maxSessions: 1 }]);
+    // JSON.stringify turns 1 into "1", so write the float form into the config by hand.
+    const cfg = readFileSync(join(dir, "repos.json"), "utf8").replace(
+      '"maxSessions":1',
+      '"maxSessions":1.0',
+    );
+    assert.match(cfg, /1\.0/);
+    writeFileSync(join(dir, "repos.json"), cfg);
+    writeIssues(A.repo, [ready(1), ready(2)]);
+    const r = exec();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(readLines("claude.log").length, 1);
+    assert.match(r.stdout, /deferred #2: at session cap/);
+  });
+
+  it("does not count an unlisted entry older than 10 minutes as live", () => {
+    configure([A, B]);
+    mkdirSync(state("b"), { recursive: true });
+    const old = Math.floor(Date.now() / 1000) - 3600;
+    const young = Math.floor(Date.now() / 1000) - 60;
+    writeFileSync(
+      join(state("b"), "launched.json"),
+      JSON.stringify({ 1: { name: "b-1", at: old }, 2: { name: "b-2", at: young } }),
+    );
+    writeIssues(A.repo, [ready(3)]);
+    // b-1 is dead (unlisted, old): only b-2 counts, so cap 2 leaves room for one launch.
+    const r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.deepEqual(readLines("claude.log"), [
+      "--bg --name a-3 /ticket-workflow:work-ticket 3",
+    ]);
+  });
+
+  it("dry run honours the cap with an in-memory count and writes no state", () => {
+    configure([A]);
+    writeIssues(A.repo, [ready(1), ready(2)]);
+    const r = exec({ dry: true, env: { CLAUDE_MAX_SESSIONS: "1" } });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(r.stdout.match(/\[dry-run\] \(cd/g).length, 1);
+    assert.match(r.stdout, /deferred #2: at session cap/);
+    assert.deepEqual(readJson(join(state("a"), "launched.json")), {});
+  });
+
+  it("conflict launches respect the cap and are retried once there is room", () => {
+    configure([A]);
+    launchedState("a", ["a-7"]);
+    sessions([["a-7", "working"]]);
+    const rd = rdir(A.repo);
+    writeFileSync(join(rd, "sha"), "sha1");
+    writeFileSync(
+      join(rd, "prs.json"),
+      JSON.stringify([
+        {
+          number: 9,
+          headRefName: "issue-5-x",
+          isCrossRepository: false,
+          author: { login: "me" },
+          mergeable: "CONFLICTING",
+          mergeStateStatus: "DIRTY",
+        },
+      ]),
+    );
+    writeFileSync(
+      join(rd, "issue.json"),
+      JSON.stringify({
+        state: "OPEN",
+        author: { login: "me" },
+        labels: [{ name: "agent-ok" }],
+      }),
+    );
+    let r = exec({ env: { CLAUDE_MAX_SESSIONS: "1" } });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /deferred #5: at session cap/);
+    assert.deepEqual(readLines("claude.log"), []);
+    assert.deepEqual(readJson(join(state("a"), "conflicts.json")), {});
+    assert.deepEqual(tracked("a"), ["7"]);
+
+    r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.deepEqual(readLines("claude.log"), [
+      "--bg --name a-5-conflict /ticket-workflow:resolve-conflicts 5",
+    ]);
+  });
+
+  for (const v of ["0", "abc", "-1", "1.5", "01"]) {
+    it(`aborts on invalid CLAUDE_MAX_SESSIONS=${v}`, () => {
+      configure([A]);
+      writeIssues(A.repo, [ready(1)]);
+      const r = exec({ env: { CLAUDE_MAX_SESSIONS: v } });
+      assert.notEqual(r.status, 0);
+      assert.match(r.stdout, /CLAUDE_MAX_SESSIONS=.* is not a positive integer/);
+      assert.deepEqual(readLines("claude.log"), []);
+    });
+  }
+
+  for (const bad of [0, -2, 1.5, "3", null, true]) {
+    it(`rejects maxSessions=${JSON.stringify(bad)} in the config`, () => {
+      configure([{ ...A, maxSessions: bad }]);
+      const r = exec();
+      assert.notEqual(r.status, 0);
+      assert.match(r.stdout, /positive integer maxSessions/);
+      assert.deepEqual(readLines("claude.log"), []);
+    });
+  }
 });
 
 describe("agent-poller config validation", () => {

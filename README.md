@@ -128,11 +128,20 @@ The poller, installer and config live in this repo and run from the local clone 
           }
         ]
 
-   `repo` is `owner/name`; `dir` is the main checkout the sessions start in (not a worktree); `sessionPrefix` names sessions and must be unique per repo; `owner` is the only ticket author whose tickets are launched; `bgFlags` (optional) adds `claude --bg` flags for that repo, e.g. `--permission-mode acceptEdits`.
+   `repo` is `owner/name`; `dir` is the main checkout the sessions start in (not a worktree); `sessionPrefix` names sessions and must be unique per repo; `owner` is the only ticket author whose tickets are launched; `bgFlags` (optional) adds `claude --bg` flags for that repo, e.g. `--permission-mode acceptEdits`; `maxSessions` (optional, positive integer) caps live sessions for that repo.
 5. Trust the directory: run `claude` once in `dir`, accept the prompt, exit. `claude --bg` fails in an untrusted workspace.
-6. Install the LaunchAgent once, from the main clone of this repo (not a worktree): `dispatch/install-launchd.sh`. Remove with `dispatch/install-launchd.sh uninstall`. Adding more repos later only needs a config edit. `dispatch/repos.example.json` is a starting point for the config (the installer refuses to run without it).
+6. Check with `dispatch/agent-poller.sh --dry-run`: it logs which tickets would launch and with which flags, and launches nothing. Read [What this can do on your machine](#what-this-can-do-on-your-machine) first.
+7. Install the LaunchAgent once, from the main clone of this repo (not a worktree): `dispatch/install-launchd.sh`. The agent runs the poller as soon as it loads, so the installer repeats the dry run, shows its output and asks `Install and start polling? [y/N]` before writing or starting anything (anything but `y`, or no input, aborts; a failing dry run always aborts, as does a poll already running). launchd only gives the job `HOME` and `PATH`, so the installer's dry run drops `CLAUDE_BG_FLAGS`, `CLAUDE_ALLOW_BYPASS_PERMISSIONS` and `CLAUDE_MAX_SESSIONS` from your shell; set them in the plist's `EnvironmentVariables` to have them apply (and show) in the real poller. With `--migrate-state` / `--legacy-label` the dry run runs before the migration and says so. `--yes` skips the question for scripted reinstalls. Remove with `dispatch/install-launchd.sh uninstall`. Adding more repos later only needs a config edit. `dispatch/repos.example.json` is a starting point for the config (the installer refuses to run without it).
    Migrating from an older single-repo poller: pass `--legacy-label <its launchd label>` (booted out, plist removed) and `--migrate-state <its state dir> <sessionPrefix>` (copies `launched.json` / `conflicts.json` into this poller's per-repo state, never overwriting) so in-flight tickets are not relaunched. Keep the old session naming as `sessionPrefix` so reconciliation finds the live sessions.
-7. Check with `dispatch/agent-poller.sh --dry-run`.
+
+### What this can do on your machine
+Turning on the poller lets labels on GitHub start unattended agent sessions locally. Know what that means before you do:
+- Sessions run as you, with your `gh` token. They can read and write every repo that token reaches, not only the configured one.
+- They work in `dir` on your files, with your credentials and tools, under the permission mode you configure. With no flags that is Claude Code's default mode, so sessions stop and show as `blocked` in `claude agents` at permission prompts. `--permission-mode acceptEdits` and similar flags widen what they do without asking.
+- Every session uses your Claude usage limits and costs money if you pay per token. Several tickets labelled `ready` at once start several sessions at once.
+- Bypass flags (`--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-mode bypassPermissions`) are refused: a repo whose combined `CLAUDE_BG_FLAGS` + `bgFlags` contain one is skipped, logged and the run exits non-zero. To accept the risk anyway, set `CLAUDE_ALLOW_BYPASS_PERMISSIONS=1`.
+- At most 10 sessions are live at once across all repos (`CLAUDE_MAX_SESSIONS`; per-repo `maxSessions` in `repos.json`). Extra tickets log `deferred #N: at session cap` and start on a later poll once sessions end.
+- The effective flags are logged on every launch. Only tickets authored by `owner` are launched; anyone who can get `owner` to label an issue `ready` can start a session, so keep the repo's labelling rights tight.
 
 ### Daily use
 1. Write the ticket, review it, then add `ready` (your approval; agents normally already set `agent-ok`, remove it if the ticket shouldn't run unattended). Within ~3 minutes a session starts.
@@ -168,13 +177,15 @@ Per repo, in `repos.json` (above). Global, as environment variables: set them in
 | Variable | Default | Meaning |
 |---|---|---|
 | `CLAUDE_BG_FLAGS` | empty | Extra flags for `claude --bg`, applied to every repo (per-repo `bgFlags` adds to it). |
+| `CLAUDE_MAX_SESSIONS` | `10` | Most sessions live at once across all repos (positive integer; invalid values abort the run). A guard against a runaway label batch; raise it deliberately. |
+| `CLAUDE_ALLOW_BYPASS_PERMISSIONS` | unset | Set to `1` to allow bypass flags in `CLAUDE_BG_FLAGS` / `bgFlags`; otherwise such repos are refused. |
 | `EXTRA_PATH` | empty | Directories prepended to the poller's PATH (inherited by sessions). fnm's default bin dir (`~/.local/share/fnm/aliases/default/bin`) is always included so sessions find `node`/`npm`. |
 | `STATE_DIR` | `~/.local/state/claude-workflow` | Lock file and per-repo `launched.json` / `conflicts.json`. |
 
 ### Notes
 - The poller never claims a ticket itself: the session does that (`in-progress`) as part of `work-ticket`.
 - A ticket is launched once. Delete its entry from `launched.json` to force a relaunch of a ticket that still has `ready`.
-- There is no concurrency limit: every eligible ticket gets a session on the next poll.
+- Live sessions are capped (default 10 overall, optional `maxSessions` per repo). A live session is a tracked launch that is not `done`, `failed` or `stopped`. Tickets over the cap are deferred, not dropped.
 - The Mac must be awake and logged in. Nothing runs while it sleeps; the next run after wake picks up anything missed.
 
 ## Label cleanup on close

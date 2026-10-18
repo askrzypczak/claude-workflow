@@ -4,7 +4,12 @@
 # Usage: dispatch/agent-poller.sh [--dry-run]
 #
 # Repos come from a JSON config (${CLAUDE_WORKFLOW_CONFIG:-~/.config/claude-workflow/repos.json}):
-#   [{"repo": "owner/name", "dir": "~/Projects/name", "sessionPrefix": "name", "owner": "login", "bgFlags": "..."}]
+#   [{"repo": "owner/name", "dir": "~/Projects/name", "sessionPrefix": "name", "owner": "login", "bgFlags": "...", "maxSessions": 3}]
+#
+# Safety: bypass flags (--dangerously-skip-permissions, --permission-mode bypassPermissions, ...) in the
+# combined flags make the poller skip that repo unless CLAUDE_ALLOW_BYPASS_PERMISSIONS=1. At most
+# CLAUDE_MAX_SESSIONS (default 10) sessions are live across all repos, and at most a repo's optional
+# `maxSessions` in that repo; launches over the cap are deferred to a later poll.
 #
 # A ticket is picked up when it is open, authored by the repo's `owner`, and labelled
 # `agent-ok` + `ready` (and not in-progress, blocked or agent-failed). The session
@@ -30,6 +35,8 @@ STATE_DIR="${STATE_DIR:-$HOME/.local/state/claude-workflow}"
 GLOBAL_BG_FLAGS=()
 read -r -a GLOBAL_BG_FLAGS <<<"${CLAUDE_BG_FLAGS:-}"
 
+MAX_SESSIONS="${CLAUDE_MAX_SESSIONS:-10}"
+
 DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
 
@@ -40,6 +47,9 @@ run() {
 }
 
 # --- Config ------------------------------------------------------------------
+case "$MAX_SESSIONS" in
+  "" | *[!0-9]* | 0 | 0[0-9]*) log "CLAUDE_MAX_SESSIONS='$MAX_SESSIONS' is not a positive integer; aborting"; exit 1 ;;
+esac
 [ -r "$CONFIG" ] || { log "config $CONFIG missing or unreadable; aborting"; exit 1; }
 jq -e 'type == "array"' "$CONFIG" >/dev/null 2>&1 || { log "config $CONFIG is not a JSON array; aborting"; exit 1; }
 bad=$(jq -r 'to_entries[] | select(
@@ -47,9 +57,12 @@ bad=$(jq -r 'to_entries[] | select(
     or ([.value.repo, .value.dir, .value.sessionPrefix, .value.owner] | any((type != "string") or (length == 0)))
     or ((.value.sessionPrefix | type) == "string" and (.value.sessionPrefix | test("^[A-Za-z0-9_-]+$") | not))
     or ((.value.bgFlags // "") | type) != "string"
+    or ((.value | has("maxSessions")) and (
+      (.value.maxSessions | type) != "number" or .value.maxSessions < 1 or .value.maxSessions != (.value.maxSessions | floor)
+    ))
   ) | .key' "$CONFIG" 2>/dev/null | head -n1) || bad=invalid
 if [ -n "$bad" ]; then
-  log "config $CONFIG: entry $bad needs string repo, dir, sessionPrefix ([A-Za-z0-9_-]+), owner (and optional string bgFlags); aborting"
+  log "config $CONFIG: entry $bad needs string repo, dir, sessionPrefix ([A-Za-z0-9_-]+), owner (and optional string bgFlags, positive integer maxSessions); aborting"
   exit 1
 fi
 dup=$(jq -r '[.[].sessionPrefix | ascii_downcase] | group_by(.) | map(select(length > 1) | .[0]) | first // empty' "$CONFIG")
@@ -83,7 +96,8 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   mkdir "$LOCK"
 fi
 echo $$ >"$LOCK/pid"
-trap 'rm -rf "$LOCK"' EXIT
+LAUNCHES=$(mktemp "${TMPDIR:-/tmp}/poller-launches.XXXXXX")
+trap 'rm -rf "$LOCK" "$LAUNCHES"' EXIT
 
 # Abort (rather than guess) if we cannot read the session list: a wrong empty
 # answer would relaunch everything. Fetched once and shared by all repos.
@@ -92,6 +106,49 @@ echo "$SESSIONS" | jq -e 'type == "array"' >/dev/null || { log "unexpected agent
 
 session_state() { # name -> state of the newest session with that name, or empty
   echo "$SESSIONS" | jq -r --arg n "$1" '[.[] | select(.name == $n)] | sort_by(.startedAt) | last | .state // empty'
+}
+
+# Sessions in a repo's launched.json that are not done/failed/stopped (alive, or just launched and not listed yet).
+# An unlisted entry older than 10 minutes is dead (reconcile fails it), so it does not count.
+live_in_state() { # state-file
+  local name at st c=0 now
+  [ -f "$1" ] || { echo 0; return 0; }
+  now=$(date +%s)
+  while IFS=$'\t' read -r name at; do
+    [ -n "$name" ] || continue
+    st=$(session_state "$name")
+    case "$st" in
+      done | failed | stopped) ;;
+      "") if [ "$((now - at))" -lt 600 ]; then c=$((c + 1)); fi ;;
+      *) c=$((c + 1)) ;;
+    esac
+  done < <(jq -r '.[] | [.name, (.at // 0)] | @tsv' "$1")
+  echo "$c"
+}
+# Live counts are read once (GLOBAL_LIVE before the repo loop, REPO_LIVE per repo) and then bumped by
+# launches made during this run, recorded one prefix per line in a scratch file because poll_repo
+# runs in a subshell.
+launches_made() { # [prefix] -> launches so far this run
+  if [ -n "${1:-}" ]; then grep -cxF -- "$1" "$LAUNCHES" || true; else wc -l <"$LAUNCHES" | tr -d ' '; fi
+}
+at_cap() { # -> 0 when starting another session would exceed the repo or global cap
+  if [ -n "$REPO_MAX" ] && [ "$((REPO_LIVE + $(launches_made "$PREFIX")))" -ge "$REPO_MAX" ]; then
+    return 0
+  fi
+  [ "$((GLOBAL_LIVE + $(launches_made)))" -ge "$MAX_SESSIONS" ]
+}
+note_launch() { echo "$PREFIX" >>"$LAUNCHES"; }
+
+has_bypass_flag() { # flags... -> 0 if any grants bypassPermissions
+  local prev="" f
+  for f in "$@"; do
+    case "$f" in
+      --dangerously-skip-permissions | --allow-dangerously-skip-permissions | --permission-mode=bypassPermissions) return 0 ;;
+      bypassPermissions) [ "$prev" = "--permission-mode" ] && return 0 ;;
+    esac
+    prev=$f
+  done
+  return 1
 }
 
 state_set() { # key name [pr mainSha]
@@ -199,10 +256,14 @@ poll_repo() {
     fi
     [ "$(jq -r --arg k "$n" 'has($k)' "$STATE")" = true ] && continue
 
+    if at_cap; then
+      log "deferred #$n: at session cap"
+      continue
+    fi
     name="$PREFIX-$n"
     arg="$n"
     has skip-plan && arg="$n auto"
-    log "#$n: launching $name"
+    log "#$n: launching $name (flags: ${BG_FLAGS[*]:-<none>})"
     # BG_FLAGS may be empty; the [@]+ form keeps macOS bash 3.2 happy under set -u.
     if [ "$DRY" = 1 ]; then
       log "[dry-run] (cd $REPO_DIR && claude --bg --name $name ${BG_FLAGS[*]:-} \"/ticket-workflow:work-ticket $arg\")"
@@ -210,6 +271,7 @@ poll_repo() {
       (cd "$REPO_DIR" && claude --bg --name "$name" ${BG_FLAGS[@]+"${BG_FLAGS[@]}"} "/ticket-workflow:work-ticket $arg")
     fi
     state_set "$n" "$name"
+    note_launch
   done < <(echo "$issues" | jq -c '.[]')
 
   # --- Resolve conflicts on agent PRs ----------------------------------------
@@ -284,7 +346,11 @@ poll_repo() {
       continue
     fi
 
-    log "#$n: PR #$pr conflicts with main; launching $cname"
+    if at_cap; then
+      log "deferred #$n: at session cap (conflict resolution for PR #$pr)"
+      continue
+    fi
+    log "#$n: PR #$pr conflicts with main; launching $cname (flags: ${BG_FLAGS[*]:-<none>})"
     if [ "$DRY" = 1 ]; then
       log "[dry-run] (cd $REPO_DIR && claude --bg --name $cname ${BG_FLAGS[*]:-} \"/ticket-workflow:resolve-conflicts $n\")"
     else
@@ -292,12 +358,21 @@ poll_repo() {
     fi
     state_set "conflict-$n" "$cname" "$pr" "$main_sha"
     attempt_set "$n" "$pr" "$main_sha"
+    note_launch
   done < <(echo "$prs" | jq -c '.[]')
 }
 
 # --- Poll each repo ----------------------------------------------------------
 entries=()
 while IFS= read -r e; do entries+=("$e"); done < <(jq -c '.[]' "$CONFIG")
+
+ALL_PREFIXES=()
+while IFS= read -r e; do ALL_PREFIXES+=("$e"); done < <(jq -r '.[].sessionPrefix' "$CONFIG")
+
+GLOBAL_LIVE=0
+for p in "${ALL_PREFIXES[@]}"; do
+  GLOBAL_LIVE=$((GLOBAL_LIVE + $(live_in_state "$STATE_DIR/repos/$p/launched.json")))
+done
 
 failures=0
 for entry in "${entries[@]}"; do
@@ -307,10 +382,16 @@ for entry in "${entries[@]}"; do
   OWNER=$(echo "$entry" | jq -r '.owner')
   repo_flags=()
   read -r -a repo_flags <<<"$(echo "$entry" | jq -r '.bgFlags // ""')"
+  REPO_MAX=$(echo "$entry" | jq -r '.maxSessions // empty | floor')
   BG_FLAGS=(${GLOBAL_BG_FLAGS[@]+"${GLOBAL_BG_FLAGS[@]}"} ${repo_flags[@]+"${repo_flags[@]}"})
   case "$REPO_DIR" in "~/"*) REPO_DIR="$HOME/${REPO_DIR#"~/"}" ;; "~") REPO_DIR=$HOME ;; esac
 
   LOGP="[$PREFIX] "
+  if [ "${CLAUDE_ALLOW_BYPASS_PERMISSIONS:-}" != 1 ] && has_bypass_flag ${BG_FLAGS[@]+"${BG_FLAGS[@]}"}; then
+    log "refusing bypass flags (${BG_FLAGS[*]}); set CLAUDE_ALLOW_BYPASS_PERMISSIONS=1 to allow; skipping this repo"
+    failures=$((failures + 1))
+    continue
+  fi
   RSTATE="$STATE_DIR/repos/$PREFIX"
   # {"<N>": {"name": "...", "at": <epoch>}, "conflict-<N>": {"name", "at", "pr", "mainSha"}}
   STATE="$RSTATE/launched.json"
@@ -320,6 +401,7 @@ for entry in "${entries[@]}"; do
   mkdir -p "$RSTATE"
   [ -f "$STATE" ] || echo '{}' >"$STATE"
   [ -f "$ATTEMPTS" ] || echo '{}' >"$ATTEMPTS"
+  REPO_LIVE=$(live_in_state "$STATE")
 
   # `set -e` is ignored inside anything run as `cmd || ...` or `if cmd`, so the subshell is
   # run as a plain command with errexit off in the parent, and turns it on for itself.
