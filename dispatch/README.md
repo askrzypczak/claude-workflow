@@ -8,7 +8,7 @@ Polls every configured GitHub repo for agent-ready tickets and starts one intera
 
 1. Reconciles sessions it launched earlier (marks tickets `agent-failed` when a session failed, stopped, vanished, or finished without handing off).
 2. Launches `<prefix>-N` (`/ticket-workflow:work-ticket N`, or `N auto` with the `skip-plan` label) for each open issue authored by the repo's `owner` with `agent-ok` + `ready` and none of `in-progress`, `blocked`, `agent-failed`.
-3. Launches `<prefix>-N-conflict` (`/ticket-workflow:resolve-conflicts N`) for open `issue-N-*` PRs that conflict with main, at most once per main SHA.
+3. Launches `<prefix>-N-conflict` (`/ticket-workflow:resolve-conflicts N`) for open, same-repo `issue-N-*` PRs authored by `owner` that conflict with main, while ticket N is open, at most once per main SHA. Fork PRs and other authors' PRs are skipped: a fork can use any branch name.
 
 `claude agents --json --all` is fetched once per run and shared. Each repo is polled in its own subshell: a failure in one repo is logged (`[prefix] poll failed ...`), the others still run, and the run exits non-zero at the end.
 
@@ -21,7 +21,7 @@ Polls every configured GitHub repo for agent-ready tickets and starts one intera
 | `repo`          | yes      | `owner/name` on GitHub (passed to `gh --repo`)                                 |
 | `dir`           | yes      | Local checkout the sessions start in (`~/` is expanded)                        |
 | `sessionPrefix` | yes      | Session name prefix and state dir name; `[A-Za-z0-9_-]+`, unique across repos, case-insensitively |
-| `owner`         | yes      | Only tickets authored by this login are picked up                              |
+| `owner`         | yes      | Only tickets (and, for conflict resolution, PRs) authored by this login are picked up |
 | `bgFlags`       | no       | Extra `claude --bg` flags for this repo, appended after `CLAUDE_BG_FLAGS`      |
 
 ```json
