@@ -59,14 +59,17 @@ Migrating from a single-repo poller: copy its `launched.json` and `conflicts.jso
 
 ### install-launchd.sh
 
-    dispatch/install-launchd.sh [install|uninstall] [--yes] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]...
+    dispatch/install-launchd.sh [install|uninstall] [--yes] [--purge] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]...
 
 Before writing or starting anything, `install` runs `agent-poller.sh --dry-run`, prints the output and asks `Install and start polling? [y/N]`: the LaunchAgent runs the poller at load, so this is the first look at what would launch. Anything but `y` (or EOF on stdin) exits 1 with nothing written. A failing dry run always aborts, even with `--yes`. Installs `~/Library/LaunchAgents/com.askrzypczak.claude-workflow-poller.plist` (from `launchd/`, filled in with this clone's path) and bootstraps it: the poller runs at load and every 3 minutes, logging to `~/Library/Logs/claude-workflow-poller.log`. Rerunning `install` regenerates the plist and reloads it. It refuses to run from a worktree (the plist would point at a path that disappears) or without a config file; start from `repos.example.json`.
 
 - `--yes`: skip the confirmation question (the dry run is still run and shown), e.g. for scripted reinstalls.
-- `--legacy-label LABEL` (repeatable): boot out and delete an older LaunchAgent, before the new one starts.
-- `--migrate-state DIR PREFIX` (repeatable): copy `launched.json` and `conflicts.json` from an old poller's state dir to `repos/PREFIX/`, skipping files that already exist. `PREFIX` is the `sessionPrefix` whose sessions that poller named (`<PREFIX>-N`).
-- `uninstall` boots out and removes the plist (and any `--legacy-label` jobs).
+- `--legacy-label LABEL` (repeatable): boot out and delete an older LaunchAgent, before the new one starts. `LABEL` becomes a file name, so only letters, digits, `.`, `_` and `-` are accepted (exit 2 otherwise).
+- `--migrate-state DIR PREFIX` (repeatable): copy `launched.json` and `conflicts.json` from an old poller's state dir to `repos/PREFIX/`, skipping files that already exist. `PREFIX` is the `sessionPrefix` whose sessions that poller named (`<PREFIX>-N`); only letters, digits, `_` and `-` are accepted.
+- `uninstall` boots out and removes the plist (and any `--legacy-label` jobs), then lists what it left behind: the state dir, the config, the log file, sessions still recorded in `launched.json` (each with its `claude stop <name>`) and the plugin removal commands (`claude plugin uninstall ticket-workflow`, `claude plugin marketplace remove askrzypczak-plugins`).
+- `uninstall --purge` also deletes the state dir, the config file and the log file. It never stops sessions or removes the plugin. `--purge` is rejected for `install`.
+
+The plist is filled in with the clone path and `$HOME` XML-escaped, written to a temp file, checked with `plutil -lint` (when available) and moved into place only if valid, so a failure never leaves a broken plist.
 
 ### Running
 

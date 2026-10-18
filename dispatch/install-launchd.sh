@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Install (or remove) the LaunchAgent that runs dispatch/agent-poller.sh every 3 minutes
 # for every repo in the config. Run from the main clone, not a worktree. See dispatch/README.md.
-# Usage: dispatch/install-launchd.sh [install|uninstall] [--yes] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]...
+# Usage: dispatch/install-launchd.sh [install|uninstall] [--yes] [--purge] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]...
 #   --yes                     install without the confirmation prompt (the dry run is still shown, and a
 #                             failing dry run still aborts). Without it, install runs the poller with
 #                             --dry-run, prints what it would launch and asks "Install and start polling? [y/N]".
-#   --legacy-label LABEL      also boot out and remove an older LaunchAgent (e.g. a single-repo poller)
+#   --purge                   uninstall only: also delete the state dir, the config file and the log file
+#                             (never live sessions or the plugin; those are listed with the commands to remove them)
+#   --legacy-label LABEL      also boot out and remove an older LaunchAgent (e.g. a single-repo poller);
+#                             letters, digits, . _ - only
 #   --migrate-state DIR PREFIX  copy launched.json / conflicts.json from an older poller's state dir into
-#                             <state>/repos/PREFIX/ (never overwrites), so in-flight tickets are not relaunched
+#                             <state>/repos/PREFIX/ (never overwrites), so in-flight tickets are not relaunched;
+#                             PREFIX is letters, digits, _ - only
 # Test overrides: POLLER, LAUNCHCTL, LAUNCH_AGENTS_DIR, LOG_DIR, STATE_DIR, CLAUDE_WORKFLOW_CONFIG.
 set -euo pipefail
 
@@ -25,17 +29,33 @@ DOMAIN="gui/$(id -u)"
 cmd="${1:-install}"
 [ $# -eq 0 ] || shift
 assume_yes=0
+purge=0
 legacy=()
 mig_dirs=()
 mig_prefixes=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --yes | -y) assume_yes=1; shift ;;
-    --legacy-label) [ $# -ge 2 ] || { echo "--legacy-label needs a value" >&2; exit 2; }; legacy+=("$2"); shift 2 ;;
-    --migrate-state) [ $# -ge 3 ] || { echo "--migrate-state needs DIR PREFIX" >&2; exit 2; }; mig_dirs+=("$2"); mig_prefixes+=("$3"); shift 3 ;;
-    *) echo "Usage: $0 [install|uninstall] [--yes] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]..." >&2; exit 2 ;;
+    --purge) purge=1; shift ;;
+    --legacy-label)
+      [ $# -ge 2 ] || { echo "--legacy-label needs a value" >&2; exit 2; }
+      # The label becomes a path ($AGENTS_DIR/LABEL.plist) that is deleted: no separators, not just dots.
+      if [[ ! "$2" =~ ^[A-Za-z0-9._-]+$ ]] || [[ "$2" != *[!.]* ]]; then
+        echo "Invalid --legacy-label '$2': use letters, digits, '.', '_' and '-' only." >&2; exit 2
+      fi
+      legacy+=("$2"); shift 2 ;;
+    --migrate-state)
+      [ $# -ge 3 ] || { echo "--migrate-state needs DIR PREFIX" >&2; exit 2; }
+      if [[ ! "$3" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        echo "Invalid --migrate-state PREFIX '$3': use letters, digits, '_' and '-' only (a sessionPrefix)." >&2; exit 2
+      fi
+      mig_dirs+=("$2"); mig_prefixes+=("$3"); shift 3 ;;
+    *) echo "Usage: $0 [install|uninstall] [--yes] [--purge] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]..." >&2; exit 2 ;;
   esac
 done
+if [ "$purge" = 1 ] && [ "$cmd" != uninstall ]; then
+  echo "--purge only applies to uninstall." >&2; exit 2
+fi
 
 remove_legacy() {
   local l
@@ -59,6 +79,81 @@ migrate_state() {
       fi
     done
   done
+}
+
+# replace_all STRING PATTERN REPLACEMENT -> $REPLY, all literal. Not ${s//p/r}: a '&' in the
+# replacement means "the match" in bash 5.2 and a quoted one keeps its quotes in bash 3.2 (macOS).
+replace_all() {
+  local s="$1" pat="$2" out=""
+  while [[ "$s" == *"$pat"* ]]; do
+    out="$out${s%%"$pat"*}$3"
+    s="${s#*"$pat"}"
+  done
+  REPLY="$out$s"
+}
+
+# Escape a value for an XML text node ('&' first so the others are not double-escaped) -> $REPLY.
+xml_escape() {
+  replace_all "$1" '&' '&amp;'
+  replace_all "$REPLY" '<' '&lt;'
+  replace_all "$REPLY" '>' '&gt;'
+}
+
+# Fill the plist template into $PLIST via a temp file, replacing it only if the result is valid.
+write_plist() {
+  local tpl="$CLONE/dispatch/launchd/$LABEL.plist" tmp="$PLIST.tmp.$$" content clone home
+  [ -f "$tpl" ] || { echo "Missing plist template $tpl" >&2; return 1; }
+  content="$(cat "$tpl"; printf x)"
+  content="${content%x}"
+  xml_escape "$CLONE"; clone="$REPLY"
+  xml_escape "$HOME"; home="$REPLY"
+  replace_all "$content" __CLONE__ "$clone"
+  replace_all "$REPLY" __HOME__ "$home"
+  content="$REPLY"
+  if ! printf '%s' "$content" >"$tmp"; then
+    rm -f "$tmp"; echo "Could not write $tmp" >&2; return 1
+  fi
+  if command -v plutil >/dev/null 2>&1 && ! plutil -lint "$tmp" >&2; then
+    rm -f "$tmp"; echo "Generated plist is invalid; nothing was installed." >&2; return 1
+  fi
+  mv -f "$tmp" "$PLIST" || { rm -f "$tmp"; return 1; }
+}
+
+# Print what uninstall does not remove (and, with --purge, remove the files it owns).
+report_leftovers() {
+  local f names n log="$LOG_DIR/claude-workflow-poller.log" found=0 nojq=0
+  echo "Not removed by the LaunchAgent uninstall:"
+  # Sessions are read before a purge deletes the state dir.
+  names=""
+  for f in "$STATE_DIR"/repos/*/launched.json; do
+    [ -f "$f" ] || continue
+    if command -v jq >/dev/null 2>&1; then
+      names="$names$(jq -r '.[]? | .name? // empty' "$f" 2>/dev/null || true)"$'\n'
+    else
+      nojq=1
+    fi
+  done
+  if [ "$purge" = 1 ]; then
+    rm -rf "${STATE_DIR:?}"
+    rm -f "$CONFIG" "$log"
+    echo "  Purged: state dir $STATE_DIR, config $CONFIG, log $log"
+  else
+    echo "  State dir: $STATE_DIR"
+    echo "  Config:    $CONFIG"
+    echo "  Log:       $log"
+    echo "  (rerun with --purge to delete these three)"
+  fi
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if [ "$found" = 0 ]; then echo "  Sessions possibly still running (stop each if you want it gone):"; found=1; fi
+    echo "    claude stop $n"
+  done <<<"$names"
+  if [ "$nojq" = 1 ]; then
+    echo "  (jq not found; check $STATE_DIR/repos/*/launched.json for live sessions)"
+  fi
+  echo "  Plugin (remove if you no longer want it):"
+  echo "    claude plugin uninstall ticket-workflow"
+  echo "    claude plugin marketplace remove askrzypczak-plugins"
 }
 
 case "$cmd" in
@@ -103,7 +198,7 @@ case "$cmd" in
     # Migrate state and drop the old job before the new one first runs, so nothing is relaunched.
     remove_legacy
     migrate_state
-    sed -e "s|__CLONE__|$CLONE|g" -e "s|__HOME__|$HOME|g" "$CLONE/dispatch/launchd/$LABEL.plist" >"$PLIST"
+    write_plist || exit 1
     "$LAUNCHCTL" bootout "$DOMAIN/$LABEL" 2>/dev/null || true
     "$LAUNCHCTL" bootstrap "$DOMAIN" "$PLIST"
     echo "Installed. Log: $LOG_DIR/claude-workflow-poller.log"
@@ -113,6 +208,7 @@ case "$cmd" in
     rm -f "$PLIST"
     remove_legacy
     echo "Removed."
+    report_leftovers
     ;;
-  *) echo "Usage: $0 [install|uninstall] [--yes] ..." >&2; exit 2 ;;
+  *) echo "Usage: $0 [install|uninstall] [--yes] [--purge] ..." >&2; exit 2 ;;
 esac

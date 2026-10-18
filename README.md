@@ -35,9 +35,10 @@ Local development:
 
 ## Shared label tooling
 
-Create the ticket labels in any repo (run once, from your machine; idempotent):
+Create the ticket labels in any repo (run once, from your machine; idempotent, existing labels are left untouched):
 
     plugins/ticket-workflow/scripts/setup-labels.sh owner/repo
+    plugins/ticket-workflow/scripts/setup-labels.sh --update owner/repo   # also overwrite existing labels
 
 Close-time cleanup (strips `ready`/`in-progress`/`needs-review`/`blocked` from the closed issue and removes `blocked` from dependents whose blockers are all closed) is a reusable workflow. A consuming repo adds `.github/workflows/ticket-labels.yml`:
 
@@ -85,7 +86,7 @@ GitHub Issues is the source of truth; agents use `gh` (at `/opt/homebrew/bin/gh`
 - Type: `bug`, `feature`, `chore`.
 - Dispatch: `agent-ok` (safe for unattended background agents), `skip-plan` (launch with `work-ticket N auto`, no plan sign-off), `agent-failed` (set by the poller when a session failed; see below).
 - `ready` means a human has reviewed the ticket and approved it for work. **Only the maintainer adds `ready`.** Agents that file tickets never set `ready` or `skip-plan`, even on unblocked tickets. They may set type labels, `agent-ok` and `blocked` (with `Blocked by #M`); the maintainer removes `agent-ok` during review if needed.
-- Create or refresh the whole set in any repo with `setup-labels.sh [owner/repo]` (it adds `skip-plan` and `agent-failed` too).
+- Create the whole set in any repo with `setup-labels.sh [owner/repo]` (it adds `skip-plan` and `agent-failed` too). It skips labels that already exist; `--update` overwrites their colour and description.
 
 ### One ticket, one worktree
 One ticket = one worktree = one branch (`issue-N-slug`) = one PR containing `Closes #N`. Agents may push their own `issue-N-*` branch; humans merge. Nobody pushes to `main`, force-pushes, or merges PRs from an agent session.
