@@ -37,6 +37,7 @@ Local development:
     claude plugin update ticket-workflow@askrzypczak-plugins
     /reload-plugins
     claude plugin validate .
+    npm run typecheck
 
 ## Requirements
 
@@ -220,7 +221,7 @@ A consuming repo adds `.github/workflows/ticket-labels.yml`:
       cleanup:
         uses: askrzypczak/claude-workflow/.github/workflows/ticket-labels.yml@main
 
-The workflow checks out this public repo, sets up Node 24 itself and runs `plugins/ticket-workflow/scripts/ticket-labels.ts`, so callers need no secrets or Actions settings. Tests: `npm test`.
+The workflow checks out this public repo, sets up Node 24 itself and runs `plugins/ticket-workflow/scripts/ticket-labels.ts`, so callers need no secrets or Actions settings. Tests: `npm test`; type-check: `npm run typecheck`.
 
 ## Workflow
 
