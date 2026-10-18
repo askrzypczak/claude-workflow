@@ -32,8 +32,9 @@ CONFIG="${CLAUDE_WORKFLOW_CONFIG:-$HOME/.config/claude-workflow/repos.json}"
 STATE_DIR="${STATE_DIR:-$HOME/.local/state/claude-workflow}"
 # Default extra flags for `claude --bg` (e.g. "--permission-mode acceptEdits"); word-split.
 # A repo's `bgFlags` is appended after these.
+# Sessions start on sonnet at xhigh effort; a later --model / --effort in either place overrides.
 GLOBAL_BG_FLAGS=()
-read -r -a GLOBAL_BG_FLAGS <<<"${CLAUDE_BG_FLAGS:-}"
+read -r -a GLOBAL_BG_FLAGS <<<"--model sonnet --effort xhigh ${CLAUDE_BG_FLAGS:-}"
 
 MAX_SESSIONS="${CLAUDE_MAX_SESSIONS:-10}"
 
