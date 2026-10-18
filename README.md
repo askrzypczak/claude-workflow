@@ -43,7 +43,7 @@ Local development:
 A consuming project needs:
 
 - `npm run check`: build, lint, typecheck and tests. It is the definition of done and what CI runs.
-- Ticket labels, created with `plugins/ticket-workflow/scripts/setup-labels.sh [owner/repo]` (idempotent). See [Ticket conventions](#ticket-conventions).
+- Ticket labels, created with `plugins/ticket-workflow/scripts/setup-labels.sh [owner/repo]` (idempotent: existing labels are left untouched; `--update` overwrites their colour and description). See [Ticket conventions](#ticket-conventions).
 - `gh` authenticated (SSH remote, `gh auth login`) and `jq` on PATH.
 - The plugin enabled in `.claude/settings.json`: `enabledPlugins` with `ticket-workflow@askrzypczak-plugins`, plus an `extraKnownMarketplaces` entry for `askrzypczak/claude-workflow`.
 - Deny rules in `.claude/settings.json`. The guards ship with the plugin (`hooks/hooks.json`): the git guard blocks pushes to `main`/`master`, force pushes and `gh pr merge`; the comment guard enforces the [trust rule](#trust-rule-for-public-repos). The project only adds the deny rules:

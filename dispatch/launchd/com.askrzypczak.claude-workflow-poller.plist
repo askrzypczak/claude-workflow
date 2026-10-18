@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Template: dispatch/install-launchd.sh fills in __CLONE__ and __HOME__. -->
+<!-- Template: dispatch/install-launchd.sh fills in the clone and home paths. -->
 <plist version="1.0">
 <dict>
   <key>Label</key>

@@ -8,8 +8,10 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -255,5 +257,206 @@ describe("install-launchd.sh", () => {
 
   it("rejects unknown arguments", () => {
     assert.equal(run("install", "--bogus").status, 2);
+  });
+
+  describe("argument validation", () => {
+    for (const bad of ["../x", "a/b", "a b", "..", ".", "", "x;y"]) {
+      for (const cmd of ["install", "uninstall"]) {
+        it(`rejects --legacy-label ${JSON.stringify(bad)} on ${cmd} before touching anything`, () => {
+          writeFileSync(p("agents", "x.plist"), "keep");
+          const r = run(cmd, "--yes", "--legacy-label", bad);
+          assert.equal(r.status, 2);
+          assert.match(r.stderr, /Invalid --legacy-label/);
+          assert.deepEqual(calls(), []);
+          assert.equal(existsSync(p("agents", "x.plist")), true);
+          assert.equal(existsSync(p("agents", `${LABEL}.plist`)), false);
+        });
+      }
+    }
+
+    it("rejects a --migrate-state PREFIX that is not a plain session prefix", () => {
+      for (const bad of ["../x", "a/b", "a b", ""]) {
+        const r = run("install", "--yes", "--migrate-state", p("old"), bad);
+        assert.equal(r.status, 2, bad);
+        assert.match(r.stderr, /Invalid --migrate-state PREFIX/);
+      }
+      assert.deepEqual(calls(), []);
+      assert.equal(existsSync(p("state")), false);
+    });
+
+    it("still accepts dotted labels and prefixes with dashes and underscores", () => {
+      writeFileSync(p("agents", "com.old-job_2.plist"), "x");
+      const r = run(
+        "install",
+        "--yes",
+        "--legacy-label",
+        "com.old-job_2",
+        "--migrate-state",
+        p("old"),
+        "my_app-1",
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(existsSync(p("agents", "com.old-job_2.plist")), false);
+    });
+
+    it("rejects --purge on install", () => {
+      const r = run("install", "--yes", "--purge");
+      assert.equal(r.status, 2);
+      assert.match(r.stderr, /--purge only applies to uninstall/);
+      assert.deepEqual(calls(), []);
+    });
+  });
+
+  describe("plist templating", () => {
+    const SPECIAL = "we&ird|dir <x> y--z";
+    const pl = () => p("agents", `${LABEL}.plist`);
+    const unescape = (s) =>
+      s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+    // Copy the installer into a clone whose path has sed/XML metacharacters and run it there.
+    const runInSpecialClone = (env = {}) => {
+      const clone = p(SPECIAL);
+      mkdirSync(join(clone, "dispatch", "launchd"), { recursive: true });
+      copyFileSync(
+        join(SRC, "install-launchd.sh"),
+        join(clone, "dispatch", "install-launchd.sh"),
+      );
+      copyFileSync(
+        join(SRC, "launchd", `${LABEL}.plist`),
+        join(clone, "dispatch", "launchd", `${LABEL}.plist`),
+      );
+      const r = spawnSync(
+        "bash",
+        [join(clone, "dispatch", "install-launchd.sh"), "install", "--yes"],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            LAUNCHCTL: p("launchctl"),
+            LAUNCH_AGENTS_DIR: p("agents"),
+            LOG_DIR: p("logs"),
+            STATE_DIR: p("state"),
+            CLAUDE_WORKFLOW_CONFIG: p("cfg", "repos.json"),
+            POLLER: p("poller"),
+            ...env,
+          },
+        },
+      );
+      return { r, clone };
+    };
+
+    it("writes a valid plist with the exact clone path when it contains & | < > and spaces", () => {
+      const { r, clone } = runInSpecialClone();
+      assert.equal(r.status, 0, r.stderr);
+      const plist = readFileSync(pl(), "utf8");
+      assert.doesNotMatch(plist, /__CLONE__|__HOME__/);
+      const m = plist.match(/<string>([^<]*agent-poller\.sh)<\/string>/);
+      assert.ok(m, plist);
+      assert.equal(unescape(m[1]), `${clone}/dispatch/agent-poller.sh`);
+      const lint = spawnSync("plutil", ["-lint", pl()], { encoding: "utf8" });
+      if (!lint.error) assert.equal(lint.status, 0, lint.stdout + lint.stderr);
+      assert.ok(calls().some((c) => c.startsWith("bootstrap")));
+    });
+
+    it("escapes & in HOME and substitutes it literally", () => {
+      const rh =runWith({ env: { HOME: "/tmp/a&b" } }, "install", "--yes");
+      assert.equal(rh.status, 0, rh.stderr);
+      const plist = readFileSync(pl(), "utf8");
+      assert.match(plist, /<string>\/tmp\/a&amp;b\/Library\/Logs\/claude-workflow-poller\.log<\/string>/);
+    });
+
+    it("leaves no plist (and no temp file) and does not bootstrap when validation fails", () => {
+      mkdirSync(p("bin"));
+      writeFileSync(p("bin", "plutil"), "#!/bin/sh\necho bad plist >&2\nexit 1\n");
+      chmodSync(p("bin", "plutil"), 0o755);
+      const { r } = runInSpecialClone({
+        PATH: `${p("bin")}:${process.env.PATH}`,
+      });
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /invalid/);
+      assert.deepEqual(readdirSync(p("agents")), []);
+      assert.ok(!calls().some((c) => c.startsWith("bootstrap")));
+    });
+
+    it("keeps the previous plist when the new one fails validation", () => {
+      writeFileSync(pl(), "old good plist");
+      mkdirSync(p("bin"));
+      writeFileSync(p("bin", "plutil"), "#!/bin/sh\nexit 1\n");
+      chmodSync(p("bin", "plutil"), 0o755);
+      const { r } = runInSpecialClone({
+        PATH: `${p("bin")}:${process.env.PATH}`,
+      });
+      assert.equal(r.status, 1);
+      assert.equal(readFileSync(pl(), "utf8"), "old good plist");
+      assert.deepEqual(readdirSync(p("agents")), [`${LABEL}.plist`]);
+    });
+  });
+
+  describe("uninstall leftovers", () => {
+    const seed = () => {
+      mkdirSync(p("state", "repos", "app"), { recursive: true });
+      mkdirSync(p("state", "repos", "web"), { recursive: true });
+      writeFileSync(
+        p("state", "repos", "app", "launched.json"),
+        '{"7":{"name":"app-7","at":1},"9":{"name":"app-9","at":2}}',
+      );
+      writeFileSync(
+        p("state", "repos", "web", "launched.json"),
+        '{"3":{"name":"web-3","at":1}}',
+      );
+      mkdirSync(p("logs"));
+      writeFileSync(p("logs", "claude-workflow-poller.log"), "log");
+    };
+
+    it("lists state, config, log, sessions and plugin commands and keeps the files", () => {
+      seed();
+      const r = run("uninstall");
+      assert.equal(r.status, 0, r.stderr);
+      assert.ok(r.stdout.includes(p("state")));
+      assert.ok(r.stdout.includes(p("cfg", "repos.json")));
+      assert.ok(r.stdout.includes(p("logs", "claude-workflow-poller.log")));
+      for (const n of ["app-7", "app-9", "web-3"])
+        assert.match(r.stdout, new RegExp(`claude stop ${n}\\b`));
+      assert.match(r.stdout, /claude plugin uninstall ticket-workflow/);
+      assert.match(r.stdout, /claude plugin marketplace remove askrzypczak-plugins/);
+      assert.ok(existsSync(p("state", "repos", "app", "launched.json")));
+      assert.ok(existsSync(p("cfg", "repos.json")));
+      assert.ok(existsSync(p("logs", "claude-workflow-poller.log")));
+    });
+
+    it("says so when jq is missing instead of silently skipping sessions", () => {
+      seed();
+      mkdirSync(p("nojq"));
+      for (const t of ["bash", "dirname", "id", "rm", "cat", "mkdir"]) {
+        const found = spawnSync("sh", ["-c", `command -v ${t}`], {
+          encoding: "utf8",
+        }).stdout.trim();
+        symlinkSync(found, p("nojq", t));
+      }
+      const r = runWith({ env: { PATH: p("nojq") } }, "uninstall");
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /jq not found; check .*launched\.json/);
+      assert.doesNotMatch(r.stdout, /claude stop/);
+    });
+
+    it("works with no state at all", () => {
+      const r = run("uninstall");
+      assert.equal(r.status, 0, r.stderr);
+      assert.doesNotMatch(r.stdout, /claude stop/);
+      assert.match(r.stdout, /claude plugin uninstall/);
+    });
+
+    it("--purge removes state, config and log, still lists sessions and plugin commands", () => {
+      seed();
+      writeFileSync(p("agents", `${LABEL}.plist`), "x");
+      const r = run("uninstall", "--purge");
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(existsSync(p("state")), false);
+      assert.equal(existsSync(p("cfg", "repos.json")), false);
+      assert.equal(existsSync(p("logs", "claude-workflow-poller.log")), false);
+      assert.equal(existsSync(p("agents", `${LABEL}.plist`)), false);
+      assert.match(r.stdout, /Purged/);
+      assert.match(r.stdout, /claude stop app-7\b/);
+      assert.match(r.stdout, /claude plugin uninstall ticket-workflow/);
+    });
   });
 });
