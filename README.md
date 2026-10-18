@@ -105,6 +105,8 @@ A ticket is picked up when it is open, authored by the repo's configured `owner`
 
 The poller, installer and config run from the local clone of this repo, not the plugin cache: a LaunchAgent needs a stable path.
 
+The poller needs Node 24 on the launchd `PATH`, which is minimal; the entrypoint adds fnm's default bin, `~/.local/bin` and Homebrew to it. It also needs `gh` and `claude`.
+
 ### What this can do on your machine
 
 Labels on GitHub start unattended agent sessions locally:

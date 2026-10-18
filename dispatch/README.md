@@ -10,7 +10,23 @@ Polls every configured GitHub repo for agent-ready tickets and starts one intera
 2. Launches `<prefix>-N` (`/ticket-workflow:work-ticket N`, or `N auto` with the `skip-plan` label) for each open issue authored by the repo's `owner` with `agent-ok` + `ready` and none of `in-progress`, `blocked`, `agent-failed`.
 3. Launches `<prefix>-N-conflict` (`/ticket-workflow:resolve-conflicts N`) for open, same-repo `issue-N-*` PRs authored by `owner` that conflict with main, while ticket N is open, at most once per main SHA. Fork PRs and other authors' PRs are skipped: a fork can use any branch name.
 
-`claude agents --json --all` is fetched once per run and shared. Each repo is polled in its own subshell: a failure in one repo is logged (`[prefix] poll failed ...`), the others still run, and the run exits non-zero at the end.
+`claude agents --json --all` is fetched once per run and shared. A failure in one repo is logged (`[prefix] poll failed ...`), the others still run, and the run exits non-zero at the end.
+
+### Layout
+
+`agent-poller.sh` is a thin entrypoint (the path the LaunchAgent runs): it sets `PATH` and runs the TypeScript poller with Node (type stripping, no build step). If `node` is not on `PATH` it logs one line and exits 1.
+
+```
+agent-poller.sh        entrypoint: PATH setup, then exec node poller/main.ts
+poller/main.ts         startup checks, lock, session list, repo loop, exit code
+poller/poll.ts         one repo's poll: reconcile, launch tickets, resolve conflicts
+poller/decide.ts       pure decisions: session state, caps, bypass flags, reconcile, eligibility
+poller/config.ts       pure config, CLAUDE_MAX_SESSIONS and flag parsing
+poller/io.ts           side effects (gh, claude, state files, lock, log) behind PollerIo
+poller/jq.ts           reads untrusted JSON the way the original jq filters did
+poller/types.ts        shared types
+poller/*.test.ts       vitest unit tests
+```
 
 ### Config
 
@@ -86,12 +102,16 @@ Environment:
 - The effective flags are logged on every launch line (`flags: ...`, or `<none>`).
 - `EXTRA_PATH`: prepended to `PATH` (the script also adds the fnm default bin dir, `~/.local/bin` and Homebrew, since launchd does not read your shell profile). Used by the tests to inject fake binaries.
 
-Requires `bash` (3.2 compatible), `jq`, `gh` and `claude` on `PATH`.
+Requires Node 24 (`node` on the `PATH` above, which is what the LaunchAgent sees), plus `gh` and `claude`. The poller itself no longer needs `jq` (the installer's `uninstall` uses it, if present, to list leftover sessions).
 
 ### Tests
 
-Plain `node:test`, no dependencies (Node 24; there is no `package.json`). Fake `gh` and `claude` binaries are put on `PATH`.
+Both run from `npm test` (after `npm ci`; Node 24):
 
+- `dispatch/poller/*.test.ts`: vitest unit tests for the decisions and for one repo's poll against a fake `PollerIo`.
+- `dispatch/*.test.mjs`: `node:test` suites that run the real entrypoint (`agent-poller.test.mjs`) and the installer (`install-launchd.test.mjs`) with fake `gh`, `claude` and `launchctl` binaries on `PATH`; nothing real is touched.
+
+To run one part:
+
+    npx vitest run dispatch/poller
     node --test dispatch/*.test.mjs
-
-`install-launchd.test.mjs` runs a copy of the installer against a fake `launchctl`; nothing real is touched.
