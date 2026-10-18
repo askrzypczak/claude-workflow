@@ -207,20 +207,26 @@ describe("agent-poller conflict phase", () => {
       JSON.stringify(opts.attempts ?? {}),
     );
     writeFileSync(join(repoDir, "sha"), opts.sha ?? "sha1");
+    // Same-repo, owner-authored and conflicting unless the test says otherwise.
+    const prRow = (p) => ({
+      isCrossRepository: false,
+      author: { login: "example-owner" },
+      mergeable: "CONFLICTING",
+      mergeStateStatus: "DIRTY",
+      ...p,
+    });
     writeFileSync(
       join(repoDir, "prs.json"),
       JSON.stringify([
-        {
+        prRow({
           number: 9,
           headRefName: opts.branch ?? "issue-5-thing",
           mergeable: opts.mergeable ?? "CONFLICTING",
-          mergeStateStatus: "DIRTY",
-        },
-        ...(opts.extraPrs ?? []).map((p) => ({
-          ...p,
-          mergeable: "CONFLICTING",
-          mergeStateStatus: "DIRTY",
-        })),
+          // `crossRepo: undefined` drops the field from the JSON.
+          ...("crossRepo" in opts ? { isCrossRepository: opts.crossRepo } : {}),
+          ...(opts.prAuthor ? { author: { login: opts.prAuthor } } : {}),
+        }),
+        ...(opts.extraPrs ?? []).map(prRow),
       ]),
     );
     writeFileSync(
@@ -236,7 +242,7 @@ describe("agent-poller conflict phase", () => {
     writeFileSync(
       join(repoDir, "issue.json"),
       JSON.stringify({
-        state: "OPEN",
+        state: opts.issueState ?? "OPEN",
         author: { login: opts.author ?? "example-owner" },
         labels: (opts.labels ?? ["agent-ok", "needs-review"]).map((name) => ({
           name,
@@ -361,6 +367,52 @@ describe("agent-poller conflict phase", () => {
     assert.deepEqual(runConflict({ author: "someone" }).launches, []);
   });
 
+  it("skips a PR from a fork, even on an issue-N-* branch", () => {
+    const r = runConflict({ crossRepo: true });
+    assert.deepEqual(r.launches, []);
+    assert.ok(r.stdout.includes("#5: PR #9 is from a fork; skipping"), r.stdout);
+    assert.deepEqual(r.state, {});
+    assert.deepEqual(r.attempts, {});
+  });
+
+  it("treats a PR without isCrossRepository as a fork", () => {
+    const r = runConflict({ crossRepo: undefined });
+    assert.deepEqual(r.launches, []);
+    assert.ok(r.stdout.includes("is from a fork"), r.stdout);
+  });
+
+  it("skips a same-repo PR by another author", () => {
+    const r = runConflict({ prAuthor: "someone" });
+    assert.deepEqual(r.launches, []);
+    assert.ok(
+      r.stdout.includes("#5: PR #9 author someone is not example-owner; skipping"),
+      r.stdout,
+    );
+  });
+
+  it("does not read the issue for an untrusted PR", () => {
+    const r = runConflict({ crossRepo: true });
+    assert.ok(!r.calls.some((c) => c.startsWith("issue view")), r.calls.join("\n"));
+  });
+
+  it("skips a closed ticket", () => {
+    const r = runConflict({ issueState: "CLOSED" });
+    assert.deepEqual(r.launches, []);
+    assert.ok(r.stdout.includes("#5: issue is not open"), r.stdout);
+  });
+
+  it("skips a fork PR and still launches for the owner's PR on the same ticket", () => {
+    const r = runConflict({
+      branch: "issue-5-fork",
+      crossRepo: true,
+      prAuthor: "someone",
+      extraPrs: [{ number: 10, headRefName: "issue-5-thing" }],
+    });
+    assert.deepEqual(r.launches, [CONFLICT_LAUNCH]);
+    assert.equal(r.state["conflict-5"].pr, "10");
+    assert.deepEqual(r.attempts["5"], { pr: "10", mainSha: "sha1" });
+  });
+
   it("dry-run logs the launch without launching or writing state", () => {
     const r = runConflict({ dry: true });
     assert.ok(r.stdout.includes("[dry-run]"));
@@ -407,6 +459,8 @@ describe("agent-poller conflict reconcile", () => {
         {
           number: 9,
           headRefName: "issue-5-thing",
+          isCrossRepository: false,
+          author: { login: "example-owner" },
           mergeable: opts.mergeable ?? "CONFLICTING",
           mergeStateStatus: "DIRTY",
         },

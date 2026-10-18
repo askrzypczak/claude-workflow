@@ -13,8 +13,9 @@
 # are launched with `auto`, which skips the plan sign-off. The work-ticket skill
 # does the claiming itself.
 #
-# A third phase finds open `issue-N-*` PRs that conflict with main and launches
-# `<prefix>-N-conflict` (`resolve-conflicts N`), at most once per main SHA.
+# A third phase finds open, same-repo `issue-N-*` PRs by `owner` that conflict with main
+# and launches `<prefix>-N-conflict` (`resolve-conflicts N`), at most once per main SHA.
+# Fork PRs and PRs by anyone else are skipped: a fork can use any branch name.
 #
 # Each repo is polled in its own subshell: a failure in one is logged and the others still run.
 set -euo pipefail
@@ -124,7 +125,7 @@ fail_conflict() { # number name pr reason
 # Uses GH_REPO, REPO_DIR, OWNER, PREFIX, STATE, ATTEMPTS, BG_FLAGS (set by the caller).
 # Must run with `set -e` active (see the call site): a failing command aborts this repo only.
 poll_repo() {
-  local now key n conflict pr name age st prinfo issue labels ok issues prs row author arg cname main_sha
+  local now key n conflict pr name age st prinfo issue labels ok issues prs row author pr_author arg cname main_sha
 
   # --- Reconcile sessions we launched ---------------------------------------
   now=$(date +%s)
@@ -214,7 +215,7 @@ poll_repo() {
   # --- Resolve conflicts on agent PRs ----------------------------------------
   # Detection is plain gh/jq (no model tokens). UNKNOWN means GitHub has not computed
   # mergeability yet: retry next poll. BEHIND without conflicts is ignored.
-  prs=$(gh pr list --repo "$GH_REPO" --state open --limit 100 --json number,headRefName,mergeable,mergeStateStatus)
+  prs=$(gh pr list --repo "$GH_REPO" --state open --limit 100 --json number,headRefName,mergeable,mergeStateStatus,isCrossRepository,author)
   main_sha=""
 
   while read -r row; do
@@ -222,6 +223,17 @@ poll_repo() {
     pr=$(echo "$row" | jq -r '.number')
     n=$(echo "$row" | jq -r '.headRefName | capture("^issue-(?<n>[0-9]+)-").n // empty')
     [ -n "$n" ] || continue
+    # Anyone can open a PR from a fork and name its branch issue-N-*: only same-repo PRs
+    # by the owner are resolved. A missing isCrossRepository counts as a fork.
+    if [ "$(echo "$row" | jq -r '.isCrossRepository')" != false ]; then
+      log "#$n: PR #$pr is from a fork; skipping"
+      continue
+    fi
+    pr_author=$(echo "$row" | jq -r '.author.login')
+    if [ "$pr_author" != "$OWNER" ]; then
+      log "#$n: PR #$pr author $pr_author is not $OWNER; skipping"
+      continue
+    fi
     case "$(echo "$row" | jq -r '.mergeable')" in
       CONFLICTING) ;;
       UNKNOWN)
@@ -245,10 +257,14 @@ poll_repo() {
     esac
     [ "$(jq -r --arg k "conflict-$n" 'has($k)' "$STATE")" = true ] && continue
 
-    issue=$(gh issue view "$n" --repo "$GH_REPO" --json author,labels) || {
+    issue=$(gh issue view "$n" --repo "$GH_REPO" --json author,labels,state) || {
       log "#$n: cannot read issue; skipping"
       continue
     }
+    if [ "$(echo "$issue" | jq -r '.state')" != OPEN ]; then
+      log "#$n: issue is not open; skipping conflict resolution"
+      continue
+    fi
     labels=",$(echo "$issue" | jq -r '[.labels[].name] | join(",")'),"
     case "$labels" in *,agent-ok,*) ;; *) continue ;; esac
     case "$labels" in *,agent-failed,*) continue ;; esac
