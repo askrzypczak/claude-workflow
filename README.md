@@ -13,7 +13,8 @@ Plugin `ticket-workflow`:
   - `work-ticket`: works a GitHub issue end to end.
   - `address-feedback`: handles review feedback on the PR.
   - `resolve-conflicts`: merges `origin/main` into a conflicting `issue-N-*` PR branch, runs `npm run check`, publishes. Stops with `needs input` on semantic conflicts; never rebases or force-pushes.
-- Subagents: `implementer` (haiku, xhigh; sonnet or opus per the approved plan) builds code and tests; `reviewer` (opus, medium, read-only) reviews complex diffs.
+  - `audit-epic`: read-only necessity audit of an epic and its child tickets; prints a report and changes nothing on GitHub.
+- Subagents: `implementer` (haiku, xhigh; sonnet or opus per the approved plan) builds code and tests; `reviewer` (opus, medium, read-only) reviews complex diffs; `spec-auditor` (opus, high, read-only) audits epics for necessity.
 - `scripts/grg.sh`: mechanical green/red/green test check. Self-test: `scripts/test-grg.sh`.
 - Hooks: a git guard and a comment guard (see [Requirements](#requirements) and [Trust rule](#trust-rule-for-public-repos)).
 
@@ -78,6 +79,10 @@ One ticket = one worktree = one branch (`issue-N-slug`) = one PR containing `Clo
 ### Dependencies
 
 Write `Blocked by #M` in the issue body (also `#3, #5` or `#3 and #5`; several lines allowed) and add `blocked`. [Label cleanup](#label-cleanup-on-close) removes it.
+
+### Epics
+
+Write `Part of #N` in a child ticket's body to link it to its epic; the epic body lists its children. `audit-epic N` reads the epic and its children together. Unlike `Blocked by`, it carries no state (label cleanup ignores it).
 
 ### Trust rule for public repos
 
