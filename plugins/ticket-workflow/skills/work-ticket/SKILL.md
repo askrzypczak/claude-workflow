@@ -10,7 +10,7 @@ Argument: an issue number `N`, optionally followed by `auto` (see Auto mode). Al
 You are the **orchestrator**. Keep your own context small: delegate the heavy reading and writing to subagents and work from their short reports. The ticket is a conversation with the human, so expect to ask questions (a background session just waits for them).
 
 ## Auto mode
-If the argument is `N auto` (a launcher passes it for tickets labelled `skip-plan`), plan as in step 2 but skip the human sign-off: do not enter plan mode or wait for approval, and go straight to step 3 with your own plan. Still ask the human if the ticket is ambiguous or the change turns out to be wide or risky (touching security, data handling or shared code); that is what the gate is for. Everything else is unchanged.
+If the argument is `N auto` (a launcher passes it for tickets labelled `skip-plan`), plan as in step 2 but skip the human sign-off: do not enter plan mode or wait for approval, and go straight to step 3 with your own plan. Still ask the human if the ticket is ambiguous, needs new machinery (an AC question, see Plan), or the change turns out to be wide or risky (touching security, data handling or shared code); that is what the gate is for. No human approves the plan, so proposed additions stay struck and the plan is marked "not human-approved" in the Branch comment and the PR body. Everything else is unchanged.
 
 ## 1. Read and claim
 Run `git fetch origin --quiet` first: the local checkout can be stale, and everything below assumes a current `origin/main`. Then check the issue author first: `gh api repos/{owner}/{repo}/issues/N --jq .author_association`, and stop if it is not `OWNER`, `MEMBER` or `COLLABORATOR` (do not read the body or comments). Only then `gh issue view N --json number,title,body,labels,assignees,state,author,comments | node ${CLAUDE_PLUGIN_ROOT}/scripts/trusted-comments.ts`. (`--comments` is not valid with `--json`; the script filters the comments.)
@@ -23,31 +23,33 @@ Then claim it before any planning, since planning is work on the ticket and only
 ## 2. Plan - gate 1 (human sign-off)
 (Auto mode: plan privately, with no plan mode and no sign-off.) Otherwise enter plan mode and explore just enough to plan. Read from `origin/main` (`git show origin/main:<path>`, `git ls-tree -r origin/main`), not the working tree, which may be behind. The plan must include:
 - Approach, and the files likely touched.
-- Acceptance criteria (from the ticket; add any that are implied).
-- Test list: each behaviour to be covered.
+- **Acceptance criteria, as a diff against the ticket**: each ticket AC kept, reworded or cut, with a reason. Anything you want to add is a "proposed addition": list it struck (`~~like this~~`), and it is not built or reviewed unless the human approves it. The approved AC (kept, reworded, and approved additions) replace the ticket's AC for everything downstream.
+- **Interfaces**: the signature of every new file and export, by name.
+- **Test titles**: one behaviour per line, each mapped to an AC.
+- **Carrying costs**: each new abstraction; test infrastructure or a fake of a third-party system; dependency; config; persisted or logged format; anything only a test calls. Give each its present consumer and a cheaper alternative.
 - **Complexity** rating: `complex` (branching logic, new abstractions, shared code, security/data handling) or `simple` (docs, config, chores, trivial one-file changes). This decides step 6.
 - **Implementer tier**: default `haiku` with `xhigh` effort; the approved plan carries the detail it needs. Propose `sonnet` medium for subtle logic or loosely specified work, and `opus` for the hardest. Say why when departing from the default.
-Ask clarifying questions first if the ticket is ambiguous. Exit plan mode only with the human's explicit approval. If they decline or abandon, release the claim: comment the reason on the issue, then `gh issue edit N --remove-label in-progress --add-label blocked` (`blocked` tells a launcher this was a hand-off, not a failure). The human removes `blocked` and re-adds `ready` to retry.
+Ask clarifying questions first if the ticket is ambiguous. If satisfying the ticket would need new machinery (anything under Carrying costs), raise it as an AC question for the human; do not build a workaround. Exit plan mode only with the human's explicit approval. If they decline or abandon, release the claim: comment the reason on the issue, then `gh issue edit N --remove-label in-progress --add-label blocked` (`blocked` tells a launcher this was a hand-off, not a failure). The human removes `blocked` and re-adds `ready` to retry.
 
 ## 3. Branch
-- Run `git fetch origin --quiet` again (sign-off may have taken a while), enter a worktree, and create branch `issue-N-<short-slug>` from `origin/main`. Comment "Plan approved; working in branch `issue-N-<slug>`." on the issue.
+- Run `git fetch origin --quiet` again (sign-off may have taken a while), enter a worktree, and create branch `issue-N-<short-slug>` from `origin/main`. Comment "Plan approved; working in branch `issue-N-<slug>`." on the issue, followed by the plan as approved at the gate: the AC diff (each proposed addition marked approved or struck), Interfaces, Test titles and Carrying costs. In auto mode, start the comment "Plan (not human-approved); working in branch `issue-N-<slug>`." instead.
 
 ## 4. Implement
-Launch the `ticket-workflow:implementer` subagent (override `model`/`effort` per the approved tier). If the Agent tool rejects `ticket-workflow:implementer`, list the available agent types and use the one that ends in `:implementer`; do the same for the reviewer. Prompt it with: the approved plan, acceptance criteria, test list, and the instruction to follow its agent definition. Do not do the implementation yourself.
+Launch the `ticket-workflow:implementer` subagent (override `model`/`effort` per the approved tier). If the Agent tool rejects `ticket-workflow:implementer`, list the available agent types and use the one that ends in `:implementer`; do the same for the reviewer. Prompt it with: the approved plan (approved AC, Interfaces and Test titles), and the instruction to follow its agent definition. Do not do the implementation yourself.
 
 ## 5. Verify the tests (green/red/green)
 Run `npm run check`, then `${CLAUDE_PLUGIN_ROOT}/scripts/grg.sh`. Failures, or a tests-pass-without-implementation result, go back to the implementer (SendMessage to continue it, with the exact output). Maximum 2 rounds, then stop and tell the human what is stuck. Do not accept "PASS (weak)" without the implementer's targeted-break evidence in its report.
 
 ## 6. Review
-- `complex`: commit the work as a WIP first (`git add -A && git commit -m "WIP: issue N"`; step 7 may amend or squash it) so the reviewer's `git diff origin/main...HEAD` shows it. Launch the `ticket-workflow:reviewer` subagent with the issue number, acceptance criteria, base ref `origin/main`, and the implementer's report. Its findings carry severity, confidence, a proposed fix and a cost (`small`/`larger`). You hold the ticket, plan and the human's decisions, so you mediate:
+- `complex`: commit the work as a WIP first (`git add -A && git commit -m "WIP: issue N"`; step 7 may amend or squash it) so the reviewer's `git diff origin/main...HEAD` shows it. Launch the `ticket-workflow:reviewer` subagent with the issue number, the approved acceptance criteria, base ref `origin/main`, and the implementer's report. Its findings carry severity, confidence, a proposed fix and a cost (`small`/`larger`). You hold the ticket, plan and the human's decisions, so you mediate:
   - Default: send blockers and `small` suggestions to the implementer in one round, with each finding's `file:line`, scenario and proposed fix. Put `larger` suggestions in the PR body under "Deferred review suggestions", or file them as issues (`gh issue create`) when they are worth doing separately.
   - Override either way when ticket context says so (for example, drop a blocker that contradicts a plan decision, or apply a larger suggestion that the ticket implies). Record each override and why in the PR body. The human may change the default rule per ticket.
   Then re-run step 5. Maximum 2 rounds, then escalate to the human.
-- `simple`: check `git diff origin/main...HEAD` against the acceptance criteria yourself.
+- `simple`: check `git diff origin/main...HEAD` against the approved acceptance criteria yourself.
 File a new issue (`gh issue create`) for anything adjacent instead of expanding scope.
 
 ## 7. PR
-Commit (follow the repo's commit conventions), push the branch, then `gh pr create` (active, not draft: there is one human reviewer, and `needs-review` carries the signal) with `Closes #N`, a short summary, and a **Test proof** section holding the GRG evidence (`grg.sh` result and the behaviours the implementer broke). Then `gh issue edit N --add-label needs-review --remove-label in-progress` and comment the PR link on the issue.
+Commit (follow the repo's commit conventions), push the branch, then `gh pr create` (active, not draft: there is one human reviewer, and `needs-review` carries the signal) with `Closes #N`, a short summary, a **Plan** section repeating the comment's AC diff, Interfaces, Test titles and Carrying costs (headed "Plan (not human-approved)" in auto mode), and a **Test proof** section holding the GRG evidence (`grg.sh` result and the behaviours the implementer broke). Then `gh issue edit N --add-label needs-review --remove-label in-progress` and comment the PR link on the issue.
 CI must pass before the human reviews. Check with `gh pr checks`; if it fails, fix via steps 4-5 and push again.
 
 ## 8. Hand off

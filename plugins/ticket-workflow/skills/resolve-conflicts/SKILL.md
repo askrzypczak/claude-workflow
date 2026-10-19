@@ -25,7 +25,7 @@ For each conflicted file, read both sides (the commits on each side since the me
 - Never resolve by dropping one side's tests, or by deleting a side's behaviour to make the merge go away.
 
 **Stop conditions.** Abort with `git merge --abort`, publish nothing, and end with `needs input:` (plus a PR comment saying the same) when any of these hold:
-- Both sides change the same logic differently, and the correct combination is not obvious from the diffs and the ticket.
+- Both sides change the same logic differently, and the correct combination is not obvious from the diffs, the ticket and the PR body's approved AC (its **Plan** section).
 - Tests disagree: the merged result only passes if one side's expectations are changed.
 - A conflict touches security or data handling, or you cannot explain in one sentence why your resolution is right.
 - The check keeps failing after one fix attempt for a reason unrelated to conflict markers.
