@@ -1,6 +1,6 @@
 ---
 name: work-ticket
-description: Work a GitHub issue end to end - plan with a human sign-off gate, delegate to an implementer subagent, prove the tests, review, and open a PR. Use when asked to "work ticket #N" or pick up an issue.
+description: 'Work a GitHub issue end to end - plan with a human sign-off gate, delegate to an implementer subagent, prove the tests, review, and open a PR. Use when asked to "work ticket #N" or pick up an issue.'
 ---
 
 # work-ticket
