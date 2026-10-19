@@ -117,6 +117,12 @@ checkfetch allow 'https://example.com/docs'
 checkfetch allow 'https://github.com/o/r'
 checkfetch allow 'https://github.com/o/r/blob/main/README.md'
 
+# epic audit (audit-epic skill and spec-auditor agent)
+check allow 'gh api repos/{owner}/{repo}/issues/7 --jq .author_association'
+check allow "gh issue view 7 --json number,title,state,body,comments | $T"
+check allow 'gh issue list --state all --limit 100 --search "Part of #7" --json number,title,state'
+check deny 'gh issue list --state all --search "Part of #7" --json number,title,body'
+
 # missing jq fails closed (PATH has no jq; run bash by absolute path)
 empty=$(mktemp -d)
 bashbin=$(command -v bash)
