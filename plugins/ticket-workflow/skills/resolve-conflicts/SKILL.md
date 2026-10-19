@@ -1,6 +1,6 @@
 ---
 name: resolve-conflicts
-description: Bring a PR branch that conflicts with main back to mergeable by merging origin/main into it, resolving conflicts, running the checks and publishing the branch. Use when asked to "resolve conflicts on #N" or when a launcher reports a conflicting issue-N-* PR.
+description: 'Bring a PR branch that conflicts with main back to mergeable by merging origin/main into it, resolving conflicts, running the checks and publishing the branch. Use when asked to "resolve conflicts on #N" or when a launcher reports a conflicting issue-N-* PR.'
 ---
 
 # resolve-conflicts

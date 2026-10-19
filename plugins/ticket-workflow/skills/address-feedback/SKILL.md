@@ -1,6 +1,6 @@
 ---
 name: address-feedback
-description: Handle the human reviewer's review of a PR - collect feedback from live discussion, merge in GitHub PR comments, confirm the list, then fix. Use when asked to "address feedback on #N", when the human says they are done reviewing, or after review comments land on a PR.
+description: 'Handle the human reviewer''s review of a PR - collect feedback from live discussion, merge in GitHub PR comments, confirm the list, then fix. Use when asked to "address feedback on #N", when the human says they are done reviewing, or after review comments land on a PR.'
 ---
 
 # address-feedback
