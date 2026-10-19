@@ -236,7 +236,7 @@ The workflow checks out this public repo, sets up Node 24 itself and runs `plugi
 1. Check the ticket author is trusted (owner, member, collaborator) before reading anything else, then read and claim the ticket (planning counts as work), reading only trusted comments.
 2. Plan, with human sign-off: the AC as a diff against the ticket (additions struck unless approved), Interfaces, Test titles and Carrying costs.
 3. Branch in a worktree; the approved plan is posted on the issue.
-4. Contract and implement: the contract-writer writes stubs and failing tests from the approved Interfaces and Test titles, and the red run is observed and committed; the implementer then makes them pass. Tickets with no red state say "contract N/A".
+4. Contract and implement: the contract-writer writes stubs and failing tests from the approved Interfaces and Test titles, and the red run is observed and committed; the implementer then makes them pass. Tickets with no red state say "contract N/A"; a `simple` change with no tests whose plan holds the change verbatim is applied by the orchestrator, with no subagent.
 5. Verify the tests: `npm run check`, contract tests unchanged since the contract commit, red/green record.
 6. Reviewer on complex changes; the orchestrator triages its findings: blockers and behaviour-preserving cuts go to the implementer; additive suggestions and notes are deferred to the PR body; cuts that remove validation, error handling, security code or a test, and any AC suspect, are left to the human.
 7. Open an active (non-draft) PR with CI green; its body repeats the approved plan.
