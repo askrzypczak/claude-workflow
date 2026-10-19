@@ -30,8 +30,6 @@
       "Bash(git switch *)",
       "Bash(git fetch *)",
       "Bash(git push *)",
-      "Bash(*/scripts/grg.sh)",
-      "Bash(*/scripts/grg.sh *)",
       "Bash(npm run *)"
     ],
     "deny": [
