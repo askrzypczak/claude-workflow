@@ -14,8 +14,7 @@ Plugin `ticket-workflow`:
   - `address-feedback`: handles review feedback on the PR.
   - `resolve-conflicts`: merges `origin/main` into a conflicting `issue-N-*` PR branch, runs `npm run check`, publishes. Stops with `needs input` on semantic conflicts; never rebases or force-pushes.
   - `audit-epic`: read-only necessity audit of an epic and its child tickets; prints a report and changes nothing on GitHub.
-- Subagents: `implementer` (haiku, xhigh; sonnet or opus per the approved plan) builds code and tests; `reviewer` (opus, medium, read-only) reviews complex diffs; `spec-auditor` (opus, high, read-only) audits epics for necessity.
-- `scripts/grg.sh`: mechanical green/red/green test check. Self-test: `scripts/test-grg.sh`.
+- Subagents: `contract-writer` (sonnet, high; opus when the plan is `complex`) writes stubs and failing tests first; `implementer` (haiku, xhigh; sonnet or opus per the approved plan) builds the code that makes them pass; `reviewer` (opus, medium, read-only) reviews complex diffs; `spec-auditor` (opus, high, read-only) audits epics for necessity.
 - Hooks: a git guard and a comment guard (see [Requirements](#requirements) and [Trust rule](#trust-rule-for-public-repos)).
 
 Outside the plugin, `dispatch/` holds `agent-poller.sh`, a multi-repo poller that starts background sessions for `ready` + `agent-ok` tickets. It runs from this clone. See [Dispatch](#dispatch-automatic-ticket-pickup) and `dispatch/README.md`.
@@ -58,6 +57,7 @@ A consuming project needs:
           ]
         }
 - Optional, for [dispatch](#dispatch-automatic-ticket-pickup): an entry in the poller config and a directory trusted by Claude Code.
+- Optional: an unused-export / dead-file check inside `npm run check` (for example knip in production mode, excluding test suites; default knip treats test files as entry points).
 - Optional, for [label cleanup](#label-cleanup-on-close): a caller workflow.
 
 ## Ticket conventions
@@ -236,8 +236,8 @@ The workflow checks out this public repo, sets up Node 24 itself and runs `plugi
 1. Check the ticket author is trusted (owner, member, collaborator) before reading anything else, then read and claim the ticket (planning counts as work), reading only trusted comments.
 2. Plan, with human sign-off: the AC as a diff against the ticket (additions struck unless approved), Interfaces, Test titles and Carrying costs.
 3. Branch in a worktree; the approved plan is posted on the issue.
-4. Implementer builds the code and tests.
-5. Green/red/green proof.
+4. Contract and implement: the contract-writer writes stubs and failing tests from the approved Interfaces and Test titles, and the red run is observed and committed; the implementer then makes them pass. Tickets with no red state say "contract N/A".
+5. Verify the tests: `npm run check`, contract tests unchanged since the contract commit, red/green record.
 6. Reviewer on complex changes; the orchestrator triages its findings (blockers and cheap fixes to the implementer, the rest deferred).
 7. Open an active (non-draft) PR with CI green; its body repeats the approved plan.
 8. Human review, then address-feedback.
