@@ -21,6 +21,7 @@ At the trigger, also pull GitHub feedback and merge it into the list:
   - `gh pr view <pr> --json number,title,body,comments,reviews | node ${CLAUDE_PLUGIN_ROOT}/scripts/trusted-comments.ts` (conversation comments and review summaries)
   - `gh api --paginate --slurp repos/{owner}/{repo}/pulls/<pr>/comments | node ${CLAUDE_PLUGIN_ROOT}/scripts/trusted-comments.ts` (review threads)
   - `gh api --paginate --slurp repos/{owner}/{repo}/issues/<pr>/comments | node ${CLAUDE_PLUGIN_ROOT}/scripts/trusted-comments.ts` (issue comments)
+- The PR body's **Plan** section holds the approved acceptance criteria (the `gh pr view` read above includes the body); they replace the ticket's original AC and are what the reviewer checks against in Act.
 - Deduplicate against the conversation list. Flag any item where a GitHub comment conflicts with what was said live.
 
 ## Gate 2: confirm the list
@@ -34,7 +35,7 @@ Wait for confirmation. Anything agreed as out of scope becomes a new issue (`gh 
 Enter the existing worktree for the PR branch (or create one from the PR's head branch). Then run the same loop as `work-ticket`, with the agreed fix list as the plan:
 - Launch the `ticket-workflow:implementer` (tier as agreed; default haiku xhigh) with the fix list.
 - `npm run check`, then `${CLAUDE_PLUGIN_ROOT}/scripts/grg.sh` for any new or changed tests.
-- `ticket-workflow:reviewer` for complex changes, self-check for simple ones.
+- `ticket-workflow:reviewer` for complex changes (pass it the approved AC from the PR body), self-check for simple ones.
 The PR already carries its version bump (one per PR, relative to `origin/main`); do not bump again for review fixes unless they raise the level (patch -> minor). Commit, push the same branch, and reply on the PR threads you resolved (`gh pr comment`), noting which items were done and which were deferred to new issues.
 
 ## 4. Hand off
