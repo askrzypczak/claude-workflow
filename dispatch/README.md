@@ -97,7 +97,7 @@ Environment:
 
 - `CLAUDE_WORKFLOW_CONFIG`: config path (above).
 - `STATE_DIR`: state root (above).
-- `CLAUDE_BG_FLAGS`: default extra flags for every `claude --bg`, e.g. `--permission-mode acceptEdits`. Placed after the built-in `--model sonnet --effort xhigh`, so a `--model` or `--effort` here (or in `bgFlags`) overrides them.
+- `CLAUDE_BG_FLAGS`: default extra flags for every `claude --bg`, e.g. `--permission-mode acceptEdits`. Placed after the built-in `--model sonnet --effort high`, so a `--model` or `--effort` here (or in `bgFlags`) overrides them.
 - `CLAUDE_ALLOW_BYPASS_PERMISSIONS`: set to `1` to allow `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` and `--permission-mode bypassPermissions` (also the `=` form) in the combined flags. Without it a repo with such flags is skipped, logged (`refusing bypass flags ...`) and counted as a failure (non-zero exit); other repos still run.
 - `CLAUDE_MAX_SESSIONS`: positive integer, default `10`. Live sessions are tracked entries in `launched.json` (tickets and conflict sessions) whose session is not `done`, `failed` or `stopped`; unlisted just-launched ones count. The global cap counts across all repos, a repo's `maxSessions` only that repo. At a cap the poller logs `deferred #N: at session cap` and leaves state untouched, so the launch is retried next poll. `--dry-run` applies the same caps. An invalid value aborts the run.
 - The effective flags are logged on every launch line (`flags: ...`, or `<none>`).
