@@ -46,6 +46,7 @@ A consuming project needs:
 
 - `npm run check`: build, lint, typecheck and tests. It is the definition of done and what CI runs.
 - Ticket labels, created with `plugins/ticket-workflow/scripts/setup-labels.sh [owner/repo]` (idempotent: existing labels are left untouched; `--update` overwrites their colour and description). See [Ticket conventions](#ticket-conventions).
+- The [label-cleanup caller](#label-cleanup-on-close) workflow, `.github/workflows/ticket-labels.yml`. `setup-labels.sh` writes it into the checkout it runs in (`--no-workflow` skips); commit and push it. Without it, closed tickets keep `in-progress`/`needs-review` and `blocked` dependents are never unblocked.
 - `gh` authenticated (SSH remote, `gh auth login`) and `jq` on PATH.
 - The plugin enabled in `.claude/settings.json`: `enabledPlugins` with `ticket-workflow@askrzypczak-plugins`, plus an `extraKnownMarketplaces` entry for `askrzypczak/claude-workflow`.
 - Deny rules in `.claude/settings.json`. The guards ship with the plugin (`hooks/hooks.json`): the git guard blocks pushes to `main`/`master`, force pushes and `gh pr merge`; the comment guard enforces the [trust rule](#trust-rule-for-public-repos). The project only adds the deny rules:
@@ -58,7 +59,6 @@ A consuming project needs:
           ]
         }
 - Optional, for [dispatch](#dispatch-automatic-ticket-pickup): an entry in the poller config and a directory trusted by Claude Code.
-- Optional, for [label cleanup](#label-cleanup-on-close): a caller workflow.
 
 ## Ticket conventions
 
@@ -127,9 +127,8 @@ Labels on GitHub start unattended agent sessions locally:
 ### Onboarding a repo
 
 1. Meet the [requirements](#requirements) (`npm run check`, deny rules, plugin enabled).
-2. Create the labels: `setup-labels.sh owner/repo`.
-3. Optionally add the [label-cleanup caller](#label-cleanup-on-close).
-4. Add the repo to `~/.config/claude-workflow/repos.json` (`dispatch/repos.example.json` is a starting point; the installer refuses to run without the file):
+2. From the repo's checkout, create the labels and the [label-cleanup caller](#label-cleanup-on-close): `setup-labels.sh owner/repo`. Commit and push the new `.github/workflows/ticket-labels.yml`.
+3. Add the repo to `~/.config/claude-workflow/repos.json` (`dispatch/repos.example.json` is a starting point; the installer refuses to run without the file):
 
         [
           {
@@ -146,9 +145,9 @@ Labels on GitHub start unattended agent sessions locally:
    - `owner`: the only ticket author whose tickets are launched.
    - `bgFlags` (optional): extra `claude --bg` flags for this repo, e.g. `--permission-mode acceptEdits`.
    - `maxSessions` (optional, positive integer): cap on live sessions for this repo.
-5. Trust the directory: run `claude` once in `dir`, accept the prompt, exit. `claude --bg` fails in an untrusted workspace.
-6. Dry run: `npm ci` in the clone once, then `dispatch/agent-poller.sh --dry-run` logs which tickets would launch and with which flags, and launches nothing.
-7. Install the LaunchAgent once, from the main clone (not a worktree): `dispatch/install-launchd.sh`.
+4. Trust the directory: run `claude` once in `dir`, accept the prompt, exit. `claude --bg` fails in an untrusted workspace.
+5. Dry run: `npm ci` in the clone once, then `dispatch/agent-poller.sh --dry-run` logs which tickets would launch and with which flags, and launches nothing.
+6. Install the LaunchAgent once, from the main clone (not a worktree): `dispatch/install-launchd.sh`.
    - The installer first runs `npm ci` in the clone (a failure aborts with nothing installed).
    - The agent polls as soon as it loads, so the installer repeats the dry run, shows its output and asks `Install and start polling? [y/N]` before writing or starting anything. Anything but `y`, no input, a failing dry run, or a poll already running aborts. `--yes` skips the question for scripted reinstalls.
    - launchd only gives the job `HOME` and `PATH`, so the dry run drops `CLAUDE_BG_FLAGS`, `CLAUDE_ALLOW_BYPASS_PERMISSIONS` and `CLAUDE_MAX_SESSIONS` from your shell. Set them in the plist's `EnvironmentVariables` for the real poller.
@@ -216,7 +215,7 @@ A reusable workflow (`workflow_call`, ticket #15) that runs when an issue is clo
 - for each open `blocked` issue whose body has `Blocked by #N`, removes `blocked` once every referenced blocker is closed (closed as not planned counts);
 - never adds `ready`.
 
-A consuming repo adds `.github/workflows/ticket-labels.yml`:
+A consuming repo needs `.github/workflows/ticket-labels.yml` (`setup-labels.sh` writes it from `plugins/ticket-workflow/templates/ticket-labels.yml`):
 
     name: ticket-labels
     on:

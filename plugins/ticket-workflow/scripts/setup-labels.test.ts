@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -13,9 +15,18 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const script = fileURLToPath(new URL("./setup-labels.sh", import.meta.url));
 
+const template = readFileSync(
+  fileURLToPath(new URL("../templates/ticket-labels.yml", import.meta.url)),
+  "utf8",
+);
+
 let dir: string;
+let work: string; // stands in for the consuming repo's checkout
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "setup-labels-"));
+  work = join(dir, "work");
+  mkdirSync(work);
+  spawnSync("git", ["init", "-q"], { cwd: work });
   // Fake gh: `label list` prints the names in $dir/existing; everything is logged.
   writeFileSync(
     join(dir, "gh"),
@@ -29,6 +40,7 @@ const run = (existing: string[], ...args: string[]) => {
   writeFileSync(join(dir, "existing"), existing.map((n) => `${n}\n`).join(""));
   const r = spawnSync("bash", [script, ...args], {
     encoding: "utf8",
+    cwd: work,
     env: { ...process.env, GH: join(dir, "gh") },
   });
   let log: string[] = [];
@@ -105,5 +117,50 @@ describe("setup-labels.sh", () => {
   it("rejects unknown flags and extra positional args", () => {
     expect(run([], "--bogus").status).toBe(2);
     expect(run([], "a/b", "c/d").status).toBe(2);
+  });
+
+  describe("caller workflow", () => {
+    const target = () => join(work, ".github/workflows/ticket-labels.yml");
+
+    it("writes the caller from the template into the checkout", () => {
+      const r = run([]);
+      expect(r.status).toBe(0);
+      expect(readFileSync(target(), "utf8")).toBe(template);
+      expect(r.stdout).toContain("workflow: wrote .github/workflows/ticket-labels.yml");
+    });
+
+    it("leaves an existing ticket-labels.yml alone", () => {
+      mkdirSync(join(work, ".github/workflows"), { recursive: true });
+      writeFileSync(target(), "custom\n");
+      const r = run([]);
+      expect(r.stdout).toContain("workflow: ticket-labels caller exists, skipped");
+      expect(readFileSync(target(), "utf8")).toBe("custom\n");
+    });
+
+    it("skips when another workflow file already calls the reusable one", () => {
+      mkdirSync(join(work, ".github/workflows"), { recursive: true });
+      writeFileSync(
+        join(work, ".github/workflows/cleanup.yml"),
+        "jobs:\n  c:\n    uses: o/claude-workflow/.github/workflows/ticket-labels.yml@main\n",
+      );
+      const r = run([]);
+      expect(r.stdout).toContain("caller exists, skipped");
+      expect(existsSync(target())).toBe(false);
+    });
+
+    it("--no-workflow writes nothing", () => {
+      const r = run([], "--no-workflow");
+      expect(r.status).toBe(0);
+      expect(existsSync(target())).toBe(false);
+      expect(r.stdout).not.toContain("workflow:");
+    });
+
+    it("outside a git checkout, warns instead of writing", () => {
+      rmSync(join(work, ".git"), { recursive: true, force: true });
+      const r = run([]);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain("workflow: not in a git checkout, skipped");
+      expect(existsSync(target())).toBe(false);
+    });
   });
 });

@@ -1,19 +1,25 @@
 #!/usr/bin/env bash
-# Create the ticket-workflow label set in a GitHub repo. Existing labels are left alone.
-# Usage: scripts/setup-labels.sh [--update] [owner/repo]   (defaults to the current repo)
-#   --update   also overwrite the colour and description of labels that already exist
+# Create the ticket-workflow label set in a GitHub repo and add the label-cleanup caller workflow to
+# the checkout in the current directory. Existing labels and an existing workflow are left alone.
+# Usage: scripts/setup-labels.sh [--update] [--no-workflow] [owner/repo]   (defaults to the current repo)
+#   --update       also overwrite the colour and description of labels that already exist
+#   --no-workflow  skip writing .github/workflows/ticket-labels.yml
+# Without the caller workflow, closing a ticket leaves its state labels in place and never unblocks
+# dependents. Run this from the repo's checkout, then commit and push the new workflow file.
 set -euo pipefail
 
 GH="${GH:-$(command -v gh || echo /opt/homebrew/bin/gh)}"
 REPO_ARGS=() # expanded with [@]+ below: empty arrays are unbound under set -u on macOS bash 3.2
 update=0
+workflow=1
 repo=""
 for arg in "$@"; do
   case "$arg" in
     --update) update=1 ;;
-    -*) echo "Usage: $0 [--update] [owner/repo]" >&2; exit 2 ;;
+    --no-workflow) workflow=0 ;;
+    -*) echo "Usage: $0 [--update] [--no-workflow] [owner/repo]" >&2; exit 2 ;;
     *)
-      [ -z "$repo" ] || { echo "Usage: $0 [--update] [owner/repo]" >&2; exit 2; }
+      [ -z "$repo" ] || { echo "Usage: $0 [--update] [--no-workflow] [owner/repo]" >&2; exit 2; }
       repo="$arg" ;;
   esac
 done
@@ -47,3 +53,18 @@ for entry in "${LABELS[@]}"; do
   fi
   "$GH" label create "$name" --color "$color" --description "$desc" ${force[@]+"${force[@]}"} ${REPO_ARGS[@]+"${REPO_ARGS[@]}"}
 done
+
+# Label-cleanup caller: copy the template unless a workflow here already calls the reusable one.
+if [ "$workflow" = 1 ]; then
+  template="$(dirname "$0")/../templates/ticket-labels.yml"
+  target=".github/workflows/ticket-labels.yml"
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "workflow: not in a git checkout, skipped; copy $template to $target in the repo"
+  elif [ -e "$target" ] || grep -qs 'claude-workflow/.github/workflows/ticket-labels.yml' .github/workflows/*.y*ml; then
+    echo "workflow: ticket-labels caller exists, skipped"
+  else
+    mkdir -p .github/workflows
+    cp "$template" "$target"
+    echo "workflow: wrote $target; commit and push it so closed tickets lose their state labels"
+  fi
+fi

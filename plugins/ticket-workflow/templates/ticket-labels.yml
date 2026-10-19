@@ -1,0 +1,15 @@
+name: ticket-labels
+
+# On issue close, strip the state labels (ready, in-progress, needs-review, blocked) and remove
+# `blocked` from tickets whose "Blocked by #N" blockers are all closed.
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  cleanup:
+    uses: askrzypczak/claude-workflow/.github/workflows/ticket-labels.yml@main
