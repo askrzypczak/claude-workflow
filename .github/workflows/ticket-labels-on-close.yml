@@ -1,0 +1,15 @@
+name: ticket-labels-on-close
+
+# This repo's own caller for the reusable ticket-labels workflow, so closing a ticket here
+# strips its state labels and unblocks dependents like it does in consuming repos.
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  cleanup:
+    uses: ./.github/workflows/ticket-labels.yml
