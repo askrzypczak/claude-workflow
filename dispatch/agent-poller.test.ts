@@ -309,7 +309,7 @@ describe("agent-poller conflict phase", () => {
   }
 
   const CONFLICT_LAUNCH =
-    "--bg --name app-5-conflict --model sonnet --effort xhigh /ticket-workflow:resolve-conflicts 5";
+    "--bg --name app-5-conflict --model sonnet --effort high /ticket-workflow:resolve-conflicts 5";
 
   it("launches resolve-conflicts for a CONFLICTING issue PR and records it", () => {
     const r = runConflict({});
@@ -623,13 +623,13 @@ describe("agent-poller multiple repos", () => {
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(
       r.stdout.includes(
-        `[dry-run] (cd ${ea.dir} && claude --bg --name a-3 --model sonnet --effort xhigh "/ticket-workflow:work-ticket 3")`,
+        `[dry-run] (cd ${ea.dir} && claude --bg --name a-3 --model sonnet --effort high "/ticket-workflow:work-ticket 3")`,
       ),
       r.stdout,
     ).toBe(true);
     expect(
       r.stdout.includes(
-        `[dry-run] (cd ${eb.dir} && claude --bg --name b-6 --model sonnet --effort xhigh "/ticket-workflow:work-ticket 6 auto")`,
+        `[dry-run] (cd ${eb.dir} && claude --bg --name b-6 --model sonnet --effort high "/ticket-workflow:work-ticket 6 auto")`,
       ),
       r.stdout,
     ).toBe(true);
@@ -649,8 +649,8 @@ describe("agent-poller multiple repos", () => {
     const r = exec();
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(readLines("claude.log").sort()).toStrictEqual([
-      "--bg --name a-5 --model sonnet --effort xhigh /ticket-workflow:work-ticket 5",
-      "--bg --name b-5 --model sonnet --effort xhigh /ticket-workflow:work-ticket 5",
+      "--bg --name a-5 --model sonnet --effort high /ticket-workflow:work-ticket 5",
+      "--bg --name b-5 --model sonnet --effort high /ticket-workflow:work-ticket 5",
     ]);
     const cwds = readLines("claude.cwd.log");
     expect(cwds.some((l) => l.startsWith(`${realpath(ea.dir)}|`) && l.includes("a-5"))).toBe(true);
@@ -701,7 +701,7 @@ describe("agent-poller multiple repos", () => {
     expect(r.status).not.toBe(0);
     expect(/\[a\] .*poll failed/.test(r.stdout), r.stdout).toBe(true);
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name b-6 --model sonnet --effort xhigh /ticket-workflow:work-ticket 6",
+      "--bg --name b-6 --model sonnet --effort high /ticket-workflow:work-ticket 6",
     ]);
     // errexit is active inside the failed repo: it stopped at the failing call.
     expect(!gh().some((c) => c.startsWith("pr list --repo org/alpha"))).toBe(true);
@@ -715,8 +715,8 @@ describe("agent-poller multiple repos", () => {
     const r = exec({ env: { CLAUDE_BG_FLAGS: "--permission-mode plan" } });
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(readLines("claude.log").sort()).toStrictEqual([
-      "--bg --name a-1 --model sonnet --effort xhigh --permission-mode plan --model opus /ticket-workflow:work-ticket 1",
-      "--bg --name b-2 --model sonnet --effort xhigh --permission-mode plan /ticket-workflow:work-ticket 2",
+      "--bg --name a-1 --model sonnet --effort high --permission-mode plan --model opus /ticket-workflow:work-ticket 1",
+      "--bg --name b-2 --model sonnet --effort high --permission-mode plan /ticket-workflow:work-ticket 2",
     ]);
   });
 });
@@ -759,7 +759,7 @@ describe("agent-poller bypass-flag refusal", () => {
       expect(r.status).not.toBe(0);
       expect(r.stdout).toMatch(/\[a\] refusing bypass flags/);
       expect(readLines("claude.log")).toStrictEqual([
-        "--bg --name b-2 --model sonnet --effort xhigh /ticket-workflow:work-ticket 2",
+        "--bg --name b-2 --model sonnet --effort high /ticket-workflow:work-ticket 2",
       ]);
     });
   }
@@ -776,9 +776,9 @@ describe("agent-poller bypass-flag refusal", () => {
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(r.stdout).not.toMatch(/refusing/);
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name a-1 --model sonnet --effort xhigh --dangerously-skip-permissions --permission-mode bypassPermissions /ticket-workflow:work-ticket 1",
+      "--bg --name a-1 --model sonnet --effort high --dangerously-skip-permissions --permission-mode bypassPermissions /ticket-workflow:work-ticket 1",
     ]);
-    expect(r.stdout).toMatch(/#1: launching a-1 \(flags: --model sonnet --effort xhigh --dangerously-skip-permissions --permission-mode bypassPermissions\)/);
+    expect(r.stdout).toMatch(/#1: launching a-1 \(flags: --model sonnet --effort high --dangerously-skip-permissions --permission-mode bypassPermissions\)/);
   });
 
   it("only the exact opt-in value 1 allows them", () => {
@@ -799,7 +799,7 @@ describe("agent-poller bypass-flag refusal", () => {
     writeIssues(A.repo, [ready(1)]);
     const r = exec();
     expect(r.status, r.stdout + r.stderr).toBe(0);
-    expect(r.stdout).toMatch(/#1: launching a-1 \(flags: --model sonnet --effort xhigh --permission-mode acceptEdits\)/);
+    expect(r.stdout).toMatch(/#1: launching a-1 \(flags: --model sonnet --effort high --permission-mode acceptEdits\)/);
     expect(readLines("claude.log").length).toBe(1);
   });
 
@@ -807,7 +807,7 @@ describe("agent-poller bypass-flag refusal", () => {
     configure([A]);
     writeIssues(A.repo, [ready(1)]);
     const r = exec();
-    expect(r.stdout).toMatch(/#1: launching a-1 \(flags: --model sonnet --effort xhigh\)/);
+    expect(r.stdout).toMatch(/#1: launching a-1 \(flags: --model sonnet --effort high\)/);
   });
 
   it("logs the effective flags on conflict launches too", () => {
@@ -837,7 +837,7 @@ describe("agent-poller bypass-flag refusal", () => {
     );
     const r = exec();
     expect(r.status, r.stdout + r.stderr).toBe(0);
-    expect(r.stdout).toMatch(/launching a-5-conflict \(flags: --model sonnet --effort xhigh --model opus\)/);
+    expect(r.stdout).toMatch(/launching a-5-conflict \(flags: --model sonnet --effort high --model opus\)/);
   });
 });
 
@@ -912,7 +912,7 @@ describe("agent-poller session cap", () => {
     r = exec({ env });
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name a-3 --model sonnet --effort xhigh /ticket-workflow:work-ticket 3",
+      "--bg --name a-3 --model sonnet --effort high /ticket-workflow:work-ticket 3",
     ]);
     expect(tracked("a").sort()).toStrictEqual(["1", "3"]);
   });
@@ -955,8 +955,8 @@ describe("agent-poller session cap", () => {
     const r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name a-1 --model sonnet --effort xhigh /ticket-workflow:work-ticket 1",
-      "--bg --name a-2 --model sonnet --effort xhigh /ticket-workflow:work-ticket 2",
+      "--bg --name a-1 --model sonnet --effort high /ticket-workflow:work-ticket 1",
+      "--bg --name a-2 --model sonnet --effort high /ticket-workflow:work-ticket 2",
     ]);
     expect(r.stdout).toMatch(/\[b\] deferred #3: at session cap/);
   });
@@ -971,8 +971,8 @@ describe("agent-poller session cap", () => {
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(r.stdout).toMatch(/\[a\] deferred #2: at session cap/);
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name b-3 --model sonnet --effort xhigh /ticket-workflow:work-ticket 3",
-      "--bg --name b-4 --model sonnet --effort xhigh /ticket-workflow:work-ticket 4",
+      "--bg --name b-3 --model sonnet --effort high /ticket-workflow:work-ticket 3",
+      "--bg --name b-4 --model sonnet --effort high /ticket-workflow:work-ticket 4",
     ]);
   });
 
@@ -981,7 +981,7 @@ describe("agent-poller session cap", () => {
     writeIssues(A.repo, [ready(1), ready(2)]);
     const r = exec();
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name a-1 --model sonnet --effort xhigh /ticket-workflow:work-ticket 1",
+      "--bg --name a-1 --model sonnet --effort high /ticket-workflow:work-ticket 1",
     ]);
     expect(r.stdout).toMatch(/deferred #2: at session cap/);
   });
@@ -1017,7 +1017,7 @@ describe("agent-poller session cap", () => {
     const r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name a-3 --model sonnet --effort xhigh /ticket-workflow:work-ticket 3",
+      "--bg --name a-3 --model sonnet --effort high /ticket-workflow:work-ticket 3",
     ]);
   });
 
@@ -1068,7 +1068,7 @@ describe("agent-poller session cap", () => {
     r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name a-5-conflict --model sonnet --effort xhigh /ticket-workflow:resolve-conflicts 5",
+      "--bg --name a-5-conflict --model sonnet --effort high /ticket-workflow:resolve-conflicts 5",
     ]);
   });
 
