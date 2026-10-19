@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run plugins dispatch/poller && node --test dispatch/*.test.mjs",
+    "test": "vitest run",
     "typecheck": "tsc -p ."
   },
   "devDependencies": {

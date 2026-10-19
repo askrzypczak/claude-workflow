@@ -1,6 +1,5 @@
-// Tests for dispatch/install-launchd.sh. Run: node --test dispatch/
+// Tests for dispatch/install-launchd.sh. Run: npx vitest run dispatch/install-launchd
 // A fake `launchctl` records its calls; all paths are redirected into a temp dir.
-import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -17,13 +16,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const SRC = import.meta.dirname;
 const LABEL = "com.askrzypczak.claude-workflow-poller";
 
-let dir;
-const p = (...a) => join(dir, ...a);
+let dir: string;
+const p = (...a: string[]) => join(dir, ...a);
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "install-"));
@@ -60,8 +59,13 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-const run = (...args) => runWith({}, ...args);
-const runWith = (opts, ...args) =>
+interface RunOpts {
+  input?: string;
+  env?: Record<string, string>;
+}
+
+const run = (...args: string[]) => runWith({}, ...args);
+const runWith = (opts: RunOpts, ...args: string[]) =>
   spawnSync("bash", [p("clone", "dispatch", "install-launchd.sh"), ...args], {
     encoding: "utf8",
     input: opts.input ?? "",
@@ -89,35 +93,35 @@ const calls = () =>
 describe("install-launchd.sh", () => {
   it("installs: writes a filled plist and bootstraps it", () => {
     const r = run("install", "--yes");
-    assert.equal(r.status, 0, r.stderr);
+    expect(r.status, r.stderr).toBe(0);
     const plist = readFileSync(p("agents", `${LABEL}.plist`), "utf8");
-    assert.doesNotMatch(plist, /__CLONE__|__HOME__/);
-    assert.match(plist, /dispatch\/agent-poller\.sh/);
-    assert.match(plist, /claude-workflow-poller\.log/);
-    assert.ok(calls().some((c) => /^bootstrap gui\/\d+ .*\.plist$/.test(c)));
+    expect(plist).not.toMatch(/__CLONE__|__HOME__/);
+    expect(plist).toMatch(/dispatch\/agent-poller\.sh/);
+    expect(plist).toMatch(/claude-workflow-poller\.log/);
+    expect(calls().some((c) => /^bootstrap gui\/\d+ .*\.plist$/.test(c))).toBe(true);
   });
 
   it("fails without a config and installs nothing", () => {
     rmSync(p("cfg", "repos.json"));
     const r = run("install");
-    assert.equal(r.status, 1);
-    assert.match(r.stderr, /No config/);
-    assert.equal(existsSync(p("agents", `${LABEL}.plist`)), false);
-    assert.deepEqual(calls(), []);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/No config/);
+    expect(existsSync(p("agents", `${LABEL}.plist`))).toBe(false);
+    expect(calls()).toStrictEqual([]);
   });
 
   it("removes each --legacy-label job and plist on install", () => {
     writeFileSync(p("agents", "com.old.job.plist"), "x");
     const r = run("install", "--yes", "--legacy-label", "com.old.job");
-    assert.equal(r.status, 0, r.stderr);
-    assert.equal(existsSync(p("agents", "com.old.job.plist")), false);
+    expect(r.status, r.stderr).toBe(0);
+    expect(existsSync(p("agents", "com.old.job.plist"))).toBe(false);
     const c = calls();
-    assert.ok(c.some((l) => /^bootout gui\/\d+\/com\.old\.job$/.test(l)));
+    expect(c.some((l) => /^bootout gui\/\d+\/com\.old\.job$/.test(l))).toBe(true);
     // legacy is booted out before the new job is bootstrapped
-    assert.ok(
+    expect(
       c.findIndex((l) => l.includes("com.old.job")) <
         c.findIndex((l) => l.startsWith("bootstrap")),
-    );
+    ).toBe(true);
   });
 
   it("migrates state without overwriting existing files", () => {
@@ -127,24 +131,18 @@ describe("install-launchd.sh", () => {
     mkdirSync(p("state", "repos", "app"), { recursive: true });
     writeFileSync(p("state", "repos", "app", "conflicts.json"), "{}");
     const r = run("install", "--yes", "--migrate-state", p("old"), "app");
-    assert.equal(r.status, 0, r.stderr);
-    assert.equal(
-      readFileSync(p("state", "repos", "app", "launched.json"), "utf8"),
-      '{"7":{"name":"app-7","at":1}}',
-    );
-    assert.equal(
-      readFileSync(p("state", "repos", "app", "conflicts.json"), "utf8"),
-      "{}",
-    );
+    expect(r.status, r.stderr).toBe(0);
+    expect(readFileSync(p("state", "repos", "app", "launched.json"), "utf8")).toBe('{"7":{"name":"app-7","at":1}}');
+    expect(readFileSync(p("state", "repos", "app", "conflicts.json"), "utf8")).toBe("{}");
   });
 
   it("uninstall boots out, removes the plist and legacy plists", () => {
     run("install", "--yes");
     writeFileSync(p("agents", "com.old.job.plist"), "x");
     const r = run("uninstall", "--legacy-label", "com.old.job");
-    assert.equal(r.status, 0, r.stderr);
-    assert.equal(existsSync(p("agents", `${LABEL}.plist`)), false);
-    assert.equal(existsSync(p("agents", "com.old.job.plist")), false);
+    expect(r.status, r.stderr).toBe(0);
+    expect(existsSync(p("agents", `${LABEL}.plist`))).toBe(false);
+    expect(existsSync(p("agents", "com.old.job.plist"))).toBe(false);
   });
 
   it("refuses to run from a worktree", () => {
@@ -166,25 +164,25 @@ describe("install-launchd.sh", () => {
         },
       },
     );
-    assert.equal(r.status, 1);
-    assert.match(r.stderr, /not a worktree/);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/not a worktree/);
   });
 
   describe("confirmation", () => {
     const notInstalled = () => {
-      assert.equal(existsSync(p("agents", `${LABEL}.plist`)), false);
-      assert.deepEqual(calls(), []);
+      expect(existsSync(p("agents", `${LABEL}.plist`))).toBe(false);
+      expect(calls()).toStrictEqual([]);
     };
 
     it("shows the dry run, then installs on y", () => {
       const r = runWith({ input: "y\n" }, "install");
-      assert.equal(r.status, 0, r.stderr);
-      assert.match(r.stdout, /WOULD LAUNCH app-1/);
-      assert.match(r.stdout, /Install and start polling\? \[y\/N\]/);
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/WOULD LAUNCH app-1/);
+      expect(r.stdout).toMatch(/Install and start polling\? \[y\/N\]/);
       const o = order();
-      assert.deepEqual(o.slice(0, 2), ["npm ci", "poller --dry-run"]);
-      assert.ok(o.findIndex((l) => l.startsWith("launchctl bootstrap")) > 0);
-      assert.ok(existsSync(p("agents", `${LABEL}.plist`)));
+      expect(o.slice(0, 2)).toStrictEqual(["npm ci", "poller --dry-run"]);
+      expect(o.findIndex((l) => l.startsWith("launchctl bootstrap")) > 0).toBe(true);
+      expect(existsSync(p("agents", `${LABEL}.plist`))).toBe(true);
     });
 
     for (const [name, input] of [
@@ -195,51 +193,51 @@ describe("install-launchd.sh", () => {
     ]) {
       it(`aborts with nothing written on ${name}`, () => {
         const r = runWith({ input }, "install");
-        assert.equal(r.status, 1);
-        assert.match(r.stdout, /WOULD LAUNCH app-1/);
-        assert.match(r.stderr, /Aborted/);
+        expect(r.status).toBe(1);
+        expect(r.stdout).toMatch(/WOULD LAUNCH app-1/);
+        expect(r.stderr).toMatch(/Aborted/);
         notInstalled();
       });
     }
 
     it("runs npm ci in the clone before the dry run", () => {
       const r = run("install", "--yes");
-      assert.equal(r.status, 0, r.stderr);
-      assert.equal(order()[0], "npm ci");
+      expect(r.status, r.stderr).toBe(0);
+      expect(order()[0]).toBe("npm ci");
       const cwd = readFileSync(p("npm.cwd"), "utf8").trim();
-      assert.equal(cwd, realpathSync(p("clone")));
+      expect(cwd).toBe(realpathSync(p("clone")));
     });
 
     it("aborts with nothing installed (and no dry run) when npm ci fails", () => {
       writeFileSync(p("npm-fail"), "");
       const r = run("install", "--yes");
-      assert.equal(r.status, 1);
-      assert.match(r.stderr, /npm ci failed/);
-      assert.ok(!order().some((l) => l.startsWith("poller")));
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/npm ci failed/);
+      expect(!order().some((l) => l.startsWith("poller"))).toBe(true);
       notInstalled();
     });
 
     it("uninstall does not run npm", () => {
-      assert.equal(run("uninstall").status, 0);
-      assert.equal(existsSync(p("npm.cwd")), false);
+      expect(run("uninstall").status).toBe(0);
+      expect(existsSync(p("npm.cwd"))).toBe(false);
     });
 
     it("--yes skips the prompt but still runs the dry run first", () => {
       const r = run("install", "--yes");
-      assert.equal(r.status, 0, r.stderr);
-      assert.match(r.stdout, /WOULD LAUNCH app-1/);
-      assert.doesNotMatch(r.stdout, /\[y\/N\]/);
-      assert.deepEqual(order().slice(0, 2), ["npm ci", "poller --dry-run"]);
-      assert.ok(order().some((l) => l.startsWith("launchctl bootstrap")));
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/WOULD LAUNCH app-1/);
+      expect(r.stdout).not.toMatch(/\[y\/N\]/);
+      expect(order().slice(0, 2)).toStrictEqual(["npm ci", "poller --dry-run"]);
+      expect(order().some((l) => l.startsWith("launchctl bootstrap"))).toBe(true);
     });
 
     for (const args of [["install"], ["install", "--yes"]]) {
       it(`aborts on a failing dry run (${args.join(" ")})`, () => {
         writeFileSync(p("poller-fail"), "");
         const r = runWith({ input: "y\n" }, ...args);
-        assert.equal(r.status, 1);
-        assert.match(r.stdout, /WOULD LAUNCH app-1/);
-        assert.match(r.stderr, /dry run failed/);
+        expect(r.status).toBe(1);
+        expect(r.stdout).toMatch(/WOULD LAUNCH app-1/);
+        expect(r.stderr).toMatch(/dry run failed/);
         notInstalled();
       });
     }
@@ -257,37 +255,34 @@ describe("install-launchd.sh", () => {
         },
         "install",
       );
-      assert.match(
-        r.stdout,
-        /ENV bg=unset bypass=unset max=unset keep=yes/,
-      );
+      expect(r.stdout).toMatch(/ENV bg=unset bypass=unset max=unset keep=yes/);
     });
 
     it("aborts without prompting when another poll is running", () => {
       writeFileSync(p("poller-busy"), "");
       const r = runWith({ input: "y\n" }, "install");
-      assert.equal(r.status, 1);
-      assert.doesNotMatch(r.stdout, /\[y\/N\]/);
-      assert.match(r.stderr, /poll is running/);
+      expect(r.status).toBe(1);
+      expect(r.stdout).not.toMatch(/\[y\/N\]/);
+      expect(r.stderr).toMatch(/poll is running/);
       notInstalled();
-      assert.equal(runWith({ input: "y\n" }, "install", "--yes").status, 1);
+      expect(runWith({ input: "y\n" }, "install", "--yes").status).toBe(1);
     });
 
     it("notes that migration has not happened before the dry run", () => {
       const r = runWith({ input: "n\n" }, "install", "--migrate-state", p("old"), "app");
-      assert.match(r.stdout, /have not been applied yet/);
-      assert.doesNotMatch(run("install", "--yes").stdout, /have not been applied/);
+      expect(r.stdout).toMatch(/have not been applied yet/);
+      expect(run("install", "--yes").stdout).not.toMatch(/have not been applied/);
     });
 
     it("uninstall needs no confirmation or dry run", () => {
       const r = run("uninstall");
-      assert.equal(r.status, 0, r.stderr);
-      assert.ok(!order().some((l) => l.startsWith("poller")));
+      expect(r.status, r.stderr).toBe(0);
+      expect(!order().some((l) => l.startsWith("poller"))).toBe(true);
     });
   });
 
   it("rejects unknown arguments", () => {
-    assert.equal(run("install", "--bogus").status, 2);
+    expect(run("install", "--bogus").status).toBe(2);
   });
 
   describe("argument validation", () => {
@@ -296,11 +291,11 @@ describe("install-launchd.sh", () => {
         it(`rejects --legacy-label ${JSON.stringify(bad)} on ${cmd} before touching anything`, () => {
           writeFileSync(p("agents", "x.plist"), "keep");
           const r = run(cmd, "--yes", "--legacy-label", bad);
-          assert.equal(r.status, 2);
-          assert.match(r.stderr, /Invalid --legacy-label/);
-          assert.deepEqual(calls(), []);
-          assert.equal(existsSync(p("agents", "x.plist")), true);
-          assert.equal(existsSync(p("agents", `${LABEL}.plist`)), false);
+          expect(r.status).toBe(2);
+          expect(r.stderr).toMatch(/Invalid --legacy-label/);
+          expect(calls()).toStrictEqual([]);
+          expect(existsSync(p("agents", "x.plist"))).toBe(true);
+          expect(existsSync(p("agents", `${LABEL}.plist`))).toBe(false);
         });
       }
     }
@@ -308,11 +303,11 @@ describe("install-launchd.sh", () => {
     it("rejects a --migrate-state PREFIX that is not a plain session prefix", () => {
       for (const bad of ["../x", "a/b", "a b", ""]) {
         const r = run("install", "--yes", "--migrate-state", p("old"), bad);
-        assert.equal(r.status, 2, bad);
-        assert.match(r.stderr, /Invalid --migrate-state PREFIX/);
+        expect(r.status, bad).toBe(2);
+        expect(r.stderr).toMatch(/Invalid --migrate-state PREFIX/);
       }
-      assert.deepEqual(calls(), []);
-      assert.equal(existsSync(p("state")), false);
+      expect(calls()).toStrictEqual([]);
+      expect(existsSync(p("state"))).toBe(false);
     });
 
     it("still accepts dotted labels and prefixes with dashes and underscores", () => {
@@ -326,25 +321,25 @@ describe("install-launchd.sh", () => {
         p("old"),
         "my_app-1",
       );
-      assert.equal(r.status, 0, r.stderr);
-      assert.equal(existsSync(p("agents", "com.old-job_2.plist")), false);
+      expect(r.status, r.stderr).toBe(0);
+      expect(existsSync(p("agents", "com.old-job_2.plist"))).toBe(false);
     });
 
     it("rejects --purge on install", () => {
       const r = run("install", "--yes", "--purge");
-      assert.equal(r.status, 2);
-      assert.match(r.stderr, /--purge only applies to uninstall/);
-      assert.deepEqual(calls(), []);
+      expect(r.status).toBe(2);
+      expect(r.stderr).toMatch(/--purge only applies to uninstall/);
+      expect(calls()).toStrictEqual([]);
     });
   });
 
   describe("plist templating", () => {
     const SPECIAL = "we&ird|dir <x> y--z";
     const pl = () => p("agents", `${LABEL}.plist`);
-    const unescape = (s) =>
+    const unescape = (s: string) =>
       s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
     // Copy the installer into a clone whose path has sed/XML metacharacters and run it there.
-    const runInSpecialClone = (env = {}) => {
+    const runInSpecialClone = (env: Record<string, string> = {}) => {
       const clone = p(SPECIAL);
       mkdirSync(join(clone, "dispatch", "launchd"), { recursive: true });
       copyFileSync(
@@ -378,22 +373,22 @@ describe("install-launchd.sh", () => {
 
     it("writes a valid plist with the exact clone path when it contains & | < > and spaces", () => {
       const { r, clone } = runInSpecialClone();
-      assert.equal(r.status, 0, r.stderr);
+      expect(r.status, r.stderr).toBe(0);
       const plist = readFileSync(pl(), "utf8");
-      assert.doesNotMatch(plist, /__CLONE__|__HOME__/);
+      expect(plist).not.toMatch(/__CLONE__|__HOME__/);
       const m = plist.match(/<string>([^<]*agent-poller\.sh)<\/string>/);
-      assert.ok(m, plist);
-      assert.equal(unescape(m[1]), `${clone}/dispatch/agent-poller.sh`);
+      expect(m, plist).toBeTruthy();
+      expect(unescape(m![1])).toBe(`${clone}/dispatch/agent-poller.sh`);
       const lint = spawnSync("plutil", ["-lint", pl()], { encoding: "utf8" });
-      if (!lint.error) assert.equal(lint.status, 0, lint.stdout + lint.stderr);
-      assert.ok(calls().some((c) => c.startsWith("bootstrap")));
+      if (!lint.error) expect(lint.status, lint.stdout + lint.stderr).toBe(0);
+      expect(calls().some((c) => c.startsWith("bootstrap"))).toBe(true);
     });
 
     it("escapes & in HOME and substitutes it literally", () => {
       const rh =runWith({ env: { HOME: "/tmp/a&b" } }, "install", "--yes");
-      assert.equal(rh.status, 0, rh.stderr);
+      expect(rh.status, rh.stderr).toBe(0);
       const plist = readFileSync(pl(), "utf8");
-      assert.match(plist, /<string>\/tmp\/a&amp;b\/Library\/Logs\/claude-workflow-poller\.log<\/string>/);
+      expect(plist).toMatch(/<string>\/tmp\/a&amp;b\/Library\/Logs\/claude-workflow-poller\.log<\/string>/);
     });
 
     it("leaves no plist (and no temp file) and does not bootstrap when validation fails", () => {
@@ -403,10 +398,10 @@ describe("install-launchd.sh", () => {
       const { r } = runInSpecialClone({
         PATH: `${p("bin")}:${process.env.PATH}`,
       });
-      assert.equal(r.status, 1);
-      assert.match(r.stderr, /invalid/);
-      assert.deepEqual(readdirSync(p("agents")), []);
-      assert.ok(!calls().some((c) => c.startsWith("bootstrap")));
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/invalid/);
+      expect(readdirSync(p("agents"))).toStrictEqual([]);
+      expect(!calls().some((c) => c.startsWith("bootstrap"))).toBe(true);
     });
 
     it("keeps the previous plist when the new one fails validation", () => {
@@ -417,9 +412,9 @@ describe("install-launchd.sh", () => {
       const { r } = runInSpecialClone({
         PATH: `${p("bin")}:${process.env.PATH}`,
       });
-      assert.equal(r.status, 1);
-      assert.equal(readFileSync(pl(), "utf8"), "old good plist");
-      assert.deepEqual(readdirSync(p("agents")), [`${LABEL}.plist`]);
+      expect(r.status).toBe(1);
+      expect(readFileSync(pl(), "utf8")).toBe("old good plist");
+      expect(readdirSync(p("agents"))).toStrictEqual([`${LABEL}.plist`]);
     });
   });
 
@@ -442,17 +437,17 @@ describe("install-launchd.sh", () => {
     it("lists state, config, log, sessions and plugin commands and keeps the files", () => {
       seed();
       const r = run("uninstall");
-      assert.equal(r.status, 0, r.stderr);
-      assert.ok(r.stdout.includes(p("state")));
-      assert.ok(r.stdout.includes(p("cfg", "repos.json")));
-      assert.ok(r.stdout.includes(p("logs", "claude-workflow-poller.log")));
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout.includes(p("state"))).toBe(true);
+      expect(r.stdout.includes(p("cfg", "repos.json"))).toBe(true);
+      expect(r.stdout.includes(p("logs", "claude-workflow-poller.log"))).toBe(true);
       for (const n of ["app-7", "app-9", "web-3"])
-        assert.match(r.stdout, new RegExp(`claude stop ${n}\\b`));
-      assert.match(r.stdout, /claude plugin uninstall ticket-workflow/);
-      assert.match(r.stdout, /claude plugin marketplace remove askrzypczak-plugins/);
-      assert.ok(existsSync(p("state", "repos", "app", "launched.json")));
-      assert.ok(existsSync(p("cfg", "repos.json")));
-      assert.ok(existsSync(p("logs", "claude-workflow-poller.log")));
+        expect(r.stdout).toMatch(new RegExp(`claude stop ${n}\\b`));
+      expect(r.stdout).toMatch(/claude plugin uninstall ticket-workflow/);
+      expect(r.stdout).toMatch(/claude plugin marketplace remove askrzypczak-plugins/);
+      expect(existsSync(p("state", "repos", "app", "launched.json"))).toBe(true);
+      expect(existsSync(p("cfg", "repos.json"))).toBe(true);
+      expect(existsSync(p("logs", "claude-workflow-poller.log"))).toBe(true);
     });
 
     it("says so when jq is missing instead of silently skipping sessions", () => {
@@ -465,30 +460,30 @@ describe("install-launchd.sh", () => {
         symlinkSync(found, p("nojq", t));
       }
       const r = runWith({ env: { PATH: p("nojq") } }, "uninstall");
-      assert.equal(r.status, 0, r.stderr);
-      assert.match(r.stdout, /jq not found; check .*launched\.json/);
-      assert.doesNotMatch(r.stdout, /claude stop/);
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/jq not found; check .*launched\.json/);
+      expect(r.stdout).not.toMatch(/claude stop/);
     });
 
     it("works with no state at all", () => {
       const r = run("uninstall");
-      assert.equal(r.status, 0, r.stderr);
-      assert.doesNotMatch(r.stdout, /claude stop/);
-      assert.match(r.stdout, /claude plugin uninstall/);
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).not.toMatch(/claude stop/);
+      expect(r.stdout).toMatch(/claude plugin uninstall/);
     });
 
     it("--purge removes state, config and log, still lists sessions and plugin commands", () => {
       seed();
       writeFileSync(p("agents", `${LABEL}.plist`), "x");
       const r = run("uninstall", "--purge");
-      assert.equal(r.status, 0, r.stderr);
-      assert.equal(existsSync(p("state")), false);
-      assert.equal(existsSync(p("cfg", "repos.json")), false);
-      assert.equal(existsSync(p("logs", "claude-workflow-poller.log")), false);
-      assert.equal(existsSync(p("agents", `${LABEL}.plist`)), false);
-      assert.match(r.stdout, /Purged/);
-      assert.match(r.stdout, /claude stop app-7\b/);
-      assert.match(r.stdout, /claude plugin uninstall ticket-workflow/);
+      expect(r.status, r.stderr).toBe(0);
+      expect(existsSync(p("state"))).toBe(false);
+      expect(existsSync(p("cfg", "repos.json"))).toBe(false);
+      expect(existsSync(p("logs", "claude-workflow-poller.log"))).toBe(false);
+      expect(existsSync(p("agents", `${LABEL}.plist`))).toBe(false);
+      expect(r.stdout).toMatch(/Purged/);
+      expect(r.stdout).toMatch(/claude stop app-7\b/);
+      expect(r.stdout).toMatch(/claude plugin uninstall ticket-workflow/);
     });
   });
 });
