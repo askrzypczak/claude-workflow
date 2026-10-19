@@ -236,7 +236,7 @@ The workflow checks out this public repo, sets up Node 24 itself and runs `plugi
 1. Check the ticket author is trusted (owner, member, collaborator) before reading anything else, then read and claim the ticket (planning counts as work), reading only trusted comments.
 2. Plan, with human sign-off: the AC as a diff against the ticket (additions struck unless approved), Interfaces, Test titles and Carrying costs.
 3. Branch in a worktree; the approved plan is posted on the issue.
-4. Implementer builds the code and tests.
+4. Implementer builds the code and tests (a `simple` change with no tests whose plan holds the change verbatim is applied by the orchestrator instead).
 5. Green/red/green proof.
 6. Reviewer on complex changes; the orchestrator triages its findings (blockers and cheap fixes to the implementer, the rest deferred).
 7. Open an active (non-draft) PR with CI green; its body repeats the approved plan.
