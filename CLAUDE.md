@@ -3,9 +3,9 @@
 Claude Code plugin marketplace (`askrzypczak-plugins`) holding the `ticket-workflow` plugin. See README.md for contents and install.
 
 ## Conventions
-- **Bump the version in every PR that changes the plugin**: `version` in `plugins/ticket-workflow/.claude-plugin/plugin.json`, in the same commit. Patch for wording or doc fixes, minor for behaviour changes. **One bump per PR, measured against `origin/main`'s version**: follow-up commits on an open PR (review fixes, feedback) keep the bump already made; only raise it further if the change grows enough to need a bigger level (patch -> minor), never step it again for the same PR. Claude Code updates installed plugins by comparing this version, so an unbumped merge may never reach agent sessions. `marketplace.json` has no version. CI enforces this on pull requests with `scripts/check-version-bump.sh` (any change under `plugins/ticket-workflow/` needs a version above the base branch's, checked on the merge ref); if a PR fails it after another PR merged the same bump, raise the version again.
+- **No `version` in `plugin.json`, on purpose.** Installs track the commit SHA, so every merge to `main` reaches agent sessions and PRs have no version to collide on. Don't add one (here or in `marketplace.json`): a pinned version would freeze installs until someone changed it.
 - Keep README.md's Workflow list in step with `skills/work-ticket/SKILL.md`.
-- Validate with `claude plugin validate .`; type-check TS with `npm run typecheck`; self-test the bump check with `scripts/test-check-version-bump.sh`.
+- Validate with `claude plugin validate .`; type-check TS with `npm run typecheck`.
 - Guardrails: the git guard and the comment guard both ship with the plugin (`plugins/ticket-workflow/hooks/guard-git.sh` and `guard-comments.sh`; tests: `test-guard-git.sh` and `test-guard-comments.sh` in the same directory, run in CI). Deny rules stay per project; this repo's own are in `.claude/settings.json`, which also wires the git guard directly for local sessions.
 - Maintainer: `askrzypczak`. Branch per change, PR to `main`; humans merge.
 - **Public repo**: tracked files must not contain home-directory paths, personal emails (GitHub noreply is fine), tokens, names of unpublished repos or projects, or role references to a named person (use "the human" / "the maintainer").
