@@ -54,7 +54,8 @@ beforeEach(() => {
 if [ "$1" = "--bg" ]; then echo "$*" >>"${dir}/claude.log"; echo "$(pwd -P)|$*" >>"${dir}/claude.cwd.log"; else cat "${dir}/sessions.json"; fi
 `,
   );
-  // Data is keyed off --repo (or the repos/<repo>/... path of `gh api`).
+  // Data is keyed off --repo (or the repos/<repo>/... path of `gh api`). Like real gh,
+  // `pr list` and `pr view` return only the fields named by --json.
   writeFileSync(
     join(bin, "gh"),
     `#!/usr/bin/env bash
@@ -62,12 +63,14 @@ echo "$*" >>"${dir}/gh.log"
 repo=""
 if [ "$1" = "api" ]; then repo=$(echo "$2" | sed -E 's#^repos/([^/]+/[^/]+)/.*#\\1#')
 else prev=""; for a in "$@"; do [ "$prev" = "--repo" ] && repo="$a"; prev="$a"; done; fi
+fields=""; prev=""; for a in "$@"; do [ "$prev" = "--json" ] && fields="$a"; prev="$a"; done
+pick() { node -e 'const f=process.argv[1].split(",");const d=JSON.parse(require("fs").readFileSync(0,"utf8"));const p=o=>Object.fromEntries(f.filter(k=>k in o).map(k=>[k,o[k]]));process.stdout.write(JSON.stringify(Array.isArray(d)?d.map(p):p(d)))' "$fields" <"$1"; }
 rd="${dir}/r/\${repo//\\//_}"
 [ -f "$rd/fail-all" ] && exit 1
 if [ "$1 $2" = "issue view" ]; then if [ -f "$rd/fail-issue-$3" ]; then exit 1; fi; cat "$rd/issue.json"
 elif [ "$1 $2" = "issue list" ]; then if [ -f "$rd/issues.json" ]; then cat "$rd/issues.json"; else echo '[]'; fi
-elif [ "$1 $2" = "pr list" ]; then if [ -f "$rd/prs.json" ]; then cat "$rd/prs.json"; else echo '[]'; fi
-elif [ "$1 $2" = "pr view" ]; then cat "$rd/pr.json"
+elif [ "$1 $2" = "pr list" ]; then if [ -f "$rd/prs.json" ]; then pick "$rd/prs.json"; else echo '[]'; fi
+elif [ "$1 $2" = "pr view" ]; then pick "$rd/pr.json"
 elif [ "$1" = "api" ]; then if [ -f "$rd/api-fail" ]; then exit 1; fi; echo "{\\"sha\\":\\"$(cat "$rd/sha")\\"}"
 fi
 `,
@@ -261,6 +264,8 @@ describe("agent-poller conflict phase", () => {
       author: { login: "example-owner" },
       mergeable: "CONFLICTING",
       mergeStateStatus: "DIRTY",
+      headRefOid: "head1",
+      statusCheckRollup: [],
       ...p,
     });
     writeFileSync(
@@ -282,6 +287,7 @@ describe("agent-poller conflict phase", () => {
       JSON.stringify({
         state: opts.prViewState ?? "OPEN",
         mergeable: opts.prViewMergeable ?? "CONFLICTING",
+        statusCheckRollup: [],
       }),
     );
     for (const n of opts.failIssues ?? [])
@@ -514,6 +520,8 @@ describe("agent-poller conflict reconcile", () => {
           author: { login: "example-owner" },
           mergeable: opts.mergeable ?? "CONFLICTING",
           mergeStateStatus: "DIRTY",
+          headRefOid: "head1",
+          statusCheckRollup: [],
         },
       ]),
     );
@@ -522,6 +530,7 @@ describe("agent-poller conflict reconcile", () => {
       JSON.stringify({
         state: opts.prViewState ?? "OPEN",
         mergeable: opts.prViewMergeable ?? "CONFLICTING",
+        statusCheckRollup: [],
       }),
     );
     writeFileSync(
@@ -593,6 +602,118 @@ describe("agent-poller conflict reconcile", () => {
     });
     expect(!r.calls.some((c) => c.includes("agent-failed"))).toBe(true);
     expect(r.state["conflict-5"]).toBeTruthy();
+  });
+});
+
+describe("agent-poller CI phase", () => {
+  const FAILED_RUN = { __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "FAILURE" };
+  const PASSED_RUN = { __typename: "CheckRun", name: "lint", status: "COMPLETED", conclusion: "SUCCESS" };
+  const RED = [PASSED_RUN, FAILED_RUN];
+
+  interface CiOpts {
+    sessions?: { name: string; state: string }[];
+    launched?: Record<string, unknown>;
+    ciAttempts?: Record<string, unknown>;
+    prViewChecks?: unknown[];
+    dry?: boolean;
+  }
+
+  // A same-repo, owner-authored, MERGEABLE issue-5 PR (#9) at head1 with a failed check.
+  function runCi(opts: CiOpts) {
+    configure();
+    const repoDir = rdir(APP.repo);
+    writeFileSync(
+      join(dir, "sessions.json"),
+      JSON.stringify((opts.sessions ?? []).map((s) => ({ ...s, startedAt: 1 }))),
+    );
+    mkdirSync(state("app"), { recursive: true });
+    writeFileSync(join(state("app"), "launched.json"), JSON.stringify(opts.launched ?? {}));
+    if (opts.ciAttempts)
+      writeFileSync(join(state("app"), "ci-attempts.json"), JSON.stringify(opts.ciAttempts));
+    writeFileSync(join(repoDir, "sha"), "sha1");
+    writeFileSync(
+      join(repoDir, "prs.json"),
+      JSON.stringify([
+        {
+          number: 9,
+          headRefName: "issue-5-thing",
+          headRefOid: "head1",
+          isCrossRepository: false,
+          author: { login: "example-owner" },
+          mergeable: "MERGEABLE",
+          mergeStateStatus: "UNSTABLE",
+          statusCheckRollup: RED,
+        },
+      ]),
+    );
+    writeFileSync(
+      join(repoDir, "pr.json"),
+      JSON.stringify({
+        state: "OPEN",
+        mergeable: "MERGEABLE",
+        statusCheckRollup: opts.prViewChecks ?? RED,
+      }),
+    );
+    writeFileSync(
+      join(repoDir, "issue.json"),
+      JSON.stringify({
+        state: "OPEN",
+        author: { login: "example-owner" },
+        labels: [{ name: "agent-ok" }, { name: "needs-review" }],
+      }),
+    );
+    const res = exec({ dry: opts.dry });
+    expect(res.status, res.stdout + res.stderr).toBe(0);
+    const ciFile = join(state("app"), "ci-attempts.json");
+    return {
+      stdout: res.stdout,
+      launches: readLines("claude.log"),
+      calls: gh(),
+      state: readJson(join(state("app"), "launched.json")),
+      ciAttempts: existsSync(ciFile) ? readJson(ciFile) : undefined,
+    };
+  }
+
+  it("launches `app-N-ci` for a red PR and writes `launched.json` and `ci-attempts.json` (AC1)", () => {
+    const r = runCi({});
+    expect(r.launches).toStrictEqual([
+      "--bg --name app-5-ci --model sonnet --effort high /ticket-workflow:fix-ci 5",
+    ]);
+    expect(r.state["ci-5"]).toMatchObject({ name: "app-5-ci", pr: "9" });
+    expect(r.ciAttempts).toStrictEqual({ 9: { headSha: "head1", count: 1 } });
+  });
+
+  it("dry run logs the launch and writes no state (AC1)", () => {
+    const r = runCi({ dry: true });
+    expect(r.stdout, r.stdout).toMatch(/\[dry-run\] \(cd .* && claude --bg --name app-5-ci .*"\/ticket-workflow:fix-ci 5"\)/);
+    expect(r.launches).toStrictEqual([]);
+    expect(r.state).toStrictEqual({});
+    expect(r.ciAttempts).toBeUndefined();
+  });
+
+  it("skips with a log while ticket N's session is working (AC2)", () => {
+    const r = runCi({ sessions: [{ name: "app-5", state: "working" }] });
+    expect(r.launches).toStrictEqual([]);
+    expect(r.stdout, r.stdout).toMatch(/\[app\] #5: PR #9 .*app-5.*skipping/);
+    expect(r.state).toStrictEqual({});
+  });
+
+  it("marks `agent-failed` and comments when a done ci session leaves CI red (AC3)", () => {
+    const r = runCi({
+      sessions: [{ name: "app-5-ci", state: "done" }],
+      launched: {
+        "ci-5": { name: "app-5-ci", at: Math.floor(Date.now() / 1000) - 3600, pr: "9" },
+      },
+      ciAttempts: { 9: { headSha: "head1", count: 1 } },
+    });
+    expect(r.calls, r.calls.join("\n")).toContain(
+      "issue edit 5 --repo example-owner/example-app --add-label agent-failed",
+    );
+    expect(r.calls.some((c) => c.startsWith("pr comment 9"))).toBe(true);
+    expect(r.calls.some((c) => c.startsWith("issue comment 5"))).toBe(true);
+    expect(r.state).toStrictEqual({});
+    expect(r.ciAttempts).toStrictEqual({ 9: { headSha: "head1", count: 1 } });
+    expect(r.launches).toStrictEqual([]);
   });
 });
 
@@ -824,6 +945,8 @@ describe("agent-poller bypass-flag refusal", () => {
           author: { login: "me" },
           mergeable: "CONFLICTING",
           mergeStateStatus: "DIRTY",
+          headRefOid: "head1",
+          statusCheckRollup: [],
         },
       ]),
     );
@@ -1047,6 +1170,8 @@ describe("agent-poller session cap", () => {
           author: { login: "me" },
           mergeable: "CONFLICTING",
           mergeStateStatus: "DIRTY",
+          headRefOid: "head1",
+          statusCheckRollup: [],
         },
       ]),
     );

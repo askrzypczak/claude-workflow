@@ -4,17 +4,17 @@ import type { RepoConfig } from "./config.ts";
 import {
   alreadyAttempted,
   atCap,
-  conflictIssueVerdict,
   conflictRemains,
   conflictVerdict,
   handedOff,
+  prIssueVerdict,
   reconcileAction,
   sessionState,
   ticketPrompt,
   ticketVerdict,
 } from "./decide.ts";
 import type { PollerIo } from "./io.ts";
-import type { Issue, RepoState, Session } from "./schemas.ts";
+import type { Issue, PrRow, RepoState, Session } from "./schemas.ts";
 
 /** A configured repo with its combined launch flags. */
 export type RepoRun = RepoConfig & { flags: string[] };
@@ -45,7 +45,9 @@ export function pollRepo(repo: RepoRun, state: RepoState, run: RunContext, io: P
   const p: RepoPoll = { repo, state, run, io, log, failed: new Set() };
   reconcile(p);
   launchTickets(p);
-  resolveConflicts(p);
+  const prs = io.listPrs(repo.repo);
+  resolveConflicts(p, prs);
+  fixCi(p, prs);
 }
 
 /** Fails or clears the sessions this poller launched earlier. */
@@ -109,10 +111,10 @@ function launchTickets(p: RepoPoll): void {
  * Launches `<prefix>-N-conflict` for same-repo, owner-authored `issue-N-*` PRs that conflict
  * with main, at most once per main SHA. Detection is plain gh (no model tokens).
  */
-function resolveConflicts(p: RepoPoll): void {
+function resolveConflicts(p: RepoPoll, prs: readonly PrRow[]): void {
   const { repo, state, io, log } = p;
   let mainSha: string | undefined; // read once, and only if a PR gets this far
-  for (const pr of io.listPrs(repo.repo)) {
+  for (const pr of prs) {
     const verdict = conflictVerdict(pr, {
       owner: repo.owner,
       prefix: repo.sessionPrefix,
@@ -136,7 +138,7 @@ function resolveConflicts(p: RepoPoll): void {
       log(`#${n}: cannot read issue; skipping`);
       continue;
     }
-    const issueVerdict = conflictIssueVerdict(issue, n, repo.owner);
+    const issueVerdict = prIssueVerdict(issue, n, repo.owner, "conflict resolution");
     if (!issueVerdict.ok) {
       if (issueVerdict.log) log(issueVerdict.log);
       continue;
@@ -163,6 +165,14 @@ function resolveConflicts(p: RepoPoll): void {
     state.attempts[n] = { pr: String(pr.number), mainSha };
     io.saveState(repo.sessionPrefix, state);
   }
+}
+
+/**
+ * Launches `<prefix>-N-ci` for same-repo, owner-authored `issue-N-*` PRs that are MERGEABLE
+ * with red checks, once per head SHA and at most MAX_CI_ATTEMPTS per PR.
+ */
+function fixCi(p: RepoPoll, prs: readonly PrRow[]): void {
+  // not implemented: a no-op until then, so the other phases still run.
 }
 
 function capReached(p: RepoPoll): boolean {

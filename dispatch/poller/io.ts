@@ -87,6 +87,7 @@ export function loadState(stateDir: string, prefix: string): RepoState {
   return {
     launched: parseJson(Launched, readStateFile(files.launched), files.launched),
     attempts: parseJson(Attempts, readStateFile(files.attempts), files.attempts),
+    ciAttempts: {}, // not implemented: ci-attempts.json is not read yet
   };
 }
 
@@ -111,12 +112,12 @@ export function createIo(stateDir: string, dryRun: boolean): PollerIo {
     listPrs: (repo) =>
       ghJson(PrList, [
         "pr", "list", "--repo", repo, "--state", "open", "--limit", "100",
-        "--json", "number,headRefName,mergeable,isCrossRepository,author",
+        "--json", "number,headRefName,headRefOid,mergeable,isCrossRepository,author,statusCheckRollup",
       ]),
     viewIssue: (repo, n) =>
       ghJson(Issue, ["issue", "view", String(n), "--repo", repo, "--json", "author,labels,state"]),
     viewPr: (repo, pr) =>
-      ghJson(PrStatus, ["pr", "view", String(pr), "--repo", repo, "--json", "state,mergeable"]),
+      ghJson(PrStatus, ["pr", "view", String(pr), "--repo", repo, "--json", "state,mergeable,statusCheckRollup"]),
     mainSha: (repo) => ghJson(Commit, ["api", `repos/${repo}/commits/main`]).sha,
 
     editLabels: (repo, n, add, remove) =>

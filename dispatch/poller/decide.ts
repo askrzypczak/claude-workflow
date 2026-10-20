@@ -1,9 +1,12 @@
 // Pure decisions: session states, caps, bypass flags, reconcile outcomes, and which tickets
 // and PRs get a session. Skip log lines are returned without the timestamp or `[prefix] `.
-import type { Attempts, Issue, IssueRow, Launched, PrRow, PrStatus, Session } from "./schemas.ts";
+import type { Attempts, Check, CiAttempts, Issue, IssueRow, Launched, PrRow, PrStatus, Session } from "./schemas.ts";
 
 /** An unlisted session younger than this may just not be listed yet. */
 export const LISTING_GRACE_SEC = 600;
+
+/** CI-fix sessions per PR, across head SHAs. */
+export const MAX_CI_ATTEMPTS = 2;
 
 const ENDED = ["done", "failed", "stopped"];
 const HANDED_OFF = ["needs-review", "blocked", "agent-failed"];
@@ -136,14 +139,41 @@ export function conflictVerdict(
   return { ok: true, n };
 }
 
-/** The ticket behind a conflicting PR must be open, agent-ok, not agent-failed, by the owner. */
-export function conflictIssueVerdict(issue: Issue, n: number, owner: string): Verdict {
+/** The ticket behind a PR session must be open, agent-ok, not agent-failed, by the owner. */
+export function prIssueVerdict(issue: Issue, n: number, owner: string, action: string): Verdict {
   if (issue.state !== "OPEN") return { ok: false, log: `#${n}: issue is not open; skipping conflict resolution` };
   if (!issue.labels.includes("agent-ok") || issue.labels.includes("agent-failed")) return { ok: false };
   if (issue.author?.login !== owner) {
     return { ok: false, log: `#${n}: author is not ${owner}; skipping conflict resolution` };
   }
   return { ok: true };
+}
+
+/** A PR's checks: red (a failed check, none pending), pending (any not finished), or ok. */
+export function ciState(checks: readonly Check[]): "red" | "pending" | "ok" {
+  throw new Error("not implemented");
+}
+
+/**
+ * Whether a PR gets a CI-fix session, before its issue is read: an `issue-N-*` branch in this
+ * repo, by the owner, MERGEABLE with red checks, while ticket N's session is not active and no
+ * CI-fix or conflict session for N is live or tracked.
+ */
+export function ciVerdict(
+  pr: PrRow,
+  opts: { owner: string; prefix: string; sessions: readonly Session[]; launched: Launched },
+): Verdict<{ n: number }> {
+  throw new Error("not implemented");
+}
+
+/** Whether this PR may get another CI-fix attempt at this head SHA, within MAX_CI_ATTEMPTS. */
+export function ciAttemptVerdict(attempts: CiAttempts, pr: number, headSha: string): Verdict {
+  throw new Error("not implemented");
+}
+
+/** A finished CI-fix session failed if its PR is still open with red checks. */
+export function ciRemains(pr: PrStatus): boolean {
+  throw new Error("not implemented");
 }
 
 /** True if this PR was already tried against this main SHA. */

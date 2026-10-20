@@ -2,19 +2,23 @@ import { describe, expect, it } from "vitest";
 import {
   alreadyAttempted,
   atCap,
-  conflictIssueVerdict,
+  ciAttemptVerdict,
+  ciRemains,
+  ciState,
+  ciVerdict,
   conflictRemains,
   conflictVerdict,
   handedOff,
   hasBypassFlag,
   liveByPrefix,
   liveCount,
+  prIssueVerdict,
   reconcileAction,
   sessionState,
   ticketPrompt,
   ticketVerdict,
 } from "./decide.ts";
-import type { IssueRow, Launched, PrRow, Session } from "./schemas.ts";
+import type { Check, IssueRow, Launched, PrRow, Session } from "./schemas.ts";
 
 const session = (name: string, state: string, startedAt = 1): Session => ({ name, state, startedAt });
 
@@ -129,9 +133,9 @@ describe("handedOff and conflictRemains", () => {
   });
 
   it("a conflict remains only on an open, conflicting PR", () => {
-    expect(conflictRemains({ state: "OPEN", mergeable: "CONFLICTING" })).toBe(true);
-    expect(conflictRemains({ state: "OPEN", mergeable: "MERGEABLE" })).toBe(false);
-    expect(conflictRemains({ state: "MERGED", mergeable: "CONFLICTING" })).toBe(false);
+    expect(conflictRemains({ state: "OPEN", mergeable: "CONFLICTING", statusCheckRollup: [] })).toBe(true);
+    expect(conflictRemains({ state: "OPEN", mergeable: "MERGEABLE", statusCheckRollup: [] })).toBe(false);
+    expect(conflictRemains({ state: "MERGED", mergeable: "CONFLICTING", statusCheckRollup: [] })).toBe(false);
   });
 });
 
@@ -174,9 +178,11 @@ describe("conflictVerdict", () => {
   const pr = (p: Partial<PrRow> = {}): PrRow => ({
     number: 9,
     headRefName: "issue-5-thing",
+    headRefOid: "head1",
     mergeable: "CONFLICTING",
     isCrossRepository: false,
     author: { login: "me" },
+    statusCheckRollup: [],
     ...p,
   });
   const verdict = (row: PrRow, sessions: Session[] = [], launched: Launched = {}) =>
@@ -215,11 +221,11 @@ describe("conflictVerdict", () => {
   });
 });
 
-describe("conflictIssueVerdict", () => {
+describe("prIssueVerdict", () => {
   const issue = { state: "OPEN", author: { login: "me" }, labels: ["agent-ok"] };
 
   it("accepts an open agent-ok issue by the owner", () => {
-    expect(conflictIssueVerdict(issue, 5, "me")).toEqual({ ok: true });
+    expect(prIssueVerdict(issue, 5, "me", "conflict resolution")).toEqual({ ok: true });
   });
 
   it.each([
@@ -229,7 +235,156 @@ describe("conflictIssueVerdict", () => {
     [{ author: { login: "eve" } }, "#5: author is not me; skipping conflict resolution"],
     [{ author: undefined }, "#5: author is not me; skipping conflict resolution"],
   ])("skips %j", (p, log) => {
-    expect(conflictIssueVerdict({ ...issue, ...p }, 5, "me")).toEqual(log ? { ok: false, log } : { ok: false });
+    expect(prIssueVerdict({ ...issue, ...p }, 5, "me", "conflict resolution")).toEqual(
+      log ? { ok: false, log } : { ok: false },
+    );
+  });
+
+  it("prIssueVerdict keeps the conflict wording and uses the given action in its log", () => {
+    const closed = { ...issue, state: "CLOSED" };
+    const other = { ...issue, author: { login: "eve" } };
+    expect(prIssueVerdict(closed, 5, "me", "conflict resolution")).toEqual({
+      ok: false,
+      log: "#5: issue is not open; skipping conflict resolution",
+    });
+    expect(prIssueVerdict(closed, 5, "me", "CI fix")).toEqual({
+      ok: false,
+      log: "#5: issue is not open; skipping CI fix",
+    });
+    expect(prIssueVerdict(other, 5, "me", "CI fix")).toEqual({
+      ok: false,
+      log: "#5: author is not me; skipping CI fix",
+    });
+  });
+});
+
+// statusCheckRollup rows: a CheckRun has status and conclusion, a StatusContext has state.
+const checkRun = (conclusion: string, status = "COMPLETED"): Check => ({ status, conclusion });
+const statusContext = (state: string): Check => ({ state });
+const FAILED = checkRun("FAILURE");
+const PASSED = checkRun("SUCCESS");
+
+describe("ciState", () => {
+  it("ciState is red for a failed check (FAILURE, ERROR, TIMED_OUT, STARTUP_FAILURE) with none pending (AC1)", () => {
+    for (const c of ["FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE"]) {
+      expect(ciState([PASSED, checkRun(c)]), c).toBe("red");
+    }
+    for (const s of ["FAILURE", "ERROR"]) {
+      expect(ciState([statusContext("SUCCESS"), statusContext(s)]), s).toBe("red");
+    }
+    expect(ciState([checkRun("CANCELLED"), checkRun("SKIPPED"), FAILED])).toBe("red");
+  });
+
+  it("ciState is pending while any check is queued, in progress or pending, even beside a failure (AC1)", () => {
+    expect(ciState([FAILED, checkRun("", "QUEUED")])).toBe("pending");
+    expect(ciState([FAILED, checkRun("", "IN_PROGRESS")])).toBe("pending");
+    expect(ciState([FAILED, statusContext("PENDING")])).toBe("pending");
+    expect(ciState([statusContext("ERROR"), statusContext("EXPECTED")])).toBe("pending");
+    expect(ciState([PASSED, checkRun("", "IN_PROGRESS")])).toBe("pending");
+  });
+
+  it("ciState is ok for only success/cancelled/skipped/neutral checks, and for an empty rollup (AC1)", () => {
+    expect(ciState([])).toBe("ok");
+    expect(
+      ciState([PASSED, checkRun("CANCELLED"), checkRun("SKIPPED"), checkRun("NEUTRAL"), statusContext("SUCCESS")]),
+    ).toBe("ok");
+  });
+});
+
+describe("ciVerdict", () => {
+  const pr = (p: Partial<PrRow> = {}): PrRow => ({
+    number: 9,
+    headRefName: "issue-5-thing",
+    headRefOid: "head1",
+    mergeable: "MERGEABLE",
+    isCrossRepository: false,
+    author: { login: "me" },
+    statusCheckRollup: [PASSED, FAILED],
+    ...p,
+  });
+  const verdict = (row: PrRow, sessions: Session[] = [], launched: Launched = {}) =>
+    ciVerdict(row, { owner: "me", prefix: "a", sessions, launched });
+
+  it("ciVerdict accepts a MERGEABLE red PR on an `issue-N-*` branch and returns N (AC1)", () => {
+    expect(verdict(pr())).toEqual({ ok: true, n: 5 });
+    expect(verdict(pr({ headRefName: "issue-12-other" }))).toEqual({ ok: true, n: 12 });
+  });
+
+  it("ciVerdict launches nothing for a CONFLICTING PR, silently (AC1)", () => {
+    expect(verdict(pr({ mergeable: "CONFLICTING" }))).toEqual({ ok: false });
+  });
+
+  it("ciVerdict logs and retries later for UNKNOWN mergeability (AC1)", () => {
+    expect(verdict(pr({ mergeable: "UNKNOWN" }))).toEqual({
+      ok: false,
+      log: expect.stringMatching(/^#5: PR #9 .*retry/),
+    });
+  });
+
+  it("ciVerdict skips pending and green PRs (AC1)", () => {
+    expect(verdict(pr({ statusCheckRollup: [FAILED, checkRun("", "IN_PROGRESS")] })).ok).toBe(false);
+    expect(verdict(pr({ statusCheckRollup: [FAILED, statusContext("PENDING")] })).ok).toBe(false);
+    expect(verdict(pr({ statusCheckRollup: [PASSED] })).ok).toBe(false);
+    expect(verdict(pr({ statusCheckRollup: [] })).ok).toBe(false);
+  });
+
+  it("ciVerdict skips forks, other authors and non-`issue-N-*` branches (AC1)", () => {
+    expect(verdict(pr({ isCrossRepository: true })).ok).toBe(false);
+    expect(verdict(pr({ author: { login: "eve" } })).ok).toBe(false);
+    expect(verdict(pr({ headRefName: "feature-x" })).ok).toBe(false);
+    expect(verdict(pr({ headRefName: "issue-x-5" })).ok).toBe(false);
+  });
+
+  it("ciVerdict skips with a log when the ticket session is working or blocked (AC2)", () => {
+    for (const st of ["working", "blocked"]) {
+      expect(verdict(pr(), [session("a-5", st)])).toEqual({
+        ok: false,
+        log: expect.stringMatching(/^#5: PR #9 .*a-5.*skipping$/),
+      });
+    }
+    for (const st of ["idle", "done"]) expect(verdict(pr(), [session("a-5", st)]).ok).toBe(true);
+  });
+
+  it("ciVerdict skips a live or tracked `-ci` session, and a live or tracked conflict session (AC2)", () => {
+    for (const st of ["working", "blocked", "idle"]) {
+      expect(verdict(pr(), [session("a-5-ci", st)])).toEqual({
+        ok: false,
+        log: expect.stringMatching(/^#5: PR #9 .*a-5-ci.*skipping$/),
+      });
+    }
+    expect(verdict(pr(), [session("a-5-ci", "failed")]).ok).toBe(true);
+    expect(verdict(pr(), [], { "ci-5": { name: "a-5-ci", at: 1, pr: "9" } }).ok).toBe(false);
+    expect(verdict(pr(), [session("a-5-conflict", "working")]).ok).toBe(false);
+    expect(verdict(pr(), [], { "conflict-5": { name: "a-5-conflict", at: 1, pr: "9", mainSha: "s" } }).ok).toBe(
+      false,
+    );
+    expect(verdict(pr(), [], { "ci-6": { name: "a-6-ci", at: 1, pr: "10" } })).toEqual({ ok: true, n: 5 });
+  });
+});
+
+describe("ciAttemptVerdict", () => {
+  it("ciAttemptVerdict skips the same head SHA, allows a new one, and skips at the cap with a log (AC1)", () => {
+    expect(ciAttemptVerdict({}, 9, "head1")).toEqual({ ok: true });
+    expect(ciAttemptVerdict({ 10: { headSha: "head1", count: 2 } }, 9, "head1")).toEqual({ ok: true });
+
+    const once = { 9: { headSha: "head1", count: 1 } };
+    expect(ciAttemptVerdict(once, 9, "head1").ok).toBe(false);
+    expect(ciAttemptVerdict(once, 9, "head2")).toEqual({ ok: true });
+
+    const capped = { 9: { headSha: "head2", count: 2 } };
+    expect(ciAttemptVerdict(capped, 9, "head3")).toEqual({ ok: false, log: expect.stringContaining("#9") });
+  });
+});
+
+describe("ciRemains", () => {
+  it("ciRemains is true only for an open PR whose checks are red (AC3)", () => {
+    const status = (state: string, statusCheckRollup: Check[]) => ({ state, mergeable: "MERGEABLE", statusCheckRollup });
+    expect(ciRemains(status("OPEN", [PASSED, FAILED]))).toBe(true);
+    expect(ciRemains(status("OPEN", [PASSED]))).toBe(false);
+    expect(ciRemains(status("OPEN", []))).toBe(false);
+    expect(ciRemains(status("OPEN", [FAILED, checkRun("", "QUEUED")]))).toBe(false);
+    expect(ciRemains(status("CLOSED", [FAILED]))).toBe(false);
+    expect(ciRemains(status("MERGED", [FAILED]))).toBe(false);
   });
 });
 
