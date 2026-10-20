@@ -14,6 +14,7 @@ Plugin `ticket-workflow`:
   - `address-feedback`: handles review feedback on the PR.
   - `resolve-conflicts`: merges `origin/main` into a conflicting `issue-N-*` PR branch, runs `npm run check`, publishes. Stops with `needs input` on semantic conflicts; never rebases or force-pushes.
   - `audit-epic`: read-only necessity audit of an epic and its child tickets; prints a report and changes nothing on GitHub.
+  - `file-ticket`: files a ticket in the house format (type-prefixed title, Problem, Proposed change, checkable acceptance criteria, labels per [Ticket conventions](#ticket-conventions)) after verifying its claims and searching for duplicates. Never sets `ready` or `skip-plan`.
 - Subagents: `contract-writer` (sonnet, high; opus when the plan is `complex`) writes stubs and failing tests first; `implementer` (haiku, xhigh; sonnet or opus per the approved plan) builds the code that makes them pass; `reviewer` (opus, medium, read-only) reviews complex diffs; `spec-auditor` (opus, high, read-only) audits epics, and each ticket's plan, for necessity.
 - Hooks: a git guard and a comment guard (see [Requirements](#requirements) and [Trust rule](#trust-rule-for-public-repos)).
 
@@ -62,7 +63,7 @@ A consuming project needs:
 
 ## Ticket conventions
 
-GitHub Issues is the source of truth; agents use `gh`.
+GitHub Issues is the source of truth; agents use `gh`. Ask an agent to "file a ticket for X" and the `file-ticket` skill writes it in this format: a `bug:`, `feature:` or `chore:` title prefix, Problem, Proposed change and checkable acceptance criteria sections, and the labels below.
 
 ### Labels
 
