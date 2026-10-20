@@ -31,7 +31,12 @@ One ticket is one PR (one worktree, one branch). If the request is more than tha
 1. File the epic first (Problem and the overall plan, with the children added to its body afterwards).
 2. File each child with `Part of #E` in its body, and `Blocked by #M` plus the `blocked` label where one child needs another.
 3. Edit the epic body (`gh issue edit E --body-file <file>`) to list the children.
-4. Once every child is filed and labelled (steps 5-6 for each), audit the set: launch the `ticket-workflow:spec-auditor` subagent in epic mode (if the Agent tool rejects that name, list the available agent types and use the one that ends in `:spec-auditor`). Prompt it with the epic number, the epic text (title and body as filed; it has no comments yet; if the body links a doc, add the doc's text if you read it this session, or a note that it was not read) and the child numbers, each marked listed. The audit is advisory: it writes nothing to GitHub and blocks nothing; cuts and rewordings are for the human to apply.
+4. Once every child is filed and labelled (steps 5-6 for each), audit the set: launch the `ticket-workflow:spec-auditor` subagent in epic mode (if the Agent tool rejects that name, list the available agent types and use the one that ends in `:spec-auditor`). Prompt it with the epic number, the epic text (title and body as filed; it has no comments yet; if the body links a doc, add the doc's text if you read it this session, or a note that it was not read) and the child numbers, each marked listed. The auditor itself writes nothing to GitHub and blocks nothing; you act on its report in the next item.
+5. Judge the audit yourself; the auditor can be wrong, and human attention is the scarce resource, so do not forward its report unread.
+   - Verify each non-keep verdict's evidence against the code and the filed tickets.
+   - Apply each verdict that holds up to the issues filed in this run (`gh issue edit`): a reword or cut edits that body or title; a reorder rewires the `Blocked by` lines and the `blocked` labels; a split files the new child (steps 5-6, with `Part of #E`), rewires the `Blocked by` lines and updates the epic's child list.
+   - Answer an auditor question yourself where the code, the tickets or the repo's recorded conventions settle it, and record the answer in the affected ticket.
+   - Ask the human, in one `AskUserQuestion` round under step 3's question rules, except that each question names the filed ticket (`#M`) it concerns in its header and first sentence (rewrite the auditor's questions to them), only about: a verdict you disagree with or cannot verify; an auditor question you cannot settle; a verdict that would drop or merge a whole filed ticket (closing is the human's: apply the surviving edits, leave the closing to them and name the ticket in the report). Then apply the answers.
 
 ## 5. Write
 Title: prefixed with the type, `bug:`, `feature:` or `chore:`. Body, in this shape:
@@ -62,10 +67,10 @@ Labels follow the README's "Ticket conventions":
 Create the issue with `gh issue create --title ... --body-file ... --label ...`. If `gh` rejects a label because it does not exist, tell the human to run `setup-labels.sh` instead of creating labels yourself.
 
 ## 7. Report
-Give the issue URL (an epic and its children, each), their labels, any duplicate or superseded issues touched, and the number of skipped comments if step 1 read any. For an epic, then the auditor's report as returned. Remind the human that the maintainer adds `ready` to queue the ticket for dispatch.
+Give the issue URL (an epic and its children, each), their labels, any duplicate or superseded issues touched, and the number of skipped comments if step 1 read any. For an epic, then a short account of the audit: verdicts applied (one line each), verdicts declined with the reason, auditor questions you answered with the answer, and what you asked the human with their answers. Remind the human that the maintainer adds `ready` to queue the ticket for dispatch.
 
 ## Hard rules
 - Never add `ready` or `skip-plan`, even when asked to; say they are the maintainer's.
-- The only existing issue you may change is an epic you just filed. Comment on another only when the human chose that in step 3. Never close, relabel or reassign one.
+- The issues you may change are those filed in this run: the epic, its children, and children added by a split; applying a split or reorder may add or remove `blocked` on them. Comment on another issue only when the human chose that in step 3. Never close any issue, including this run's, and never relabel or reassign one not filed in this run.
 - Change no files in the repo and open no branch or PR; the ticket is the only output.
 - Same guardrails as `work-ticket`: the trust rule, the comment guard, and a denial means stop.
