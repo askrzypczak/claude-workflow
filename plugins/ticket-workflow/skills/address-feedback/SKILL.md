@@ -36,7 +36,7 @@ Enter the existing worktree for the PR branch (or create one from the PR's head 
 - Bug fixes start with a failing regression test: run the contract step of `work-ticket` first (the regression tests are the Test titles, observed red and committed), and only then have the implementer fix the bug. Wording, style or design feedback needs no new test.
 - Launch the `ticket-workflow:implementer` (tier as agreed; default haiku xhigh) with the fix list.
 - `npm run check` (and the contract checks of `work-ticket` step "Verify the tests" where a contract exists, using the contract commit SHA from the PR's Test proof).
-- `ticket-workflow:reviewer` for complex changes (pass it the approved AC from the PR body), self-check for simple ones.
+- `ticket-workflow:reviewer` for complex changes (pass it the approved plan from the PR body's Plan section, and triage its findings as in `work-ticket` step 6), self-check for simple ones.
 The PR already carries its version bump (one per PR, relative to `origin/main`); do not bump again for review fixes unless they raise the level (patch -> minor). Commit, push the same branch, and reply on the PR threads you resolved (`gh pr comment`), noting which items were done and which were deferred to new issues.
 
 ## 4. Hand off
