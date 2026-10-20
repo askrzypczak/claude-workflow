@@ -1,0 +1,42 @@
+name: update-prs
+
+# main requires the `test` check on an up-to-date branch. This keeps open same-repo PRs up to date
+# without a human clicking "Update branch": scripts/update-prs.sh merges main in, re-bumps a plugin
+# version another PR already took, pushes and dispatches ci.yml. Conflicts are left to resolve-conflicts.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number (empty for every open PR)
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: update-prs-${{ github.event.pull_request.number || inputs.pr || 'all' }}
+
+jobs:
+  update:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - run: scripts/update-prs.sh $PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}

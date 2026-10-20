@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  # update-prs.yml dispatches this on PR branches it pushed to; GITHUB_TOKEN pushes start no pull_request run.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -23,5 +25,7 @@ jobs:
       - run: plugins/ticket-workflow/hooks/test-guard-git.sh
       - run: plugins/ticket-workflow/hooks/test-guard-comments.sh
       - run: scripts/test-check-version-bump.sh
-      - if: github.event_name == 'pull_request'
-        run: scripts/check-version-bump.sh origin/${{ github.base_ref }}
+      - run: scripts/test-update-pr-branch.sh
+      - run: scripts/test-update-prs.sh
+      - if: github.event_name != 'push'
+        run: scripts/check-version-bump.sh origin/${{ github.base_ref || 'main' }}
