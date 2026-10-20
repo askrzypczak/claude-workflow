@@ -24,7 +24,12 @@ fail=0
 for pr in $prs; do
   read -r cross pr_base head < <(gh pr view "$pr" --json isCrossRepository,baseRefName,headRefName \
     --jq '"\(.isCrossRepository) \(.baseRefName) \(.headRefName)"')
-  if [ "${cross:-}" != false ] || [ "${pr_base:-}" != "$base" ]; then
+  if [ -z "${head:-}" ]; then
+    echo "::error::#$pr: cannot read the PR"
+    fail=1
+    continue
+  fi
+  if [ "$cross" != false ] || [ "$pr_base" != "$base" ]; then
     echo "#$pr: skipped (fork, or base is not $base)"
     continue
   fi
@@ -43,11 +48,17 @@ for pr in $prs; do
     continue
   fi
 
-  # Rejected when the branch moved meanwhile (its own pull_request run takes over) or when the merge
-  # brings in workflow-file changes, which GITHUB_TOKEN may not push.
   if ! git -C "$tmp/$pr" push -q origin "HEAD:refs/heads/$head"; then
-    echo "::error::#$pr: push to $head rejected; update it with the Update branch button"
-    fail=1
+    # Expected when the branch moved meanwhile (its own pull_request run takes over) or when the merge
+    # brings in workflow-file changes, which GITHUB_TOKEN may not push.
+    if [ "$(git ls-remote origin "refs/heads/$head" | cut -f1)" != "$(git rev-parse "origin/$head")" ]; then
+      echo "#$pr: $head moved while updating; its own run takes over"
+    elif [ -n "$(git -C "$tmp/$pr" diff --name-only "origin/$head" HEAD -- .github/workflows)" ]; then
+      echo "::warning::#$pr: $base changes workflow files, which this token may not push; use the Update branch button"
+    else
+      echo "::error::#$pr: push to $head rejected"
+      fail=1
+    fi
     continue
   fi
   echo "#$pr: updated $head"
