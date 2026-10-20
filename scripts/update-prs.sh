@@ -36,7 +36,7 @@ for pr in $prs; do
   git fetch -q origin "+refs/heads/$head:refs/remotes/origin/$head" &&
     git worktree add -q --detach "$tmp/$pr" "origin/$head" || { echo "::error::#$pr: cannot check out $head"; fail=1; continue; }
 
-  out=$(cd "$tmp/$pr" && "$here/update-pr-branch.sh" "origin/$base")
+  out=$(cd "$tmp/$pr" && PR_BRANCH=$head "$here/update-pr-branch.sh" "origin/$base")
   case $? in
     0) ;;
     2) echo "#$pr: conflicts with $base; left for resolve-conflicts or the author"; continue ;;
@@ -71,6 +71,8 @@ for pr in $prs; do
     fi
     gh pr comment "$pr" --body "Merged \`$base\` in and raised the plugin version $old -> $new: \`$base\` already reached $old, and this keeps the PR's bump level on top of it." >/dev/null || fail=1
   fi
-  gh workflow run ci.yml --ref "$head" || fail=1
+  if [ "${DISPATCH_CI:-true}" = true ]; then
+    gh workflow run ci.yml --ref "$head" || fail=1
+  fi
 done
 exit $fail

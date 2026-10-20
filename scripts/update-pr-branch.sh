@@ -33,7 +33,7 @@ above() { # a b: whether x.y.z a is higher than b
 }
 
 if ! git merge-base --is-ancestor "$base" HEAD; then
-  if ! git merge --no-edit "$base" >&2; then
+  if ! git merge --no-edit -m "Merge $base into ${PR_BRANCH:-the PR branch}" "$base" >&2; then
     conflicted=$(git diff --name-only --diff-filter=U)
     if [ "$conflicted" = "$manifest" ] && [ "$(rest_at "$(git merge-base "$base" HEAD)")" = "$(rest_at HEAD)" ]; then
       git checkout --theirs -- "$manifest" && git add -- "$manifest" && git commit -q --no-edit || exit 1

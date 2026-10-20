@@ -49,6 +49,7 @@ expect "comments" 1 "$(grep -c -- 'pr comment 7' "$GH_LOG")"
 expect "dispatches ci on feat" 1 "$(grep -c -- 'workflow run ci.yml --ref feat' "$GH_LOG")"
 expect "skips the fork" 1 "$(grep -c '#8: skipped' "$tmp/out")"
 expect "skips another base" 1 "$(grep -c '#9: skipped' "$tmp/out")"
+expect "names the branch in the merge" 1 "$(git -C "$tmp/origin.git" log --format=%s feat | grep -c '^Merge origin/main into feat$')"
 expect "removes its worktrees" 1 "$(git worktree list | wc -l | tr -d ' ')"
 
 # second run: already up to date, nothing pushed or dispatched
@@ -70,6 +71,15 @@ expect "non-numeric PR exits 1" 1 $?
 PATH="$tmp/bin:$PATH" bash "$update" 10 >"$tmp/out" 2>&1
 expect "unreadable PR exits 1" 1 $?
 expect "unreadable PR is an error, not a skip" 1 "$(grep -c '::error::#10' "$tmp/out")"
+
+# with a token whose pushes start pull_request runs, ci.yml is not dispatched
+cd "$tmp/dev" && echo d >plugins/p/more.md && git add . && git commit -qm more
+git -C "$tmp/origin.git" fetch -q "$tmp/dev" main:main
+cd "$tmp/runner" && : >"$GH_LOG"
+DISPATCH_CI=false PATH="$tmp/bin:$PATH" bash "$update" 7 >"$tmp/out" 2>&1
+expect "no-dispatch run exits 0" 0 $?
+expect "no-dispatch run updates feat" 0 "$(git -C "$tmp/origin.git" merge-base --is-ancestor main feat; echo $?)"
+expect "no-dispatch run dispatches nothing" 0 "$(grep -c 'workflow run' "$GH_LOG")"
 
 # main changes workflow files and the push is refused (as GITHUB_TOKEN's would be): a warning, not a failure
 cd "$tmp/dev" && mkdir -p .github/workflows && echo "on: push" >.github/workflows/x.yml && git add . && git commit -qm workflow

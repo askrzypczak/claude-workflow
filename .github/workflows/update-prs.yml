@@ -30,9 +30,13 @@ jobs:
       (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
     runs-on: ubuntu-latest
     steps:
+      # Optional UPDATE_PRS_TOKEN (GitHub App token or fine-grained PAT with contents, pull-requests and
+      # workflows write): its pushes start normal pull_request runs and may carry workflow-file changes.
+      # Without it GITHUB_TOKEN is used and ci.yml is dispatched instead.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.UPDATE_PRS_TOKEN || github.token }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -41,5 +45,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - run: scripts/update-prs.sh $PR
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.UPDATE_PRS_TOKEN || github.token }}
+          DISPATCH_CI: ${{ secrets.UPDATE_PRS_TOKEN && 'false' || 'true' }}
           PR: ${{ github.event.pull_request.number || inputs.pr }}
