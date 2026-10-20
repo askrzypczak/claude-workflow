@@ -18,6 +18,14 @@ Search open and closed issues before filing, with two or three different sets of
 ## 3. Ask
 Ask only for real ambiguity: what the ticket is for, bug or feature, one reading of the request versus another, whether to split it (step 4), and what to do about a duplicate (step 2). Put every question in one `AskUserQuestion` round (up to 4), recommended option first with the reason in its description. A guess that is cheap to reverse needs no question. Otherwise go straight on and file.
 
+Write every question for a reader who has just switched in from another session and has not seen your draft or the code:
+- `header`: the topic, 12 characters at most (there is no issue number yet).
+- The first question of a round opens with what the ticket is for: the request being filed, in one plain sentence.
+- When the question turns on code, say what the code does today in plain words with `path:line` (line numbers are fine in a question, which is read now; they still stay out of the ticket), then what is being decided and why it is open.
+- No references the human cannot resolve: your own numbering or labels for the options, other drafts, subagent names. Restate what is meant.
+- Each option's description says what happens if it is chosen (what gets filed or changed) and what it costs.
+- When the options are concrete wording, show each in the option's `preview` (single-select questions only).
+
 ## 4. Size it
 One ticket is one PR (one worktree, one branch). If the request is more than that (separable parts that would each pass the repo's checks alone), file an epic plus children:
 1. File the epic first (Problem and the overall plan, with the children added to its body afterwards).
