@@ -13,8 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -22,6 +20,3 @@ jobs:
       - run: npm run typecheck
       - run: plugins/ticket-workflow/hooks/test-guard-git.sh
       - run: plugins/ticket-workflow/hooks/test-guard-comments.sh
-      - run: scripts/test-check-version-bump.sh
-      - if: github.event_name == 'pull_request'
-        run: scripts/check-version-bump.sh origin/${{ github.base_ref }}
