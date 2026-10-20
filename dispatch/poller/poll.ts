@@ -1,9 +1,12 @@
-// One repo's poll: reconcile the sessions it launched, launch ready tickets, then resolve
-// conflicting agent PRs. Any throw aborts this repo only (main.ts logs it and moves on).
+// One repo's poll: reconcile the sessions it launched, launch ready tickets, resolve
+// conflicting agent PRs, then fix agent PRs whose CI is red. Any throw aborts this repo only (main.ts logs it and moves on).
 import type { RepoConfig } from "./config.ts";
 import {
   alreadyAttempted,
   atCap,
+  ciAttemptVerdict,
+  ciRemains,
+  ciVerdict,
   conflictRemains,
   conflictVerdict,
   handedOff,
@@ -55,27 +58,37 @@ function reconcile(p: RepoPoll): void {
   const { repo, state, io, log } = p;
   const now = io.now();
   for (const [key, entry] of Object.entries(state.launched)) {
-    const conflict = key.startsWith("conflict-");
-    const n = Number(conflict ? key.slice("conflict-".length) : key);
-    const pr = conflict ? Number(entry.pr) : undefined;
+    const kind = key.startsWith("conflict-") ? "conflict" : key.startsWith("ci-") ? "ci" : undefined;
+    const n = Number(kind ? key.slice(kind.length + 1) : key);
+    const pr = kind ? Number(entry.pr) : undefined;
     const st = sessionState(p.run.sessions, entry.name);
     log(`#${n}: ${entry.name} state=${st ?? "<none>"}`);
 
     const next = reconcileAction(st, now - entry.at);
     if (next.action === "keep") continue;
-    const failure = next.action === "fail" ? next.reason : finishedFailure(p, n, pr);
-    if (failure !== undefined && pr !== undefined) failConflict(p, n, entry.name, pr, failure);
+    const failure = next.action === "fail" ? next.reason : finishedFailure(p, n, kind, pr);
+    if (failure !== undefined && kind !== undefined && pr !== undefined) {
+      failPrSession(p, n, entry.name, pr, failure, kind);
+    }
     else if (failure !== undefined) failTicket(p, n, entry.name, failure);
     delete state.launched[key];
     io.saveState(repo.sessionPrefix, state);
   }
 }
 
-/** Why a finished session failed (its ticket was not handed off, or its PR still conflicts), if it did. */
-function finishedFailure(p: RepoPoll, n: number, conflictPr: number | undefined): string | undefined {
-  if (conflictPr !== undefined) {
-    const pr = p.io.viewPr(p.repo.repo, conflictPr);
-    return conflictRemains(pr) ? "session finished but the conflict remains" : undefined;
+/** Why a finished session failed (its ticket was not handed off, or its PR still conflicts or fails CI), if it did. */
+function finishedFailure(
+  p: RepoPoll,
+  n: number,
+  kind: "conflict" | "ci" | undefined,
+  prNumber: number | undefined,
+): string | undefined {
+  if (kind !== undefined && prNumber !== undefined) {
+    const pr = p.io.viewPr(p.repo.repo, prNumber);
+    if (kind === "conflict") {
+      return conflictRemains(pr) ? "session finished but the conflict remains" : undefined;
+    }
+    return ciRemains(pr) ? "session finished but CI is still failing" : undefined;
   }
   const issue = p.io.viewIssue(p.repo.repo, n);
   return handedOff(issue) ? undefined : "session finished but the ticket was not handed off";
@@ -172,7 +185,56 @@ function resolveConflicts(p: RepoPoll, prs: readonly PrRow[]): void {
  * with red checks, once per head SHA and at most MAX_CI_ATTEMPTS per PR.
  */
 function fixCi(p: RepoPoll, prs: readonly PrRow[]): void {
-  // not implemented: a no-op until then, so the other phases still run.
+  const { repo, state, io, log } = p;
+  for (const pr of prs) {
+    const verdict = ciVerdict(pr, {
+      owner: repo.owner,
+      prefix: repo.sessionPrefix,
+      sessions: p.run.sessions,
+      launched: state.launched,
+    });
+    if (!verdict.ok) {
+      if (verdict.log) log(verdict.log);
+      continue;
+    }
+    const { n } = verdict;
+    if (p.failed.has(n)) {
+      log(`#${n}: failed earlier in this poll; skipping CI fix`);
+      continue;
+    }
+
+    let issue: Issue;
+    try {
+      issue = io.viewIssue(repo.repo, n);
+    } catch {
+      log(`#${n}: cannot read issue; skipping`);
+      continue;
+    }
+    const issueVerdict = prIssueVerdict(issue, n, repo.owner, "CI fix");
+    if (!issueVerdict.ok) {
+      if (issueVerdict.log) log(issueVerdict.log);
+      continue;
+    }
+
+    const attempt = ciAttemptVerdict(state.ciAttempts, pr.number, pr.headRefOid);
+    if (!attempt.ok) {
+      if (attempt.log) log(attempt.log);
+      continue;
+    }
+    if (capReached(p)) {
+      log(`deferred #${n}: at session cap (CI fix for PR #${pr.number})`);
+      continue;
+    }
+    const name = `${repo.sessionPrefix}-${n}-ci`;
+    log(`#${n}: PR #${pr.number} has failing CI; launching ${name} (flags: ${flagsText(repo)})`);
+    start(p, name, `/ticket-workflow:fix-ci ${n}`);
+    state.launched[`ci-${n}`] = { name, at: io.now(), pr: String(pr.number) };
+    state.ciAttempts[pr.number] = {
+      headSha: pr.headRefOid,
+      count: (state.ciAttempts[pr.number]?.count ?? 0) + 1,
+    };
+    io.saveState(repo.sessionPrefix, state);
+  }
 }
 
 function capReached(p: RepoPoll): boolean {
@@ -214,11 +276,21 @@ function failTicket(p: RepoPoll, n: number, name: string, reason: string): void 
   );
 }
 
-function failConflict(p: RepoPoll, n: number, name: string, pr: number, reason: string): void {
+function failPrSession(
+  p: RepoPoll,
+  n: number,
+  name: string,
+  pr: number,
+  reason: string,
+  kind: "conflict" | "ci",
+): void {
   const repo = p.repo.repo;
   p.failed.add(n);
   p.log(`#${n}: ${reason} (PR #${pr}) -> agent-failed`);
-  const body = `Conflict-resolution session \`${name}\` ended without resolving the conflict on PR #${pr}: ${reason}. See \`claude logs ${name}\`. It will not be retried against the same main; remove \`agent-failed\` to allow a retry once main moves.`;
+  const body =
+    kind === "conflict"
+      ? `Conflict-resolution session \`${name}\` ended without resolving the conflict on PR #${pr}: ${reason}. See \`claude logs ${name}\`. It will not be retried against the same main; remove \`agent-failed\` to allow a retry once main moves.`
+      : `CI-fix session \`${name}\` ended without getting CI green on PR #${pr}: ${reason}. See \`claude logs ${name}\`. It will not be retried against the same commit; remove \`agent-failed\` to allow a retry once the PR has a new commit.`;
   tryTo(p, `label #${n}`, () => p.io.editLabels(repo, n, ["agent-failed"], []));
   tryTo(p, `comment on PR #${pr}`, () => p.io.commentOnPr(repo, pr, body));
   p.io.commentOnIssue(repo, n, body);

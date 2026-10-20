@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { z } from "zod";
 import {
   Attempts,
+  CiAttempts,
   Commit,
   Issue,
   IssueList,
@@ -68,7 +69,12 @@ export function listSessions(): Session[] {
 
 function stateFiles(stateDir: string, prefix: string) {
   const dir = join(stateDir, "repos", prefix);
-  return { dir, launched: join(dir, "launched.json"), attempts: join(dir, "conflicts.json") };
+  return {
+    dir,
+    launched: join(dir, "launched.json"),
+    attempts: join(dir, "conflicts.json"),
+    ciAttempts: join(dir, "ci-attempts.json"),
+  };
 }
 
 /** A state file's text, or "{}" when it does not exist yet. */
@@ -87,7 +93,7 @@ export function loadState(stateDir: string, prefix: string): RepoState {
   return {
     launched: parseJson(Launched, readStateFile(files.launched), files.launched),
     attempts: parseJson(Attempts, readStateFile(files.attempts), files.attempts),
-    ciAttempts: {}, // not implemented: ci-attempts.json is not read yet
+    ciAttempts: parseJson(CiAttempts, readStateFile(files.ciAttempts), files.ciAttempts),
   };
 }
 
@@ -141,6 +147,7 @@ export function createIo(stateDir: string, dryRun: boolean): PollerIo {
       mkdirSync(files.dir, { recursive: true });
       writeJson(files.launched, state.launched);
       writeJson(files.attempts, state.attempts);
+      writeJson(files.ciAttempts, state.ciAttempts);
     },
     now: () => Math.floor(Date.now() / 1000),
     log,
