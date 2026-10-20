@@ -1,5 +1,6 @@
 // One repo's poll: reconcile the sessions it launched, launch ready tickets, resolve
-// conflicting agent PRs, then fix agent PRs whose CI is red. Any throw aborts this repo only (main.ts logs it and moves on).
+// conflicting agent PRs, then fix agent PRs whose CI is red.
+// Any throw aborts this repo only (main.ts logs it and moves on).
 import type { RepoConfig } from "./config.ts";
 import {
   alreadyAttempted,
