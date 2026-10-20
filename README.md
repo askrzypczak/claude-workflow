@@ -16,7 +16,7 @@ Plugin `ticket-workflow`:
   - `fix-ci`: reads the failing run's logs on an `issue-N-*` PR, fixes the cause, runs `npm run check`, pushes. Stops with `needs input` for infrastructure, secrets or required-check changes; never force-pushes.
   - `audit-epic`: read-only necessity audit of an epic and its child tickets; prints a report and changes nothing on GitHub.
   - `file-ticket`: files a ticket in the house format (type-prefixed title, Problem, Proposed change, checkable acceptance criteria, labels per [Ticket conventions](#ticket-conventions)) after verifying its claims and searching for duplicates. Never sets `ready` or `skip-plan`.
-- Subagents: `contract-writer` (sonnet, high; opus when the plan is `complex`) writes stubs and failing tests first; `implementer` (haiku, xhigh; sonnet or opus per the approved plan) builds the code that makes them pass; `reviewer` (opus, medium, read-only) reviews complex diffs; `spec-auditor` (opus, high, read-only) audits epics for necessity.
+- Subagents: `contract-writer` (sonnet, high; opus when the plan is `complex`) writes stubs and failing tests first; `implementer` (haiku, xhigh; sonnet or opus per the approved plan) builds the code that makes them pass; `reviewer` (opus, medium, read-only) reviews complex diffs; `spec-auditor` (opus, high, read-only) audits epics, and each ticket's plan, for necessity.
 - Hooks: a git guard and a comment guard (see [Requirements](#requirements) and [Trust rule](#trust-rule-for-public-repos)).
 
 Outside the plugin, `dispatch/` holds `agent-poller.sh`, a multi-repo poller that starts background sessions for `ready` + `agent-ok` tickets. It runs from this clone. See [Dispatch](#dispatch-automatic-ticket-pickup) and `dispatch/README.md`.
@@ -245,7 +245,7 @@ The workflow checks out this public repo, sets up Node 24 itself and runs `plugi
 ## Workflow
 
 1. Check the ticket author is trusted (owner, member, collaborator) before reading anything else, then read and claim the ticket (planning counts as work), reading only trusted comments.
-2. Plan, with human sign-off: open questions and tradeoffs are asked up front with the question tool, then the plan shows the AC as a diff against the ticket (additions struck unless approved), the Decisions made, Interfaces, Test titles and Carrying costs.
+2. Plan, with human sign-off: the draft plan is audited for necessity by `spec-auditor` against the ticket, its epic and sibling tickets (skipped for docs-only tickets); open questions, the auditor's included, are asked up front with the question tool, then the plan shows the AC as a diff against the ticket with the audit verdicts folded in (additions struck unless approved), the Decisions made, Interfaces, Test titles and Carrying costs.
 3. Branch in a worktree; the approved plan is posted on the issue.
 4. Contract and implement: the contract-writer writes stubs and failing tests from the approved Interfaces and Test titles, and the red run is observed and committed; the implementer then makes them pass. Tickets with no red state say "contract N/A"; a `simple` change with no tests whose plan holds the change verbatim is applied by the orchestrator, with no subagent.
 5. Verify the tests: `npm run check`, contract tests unchanged since the contract commit, red/green record.
