@@ -33,7 +33,7 @@ jobs:
           ref: ${{ inputs.ref }}
           path: claude-workflow
           sparse-checkout: plugins/ticket-workflow/scripts
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Strip state labels and unblock dependents
