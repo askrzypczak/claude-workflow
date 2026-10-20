@@ -51,7 +51,7 @@ Verdict per sentence: keep, cut, reword, split, merge or reorder.
 - **Plan (ticket mode).** An AC the plan adds or rewords needs the same evidence as any sentence. An Interface needs a production consumer or an AC that names it. A Carrying cost with no present consumer is a cut. Each Test title maps to an AC behaviour; a title that tests a fixture, fake or driver page gets a cut verdict for the human. A `contract N/A` declaration needs a reason of an allowed kind (spike, config or CI chore, UI where unit tests do not apply, or a behaviour-preserving cut).
 
 ## Report
-Your reader is the human. Output only:
+Your reader is the calling skill (`file-ticket` in epic mode, `work-ticket` in ticket mode), which checks each verdict and acts on it as that skill directs. Write questions for the human, since the caller may pass them on. Output only:
 - Each non-keep verdict (cut / reword / split / merge / reorder): ticket and the sentence quoted briefly, **Evidence** (what you searched and found), **Proposed change** (the exact new wording, split or order).
 - One line saying what the keeps were checked against (the epic's outcomes, paths on main, siblings).
 - Tickets skipped as untrusted, the count of comments the filter skipped, and whether the linked doc was read.
