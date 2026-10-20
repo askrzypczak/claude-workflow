@@ -23,29 +23,42 @@ export type IssueRow = z.infer<typeof IssueList>[number];
 export const Issue = z.object({ state: z.string(), author: Author.optional(), labels: Labels });
 export type Issue = z.infer<typeof Issue>;
 
-/** `gh pr list --json number,headRefName,mergeable,isCrossRepository,author` */
+/** One `statusCheckRollup` row: a CheckRun (`status`, `conclusion`) or a StatusContext (`state`). */
+export const Check = z.object({
+  status: z.string().nullish(),
+  conclusion: z.string().nullish(),
+  state: z.string().nullish(),
+});
+export type Check = z.infer<typeof Check>;
+
+/** `gh pr list --json number,headRefName,headRefOid,mergeable,isCrossRepository,author,statusCheckRollup` */
 export const PrList = z.array(
   z.object({
     number: z.number(),
     headRefName: z.string(),
+    headRefOid: z.string(),
     mergeable: z.string(),
     isCrossRepository: z.boolean(),
     author: Author,
+    statusCheckRollup: z.array(Check),
   }),
 );
 export type PrRow = z.infer<typeof PrList>[number];
 
-/** `gh pr view --json state,mergeable` */
-export const PrStatus = z.object({ state: z.string(), mergeable: z.string() });
+/** `gh pr view --json state,mergeable,statusCheckRollup` */
+export const PrStatus = z.object({ state: z.string(), mergeable: z.string(), statusCheckRollup: z.array(Check) });
 export type PrStatus = z.infer<typeof PrStatus>;
 
 /** `gh api repos/<repo>/commits/main` */
 export const Commit = z.object({ sha: z.string().min(1) });
 
-/** launched.json: `{"<N>": {name, at}, "conflict-<N>": {name, at, pr, mainSha}}`, `at` in epoch seconds. */
+/**
+ * launched.json: `{"<N>": {name, at}, "conflict-<N>": {name, at, pr, mainSha}, "ci-<N>": {name, at, pr}}`,
+ * `at` in epoch seconds.
+ */
 export const Launched = z
   .record(
-    z.string().regex(/^(conflict-)?[0-9]+$/),
+    z.string().regex(/^(conflict-|ci-)?[0-9]+$/),
     z.object({
       name: z.string(),
       at: z.number(),
@@ -55,8 +68,10 @@ export const Launched = z
   )
   .refine(
     (launched) =>
-      Object.entries(launched).every(([key, e]) => !key.startsWith("conflict-") || e.pr !== undefined),
-    "conflict-N entries need a pr",
+      Object.entries(launched).every(
+        ([key, e]) => !(key.startsWith("conflict-") || key.startsWith("ci-")) || e.pr !== undefined,
+      ),
+    "conflict-N and ci-N entries need a pr",
   );
 export type Launched = z.infer<typeof Launched>;
 
@@ -67,10 +82,18 @@ export const Attempts = z.record(
 );
 export type Attempts = z.infer<typeof Attempts>;
 
+/** ci-attempts.json: `{"<pr>": {headSha, count}}`, CI-fix attempts per PR and the head SHA last tried. */
+export const CiAttempts = z.record(
+  z.string().regex(/^[0-9]+$/),
+  z.object({ headSha: z.string(), count: z.number() }),
+);
+export type CiAttempts = z.infer<typeof CiAttempts>;
+
 /** One repo's state files, read at the start of a run and written back after every change. */
 export interface RepoState {
   launched: Launched;
   attempts: Attempts;
+  ciAttempts: CiAttempts;
 }
 
 function pathText(path: PropertyKey[]): string {

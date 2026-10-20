@@ -9,6 +9,7 @@ Polls every configured GitHub repo for agent-ready tickets and starts one intera
 1. Reconciles sessions it launched earlier (marks tickets `agent-failed` when a session failed, stopped, vanished, or finished without handing off).
 2. Launches `<prefix>-N` (`/ticket-workflow:work-ticket N`, or `N auto` with the `skip-plan` label) for each open issue authored by the repo's `owner` with `agent-ok` + `ready` and none of `in-progress`, `blocked`, `agent-failed`.
 3. Launches `<prefix>-N-conflict` (`/ticket-workflow:resolve-conflicts N`) for open, same-repo `issue-N-*` PRs authored by `owner` that conflict with main, while ticket N is open, at most once per main SHA. Fork PRs and other authors' PRs are skipped: a fork can use any branch name.
+4. Launches `<prefix>-N-ci` (`/ticket-workflow:fix-ci N`) for open, same-repo `issue-N-*` PRs authored by `owner` that are mergeable but have a failed check (and none still running), while ticket N is open, once per PR head SHA and at most twice per PR. Pending checks, conflicting PRs and a live ticket, conflict or CI-fix session for N launch nothing.
 
 `claude agents --json --all` is fetched once per run and shared. A failure in one repo is logged (`[prefix] poll failed ...`), the others still run, and the run exits non-zero at the end.
 
@@ -19,7 +20,7 @@ Polls every configured GitHub repo for agent-ready tickets and starts one intera
 ```
 agent-poller.sh        entrypoint: PATH setup, then exec node poller/main.ts
 poller/main.ts         startup checks, lock, session list, repo loop, exit code
-poller/poll.ts         one repo's poll: reconcile, launch tickets, resolve conflicts
+poller/poll.ts         one repo's poll: reconcile, launch tickets, resolve conflicts, fix CI
 poller/decide.ts       pure decisions: session state, caps, bypass flags, reconcile, eligibility
 poller/config.ts       the repos config (zod schema), CLAUDE_MAX_SESSIONS and launch flags
 poller/schemas.ts      zod schemas for gh / claude output and the state files
@@ -68,8 +69,9 @@ The run aborts non-zero (with a log line naming each bad field, e.g. `[0].repo: 
 
 ```
 lock/                           global run lock (one poller at a time)
-repos/<sessionPrefix>/launched.json   {"<N>": {name, at}, "conflict-<N>": {name, at, pr, mainSha}}
+repos/<sessionPrefix>/launched.json   {"<N>": {name, at}, "conflict-<N>": {name, at, pr, mainSha}, "ci-<N>": {name, at, pr}}
 repos/<sessionPrefix>/conflicts.json  {"<N>": {pr, mainSha}}  last conflict attempt per ticket
+repos/<sessionPrefix>/ci-attempts.json  {"<pr>": {headSha, count}}  CI-fix attempts per PR (missing = {})
 ```
 
 Migrating from a single-repo poller: copy its `launched.json` and `conflicts.json` into `repos/<sessionPrefix>/` (entry shapes are unchanged), or let the installer do it (below).
@@ -104,6 +106,10 @@ Environment:
 - `EXTRA_PATH`: prepended to `PATH` (the script also adds the fnm default bin dir, `~/.local/bin` and Homebrew, since launchd does not read your shell profile). Used by the tests to inject fake binaries.
 
 Requires Node 24 (`node` on the `PATH` above, which is what the LaunchAgent sees), the clone's npm dependencies (`npm ci`; the installer runs it, and you rerun it, or the installer, after pulling a change to `package-lock.json`), plus `gh` and `claude`. The poller itself does not need `jq` (the installer's `uninstall` uses it, if present, to list leftover sessions).
+
+### CI fixes
+
+A `ci-<N>` entry in `launched.json` is reconciled like `conflict-<N>`: a session that fails or is stopped, or finishes with its PR still open and red, marks ticket N `agent-failed` and comments on the PR and ticket. `ci-attempts.json` keeps the last head SHA and attempt count per PR (kept when the session fails), so a head SHA is tried once and a PR at most twice. The skill never force-pushes, rebases or merges.
 
 ### Tests
 

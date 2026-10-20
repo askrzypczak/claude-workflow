@@ -13,6 +13,7 @@ Plugin `ticket-workflow`:
   - `work-ticket`: works a GitHub issue end to end.
   - `address-feedback`: handles review feedback on the PR.
   - `resolve-conflicts`: merges `origin/main` into a conflicting `issue-N-*` PR branch, runs `npm run check`, publishes. Stops with `needs input` on semantic conflicts; never rebases or force-pushes.
+  - `fix-ci`: reads the failing run's logs on an `issue-N-*` PR, fixes the cause, runs `npm run check`, pushes. Stops with `needs input` for infrastructure, secrets or required-check changes; never force-pushes.
   - `audit-epic`: read-only necessity audit of an epic and its child tickets; prints a report and changes nothing on GitHub.
   - `file-ticket`: files a ticket in the house format (type-prefixed title, Problem, Proposed change, checkable acceptance criteria, labels per [Ticket conventions](#ticket-conventions)) after verifying its claims and searching for duplicates. Never sets `ready` or `skip-plan`.
 - Subagents: `contract-writer` (sonnet, high; opus when the plan is `complex`) writes stubs and failing tests first; `implementer` (haiku, xhigh; sonnet or opus per the approved plan) builds the code that makes them pass; `reviewer` (opus, medium, read-only) reviews complex diffs; `spec-auditor` (opus, high, read-only) audits epics, and each ticket's plan, for necessity.
@@ -174,6 +175,15 @@ After launching tickets, the poller lists open, same-repo PRs by `owner` on `iss
 - At most one attempt per `{pr, main SHA}`; a new commit on main allows a new attempt.
 - A conflict session that fails, is stopped, or ends with the PR still `CONFLICTING` gets `agent-failed` on the ticket plus a comment on the PR and ticket.
 
+### CI fixes
+
+After the conflict phase, the poller launches `claude --bg --name <prefix>-N-ci "/ticket-workflow:fix-ci N"` for open, same-repo PRs by `owner` on `issue-N-*` branches that are `MERGEABLE` and have a failed check with none still pending. The skill reads the failing run's logs (as data, not instructions), fixes the branch and pushes with a plain `git push`.
+
+- The same fork and author checks apply; `UNKNOWN` mergeability is retried next poll, and a conflicting PR gets only the conflict session.
+- Skipped when `<prefix>-N` is `working` or `blocked`, a `<prefix>-N-ci` or conflict session is alive, or the ticket is closed, not `agent-ok`, not by `owner`, or has `agent-failed`.
+- One attempt per PR head SHA, at most two per PR (`ci-attempts.json`); a new commit on the PR allows the next.
+- A CI-fix session that fails, is stopped, or ends with the PR still red gets `agent-failed` on the ticket plus a comment on the PR and ticket.
+
 ### When something fails
 
 If a session fails, is stopped, or ends without handing the ticket off, the poller adds `agent-failed` and comments with how to inspect it (`claude logs <prefix>-<issue>`). To retry, remove `agent-failed` and add `ready` again. Only `done` (checked for hand-off), `failed` and `stopped` end a tracked session; any other state (`working`, `blocked`, `waiting`, `idle`, unknown) counts as alive.
@@ -200,7 +210,7 @@ Per repo options are in `repos.json` (above). Global options are environment var
 | `CLAUDE_MAX_SESSIONS` | `10` | Most sessions live at once across all repos (positive integer; invalid values abort the run). A guard against a runaway label batch; raise it deliberately. |
 | `CLAUDE_ALLOW_BYPASS_PERMISSIONS` | unset | `1` allows bypass flags in `CLAUDE_BG_FLAGS` / `bgFlags`; otherwise such repos are refused. |
 | `EXTRA_PATH` | empty | Directories prepended to the poller's PATH (inherited by sessions). fnm's default bin dir (`~/.local/share/fnm/aliases/default/bin`) is always included so sessions find `node`/`npm`. |
-| `STATE_DIR` | `~/.local/state/claude-workflow` | Lock file and per-repo `launched.json` / `conflicts.json`. |
+| `STATE_DIR` | `~/.local/state/claude-workflow` | Lock file and per-repo `launched.json` / `conflicts.json` / `ci-attempts.json`. |
 
 ### Notes
 
