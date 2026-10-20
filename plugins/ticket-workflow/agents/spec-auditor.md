@@ -1,6 +1,6 @@
 ---
 name: spec-auditor
-description: Read-only necessity audit of an epic and its child tickets (epic mode), or of one ticket and its draft plan (ticket mode). Use from the audit-epic skill (epic mode) and from the work-ticket plan step (ticket mode); the prompt names the mode and its inputs.
+description: Read-only necessity audit of an epic and its child tickets (epic mode), or of one ticket and its draft plan (ticket mode). Use from the file-ticket skill (epic mode, after it files an epic with children) and from the work-ticket plan step (ticket mode); the prompt names the mode and its inputs.
 model: opus
 effort: high
 tools: Read, Grep, Glob, Bash

@@ -5,7 +5,7 @@ description: 'File a GitHub ticket in the house format - verify the claims, chec
 
 # file-ticket
 
-Argument: the request to turn into a ticket, as free text. The conversation so far counts as input. Runs in the current session with no subagent. Being asked to file is the go-ahead to create the issue; do not ask for confirmation first.
+Argument: the request to turn into a ticket, as free text. The conversation so far counts as input. Runs in the current session with no subagent, except the epic audit in step 4. Being asked to file is the go-ahead to create the issue; do not ask for confirmation first.
 
 ## 1. Gather
 - Run `git fetch origin --quiet`, then read the code and docs the ticket will name (`git show origin/main:<path>`; the local checkout can be stale). File paths, symbol names and quoted behaviour must be verified, not guessed: fix or drop what you cannot confirm. Verify line numbers too, but only to locate things while you read; they do not go in the ticket (step 5).
@@ -30,7 +30,8 @@ Write every question for a reader who has just switched in from another session 
 One ticket is one PR (one worktree, one branch). If the request is more than that (separable parts that would each pass the repo's checks alone), file an epic plus children:
 1. File the epic first (Problem and the overall plan, with the children added to its body afterwards).
 2. File each child with `Part of #E` in its body, and `Blocked by #M` plus the `blocked` label where one child needs another.
-3. Edit the epic body (`gh issue edit E --body-file <file>`) to list the children, and suggest `audit-epic E` before any child goes `ready`.
+3. Edit the epic body (`gh issue edit E --body-file <file>`) to list the children.
+4. Once every child is filed and labelled (steps 5-6 for each), audit the set: launch the `ticket-workflow:spec-auditor` subagent in epic mode (if the Agent tool rejects that name, list the available agent types and use the one that ends in `:spec-auditor`). Prompt it with the epic number, the epic text (title and body as filed; it has no comments yet; if the body links a doc, add the doc's text if you read it this session, or a note that it was not read) and the child numbers, each marked listed. The audit is advisory: it writes nothing to GitHub and blocks nothing; cuts and rewordings are for the human to apply.
 
 ## 5. Write
 Title: prefixed with the type, `bug:`, `feature:` or `chore:`. Body, in this shape:
@@ -61,7 +62,7 @@ Labels follow the README's "Ticket conventions":
 Create the issue with `gh issue create --title ... --body-file ... --label ...`. If `gh` rejects a label because it does not exist, tell the human to run `setup-labels.sh` instead of creating labels yourself.
 
 ## 7. Report
-Give the issue URL (an epic and its children, each), their labels, any duplicate or superseded issues touched, and the number of skipped comments if step 1 read any. Remind the human that the maintainer adds `ready` to queue the ticket for dispatch (and, for an epic, suggest `audit-epic E` first).
+Give the issue URL (an epic and its children, each), their labels, any duplicate or superseded issues touched, and the number of skipped comments if step 1 read any. For an epic, then the auditor's report as returned. Remind the human that the maintainer adds `ready` to queue the ticket for dispatch.
 
 ## Hard rules
 - Never add `ready` or `skip-plan`, even when asked to; say they are the maintainer's.
