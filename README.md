@@ -67,7 +67,7 @@ GitHub Issues is the source of truth; agents use `gh`. Ask an agent to "file a t
 
 ### Labels
 
-- State: `ready` -> `in-progress` -> `needs-review`; `blocked` while waiting on something.
+- State: `ready` -> `in-progress` -> `needs-review`; `blocked` while waiting on something. With a `Blocked by #M` line in the body, label cleanup removes `blocked` once #M closes; without one, the human does.
 - Type: `bug`, `feature`, `chore`.
 - Dispatch: `agent-ok` (safe for unattended agents), `skip-plan` (launch with `work-ticket N auto`, no plan sign-off), `agent-failed` (set by the poller when a session failed).
 
