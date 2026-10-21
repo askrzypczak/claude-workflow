@@ -14,7 +14,7 @@ Plugin `ticket-workflow`:
   - `address-feedback`: handles review feedback on the PR.
   - `resolve-conflicts`: merges `origin/main` into a conflicting `issue-N-*` PR branch, runs `npm run check`, publishes. Stops with `needs input` on semantic conflicts; never rebases or force-pushes.
   - `fix-ci`: reads the failing run's logs on an `issue-N-*` PR, fixes the cause, runs `npm run check`, pushes. Stops with `needs input` for infrastructure, secrets or required-check changes; never force-pushes.
-  - `file-ticket`: files a ticket in the house format (type-prefixed title, Problem, Proposed change, checkable acceptance criteria, labels per [Ticket conventions](#ticket-conventions)) after verifying its claims and searching for duplicates. Never sets `ready` or `skip-plan`. After filing an epic with children it runs the `spec-auditor` over the set, applies the findings it verifies to the tickets it just filed, and asks the human only about the unclear ones (the auditor itself writes nothing to GitHub).
+  - `file-ticket`: files a ticket in the house format (type-prefixed title, Problem, Proposed change, checkable acceptance criteria, labels per [Ticket conventions](#ticket-conventions)) after verifying its claims and searching for duplicates. Never sets `ready` or `skip-plan`. After filing an epic with children it links them as sub-issues, runs the `spec-auditor` over the set, applies the findings it verifies to the tickets it just filed, and asks the human only about the unclear ones (the auditor itself writes nothing to GitHub).
 - Subagents: `contract-writer` (sonnet, high; opus when the plan is `complex`) writes stubs and failing tests first; `implementer` (haiku, xhigh; sonnet or opus per the approved plan) builds the code that makes them pass; `reviewer` (opus, medium, read-only) reviews complex diffs; `spec-auditor` (opus, high, read-only) audits epics, and each ticket's plan, for necessity.
 - Hooks: a git guard and a comment guard (see [Requirements](#requirements) and [Trust rule](#trust-rule-for-public-repos)).
 
@@ -83,7 +83,7 @@ Write `Blocked by #M` in the issue body (also `#3, #5` or `#3 and #5`; several l
 
 ### Epics
 
-Write `Part of #N` in a child ticket's body to link it to its epic; the epic body lists its children. Unlike `Blocked by`, it carries no state (label cleanup ignores it).
+Write `Part of #N` in a child ticket's body to link it to its epic; the epic body lists its children. Unlike `Blocked by`, it carries no state (label cleanup ignores it). For an epic, `file-ticket` also links each child as a native sub-issue (GitHub's sub-issues API), which drives the epic's progress indicator; linking the children of epics filed earlier is done by hand.
 
 ### Trust rule for public repos
 
