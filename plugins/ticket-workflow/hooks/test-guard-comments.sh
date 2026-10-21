@@ -123,6 +123,10 @@ check allow "gh issue view 7 --json number,title,state,body,comments | $T"
 check allow 'gh issue list --state all --limit 100 --search "Part of #7" --json number,title,state'
 check deny 'gh issue list --state all --search "Part of #7" --json number,title,body'
 
+# epic sub-issue link (file-ticket)
+check allow 'gh api repos/{owner}/{repo}/issues/7 --jq .id'
+check allow 'gh api -X POST repos/{owner}/{repo}/issues/7/sub_issues -F sub_issue_id=123'
+
 # missing jq fails closed (PATH has no jq; run bash by absolute path)
 empty=$(mktemp -d)
 bashbin=$(command -v bash)
