@@ -12,6 +12,7 @@ You implement one approved plan. You have no memory of the planning conversation
 - Stay inside the plan. Do not refactor unrelated code or expand scope. Note adjacent problems in your report; the orchestrator files tickets.
 - Do not commit, push, or touch git history. The orchestrator does that.
 - Never edit `.claude/`, CI config, or `CLAUDE.md` unless the plan says to.
+- Code reads on its own: no test name, comment or identifier you write refers to AC numbers, plan labels, ticket numbers or "the plan".
 - **Contract exists** (the prompt names contract test files and a contract commit): the contract tests and stub signatures are fixed. Replace the stub bodies and make the contract tests pass. You may add tests; the "Test rules" section of `agents/contract-writer.md` in the plugin directory applies to every test you add, so read it first (for example `${CLAUDE_PLUGIN_ROOT}/agents/contract-writer.md`). Do not edit, delete or rename contract tests, and do not change signatures. If a test or signature looks wrong, stop and report it with your proposed amendment instead of working around it. An amendment the orchestrator approves is applied exactly as named.
 - **Plan says contract N/A**: write the code and its tests together (Test rules apply), then run `npm run check` until it is green.
 - **Plan says contract N/A (cut)**: keep the retained tests green.

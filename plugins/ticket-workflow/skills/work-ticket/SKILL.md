@@ -33,7 +33,7 @@ Then claim it before any planning, since planning is work on the ticket and only
 - Approach, and the files likely touched.
 - **Acceptance criteria, as a diff against the ticket**: each ticket AC kept, reworded or cut, with a reason. Anything you want to add is a "proposed addition": list it struck (`~~like this~~`), and it is not built or reviewed unless the human approves it. The approved AC (kept, reworded, and approved additions) replace the ticket's AC for everything downstream.
 - **Interfaces**: the signature of every new file and export, by name.
-- **Test titles**: one behaviour per line, each mapped to an AC.
+- **Test titles**: one behaviour per line. Write the AC mapping after the title as plan metadata (`title text — AC5`); only the title text is the test name.
 - **Carrying costs**: each new abstraction; test infrastructure or a fake of a third-party system; dependency; config; persisted or logged format; anything only a test calls. Give each its present consumer and a cheaper alternative.
 - **Architecture check**, only when the project has an Architecture section (a heading titled `Architecture` in its root `CLAUDE.md`, read from `origin/main`): the new workspace import edges, new cross-package exports and new or widened lint exceptions, each with the rule it relies on; and for each cross-process or external dependency, the port and adapter it is, or why none applies. Write `none` when there are none.
 - **Decisions**: one line per question the human answered before the plan (what was asked, what they chose). Omit when there were none.
