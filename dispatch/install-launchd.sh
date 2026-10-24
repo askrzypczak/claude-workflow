@@ -176,9 +176,9 @@ case "$cmd" in
     # Show what the poller would launch right now, and ask, before anything is written or started:
     # the LaunchAgent runs at load, so a real launch could otherwise precede the first look.
     # launchd gives the job only HOME and PATH, so the dry run drops the poller's settings from this shell.
-    echo "Dry run (nothing is launched; run the way launchd will, without CLAUDE_BG_FLAGS, CLAUDE_ALLOW_BYPASS_PERMISSIONS or CLAUDE_MAX_SESSIONS from this shell):"
+    echo "Dry run (nothing is launched; run the way launchd will, without CLAUDE_MAX_SESSIONS from this shell):"
     dry_rc=0
-    dry_out=$(env -u CLAUDE_BG_FLAGS -u CLAUDE_ALLOW_BYPASS_PERMISSIONS -u CLAUDE_MAX_SESSIONS "$POLLER" --dry-run 2>&1) || dry_rc=$?
+    dry_out=$(env -u CLAUDE_MAX_SESSIONS "$POLLER" --dry-run 2>&1) || dry_rc=$?
     printf '%s\n' "$dry_out"
     if [ "$dry_rc" -ne 0 ]; then
       echo "The dry run failed; fix the config or environment and retry. Nothing was installed." >&2

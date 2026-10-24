@@ -4,8 +4,8 @@ import { readFileSync, statSync } from "node:fs";
 import { z } from "zod";
 import { parseJson } from "./schemas.ts";
 
-/** Sessions start on opus at high effort; a later --model / --effort overrides. */
-export const DEFAULT_FLAGS = "--model opus --effort high";
+/** Every dispatched session starts on opus at high effort. */
+export const LAUNCH_FLAGS = ["--model", "opus", "--effort", "high"];
 
 const text = (error: string) => z.string({ error }).min(1, error);
 
@@ -21,7 +21,6 @@ const RepoEntry = z.object(
       "expected only letters, digits, _ and -",
     ),
     owner: text("expected a non-empty string"),
-    bgFlags: z.string({ error: "expected a string" }).optional(),
     maxSessions: z
       .int({ error: "expected a positive integer" })
       .min(1, "expected a positive integer")
@@ -86,9 +85,4 @@ export function parseMaxSessions(raw: string | undefined): number {
     throw new Error(`CLAUDE_MAX_SESSIONS='${value}' is not a positive integer`);
   }
   return Number(value);
-}
-
-/** The `claude --bg` flags for a repo: defaults, then CLAUDE_BG_FLAGS, then its bgFlags. */
-export function launchFlags(envFlags: string | undefined, bgFlags: string | undefined): string[] {
-  return `${DEFAULT_FLAGS} ${envFlags ?? ""} ${bgFlags ?? ""}`.split(/\s+/).filter((f) => f !== "");
 }

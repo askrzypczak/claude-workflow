@@ -1,6 +1,7 @@
 // One repo's poll: reconcile the sessions it launched, launch ready tickets, resolve
 // conflicting agent PRs, then fix agent PRs whose CI is red.
 // Any throw aborts this repo only (main.ts logs it and moves on).
+import { LAUNCH_FLAGS } from "./config.ts";
 import type { RepoConfig } from "./config.ts";
 import {
   alreadyAttempted,
@@ -20,9 +21,6 @@ import {
 import type { PollerIo } from "./io.ts";
 import type { Issue, PrRow, RepoState, Session } from "./schemas.ts";
 
-/** A configured repo with its combined launch flags. */
-export type RepoRun = RepoConfig & { flags: string[] };
-
 /** Shared by every repo in one run. */
 export interface RunContext {
   sessions: Session[];
@@ -32,7 +30,7 @@ export interface RunContext {
 }
 
 interface RepoPoll {
-  repo: RepoRun;
+  repo: RepoConfig;
   state: RepoState;
   run: RunContext;
   io: PollerIo;
@@ -44,7 +42,7 @@ interface RepoPoll {
   failed: Set<number>;
 }
 
-export function pollRepo(repo: RepoRun, state: RepoState, run: RunContext, io: PollerIo): void {
+export function pollRepo(repo: RepoConfig, state: RepoState, run: RunContext, io: PollerIo): void {
   const log = (m: string) => io.log(`[${repo.sessionPrefix}] ${m}`);
   const p: RepoPoll = { repo, state, run, io, log, failed: new Set() };
   reconcile(p);
@@ -114,7 +112,7 @@ function launchTickets(p: RepoPoll): void {
       continue;
     }
     const name = `${repo.sessionPrefix}-${n}`;
-    log(`#${n}: launching ${name} (flags: ${flagsText(repo)})`);
+    log(`#${n}: launching ${name} (flags: ${LAUNCH_FLAGS.join(" ")})`);
     start(p, name, ticketPrompt(issue));
     state.launched[n] = { name, at: io.now() };
     io.saveState(repo.sessionPrefix, state);
@@ -173,7 +171,7 @@ function resolveConflicts(p: RepoPoll, prs: readonly PrRow[]): void {
       continue;
     }
     const name = `${repo.sessionPrefix}-${n}-conflict`;
-    log(`#${n}: PR #${pr.number} conflicts with main; launching ${name} (flags: ${flagsText(repo)})`);
+    log(`#${n}: PR #${pr.number} conflicts with main; launching ${name} (flags: ${LAUNCH_FLAGS.join(" ")})`);
     start(p, name, `/ticket-workflow:resolve-conflicts ${n}`);
     state.launched[`conflict-${n}`] = { name, at: io.now(), pr: String(pr.number), mainSha };
     state.attempts[n] = { pr: String(pr.number), mainSha };
@@ -227,7 +225,7 @@ function fixCi(p: RepoPoll, prs: readonly PrRow[]): void {
       continue;
     }
     const name = `${repo.sessionPrefix}-${n}-ci`;
-    log(`#${n}: PR #${pr.number} has failing CI; launching ${name} (flags: ${flagsText(repo)})`);
+    log(`#${n}: PR #${pr.number} has failing CI; launching ${name} (flags: ${LAUNCH_FLAGS.join(" ")})`);
     start(p, name, `/ticket-workflow:fix-ci ${n}`);
     state.launched[`ci-${n}`] = { name, at: io.now(), pr: String(pr.number) };
     state.ciAttempts[pr.number] = {
@@ -246,12 +244,8 @@ function capReached(p: RepoPoll): boolean {
 }
 
 function start(p: RepoPoll, name: string, prompt: string): void {
-  p.io.launch(p.repo.dir, name, p.repo.flags, prompt);
+  p.io.launch(p.repo.dir, name, LAUNCH_FLAGS, prompt);
   p.run.live.set(p.repo.sessionPrefix, (p.run.live.get(p.repo.sessionPrefix) ?? 0) + 1);
-}
-
-function flagsText(repo: RepoRun): string {
-  return repo.flags.join(" ") || "<none>";
 }
 
 /** A best-effort step: a failure is logged and the reconcile carries on. */

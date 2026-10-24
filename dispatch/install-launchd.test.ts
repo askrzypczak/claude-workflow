@@ -34,7 +34,7 @@ beforeEach(() => {
   // Fake poller: records its args, prints a recognisable line, fails if poller-fail exists.
   writeFileSync(
     p("poller"),
-    `#!/usr/bin/env bash\necho "poller $*" >>"${p("order.log")}"\necho "WOULD LAUNCH app-1"\necho "ENV bg=\${CLAUDE_BG_FLAGS-unset} bypass=\${CLAUDE_ALLOW_BYPASS_PERMISSIONS-unset} max=\${CLAUDE_MAX_SESSIONS-unset} keep=\${KEEP_ME-unset}"\n[ -f "${p("poller-busy")}" ] && echo "another run is active (pid 1); exiting"\n[ -f "${p("poller-fail")}" ] && exit 3\nexit 0\n`,
+    `#!/usr/bin/env bash\necho "poller $*" >>"${p("order.log")}"\necho "WOULD LAUNCH app-1"\necho "ENV max=\${CLAUDE_MAX_SESSIONS-unset} keep=\${KEEP_ME-unset}"\n[ -f "${p("poller-busy")}" ] && echo "another run is active (pid 1); exiting"\n[ -f "${p("poller-fail")}" ] && exit 3\nexit 0\n`,
   );
   chmodSync(p("poller"), 0o755);
   // Fake npm: records its args and working dir, fails if npm-fail exists.
@@ -247,15 +247,13 @@ describe("install-launchd.sh", () => {
         {
           input: "n\n",
           env: {
-            CLAUDE_BG_FLAGS: "--model x",
-            CLAUDE_ALLOW_BYPASS_PERMISSIONS: "1",
             CLAUDE_MAX_SESSIONS: "99",
             KEEP_ME: "yes",
           },
         },
         "install",
       );
-      expect(r.stdout).toMatch(/ENV bg=unset bypass=unset max=unset keep=yes/);
+      expect(r.stdout).toMatch(/ENV max=unset keep=yes/);
     });
 
     it("aborts without prompting when another poll is running", () => {

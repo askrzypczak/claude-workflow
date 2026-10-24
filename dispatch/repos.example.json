@@ -9,7 +9,6 @@
     "repo": "example-owner/example-tools",
     "dir": "~/Projects/example-tools",
     "sessionPrefix": "tools",
-    "owner": "example-owner",
-    "bgFlags": "--permission-mode acceptEdits"
+    "owner": "example-owner"
   }
 ]
