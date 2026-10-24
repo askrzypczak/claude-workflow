@@ -57,6 +57,16 @@ describe("parseConfig", () => {
     expect(() => parse([{ ...ok, bgFlags }])).toThrow("[0].bgFlags: expected a string");
   });
 
+  it("ignores a leftover bgFlags key of any type", () => {
+    const repos = parse([
+      { ...ok, bgFlags: "--model opus" },
+      { ...ok, sessionPrefix: "b", bgFlags: null },
+      { ...ok, sessionPrefix: "c", bgFlags: 3 },
+    ]);
+    expect(repos).toEqual([ok, { ...ok, sessionPrefix: "b" }, { ...ok, sessionPrefix: "c" }]);
+    for (const repo of repos) expect(repo).not.toHaveProperty("bgFlags");
+  });
+
   it("names the entry index and lists every problem", () => {
     expect(() => parse([ok, { ...ok, sessionPrefix: "b", owner: 1, maxSessions: 0 }])).toThrow(
       "[1].owner: expected a non-empty string; [1].maxSessions: expected a positive integer",

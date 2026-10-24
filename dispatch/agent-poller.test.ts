@@ -842,7 +842,7 @@ describe("agent-poller multiple repos", () => {
   });
 });
 
-describe("agent-poller bypass-flag refusal", () => {
+describe("agent-poller launch flags", () => {
   const A = { repo: "org/alpha", sessionPrefix: "a", owner: "me" };
   const B = { repo: "org/beta", sessionPrefix: "b", owner: "me" };
   const ready = (number: number) => ({
@@ -852,6 +852,21 @@ describe("agent-poller bypass-flag refusal", () => {
   });
   const writeIssues = (repo: string, issues: unknown[]) =>
     writeFileSync(join(rdir(repo), "issues.json"), JSON.stringify(issues));
+
+  it("launches with exactly --model opus --effort high, ignoring CLAUDE_BG_FLAGS and CLAUDE_ALLOW_BYPASS_PERMISSIONS", () => {
+    configure([A]);
+    writeIssues(A.repo, [ready(1)]);
+    const r = exec({
+      env: {
+        CLAUDE_BG_FLAGS: "--dangerously-skip-permissions --permission-mode acceptEdits",
+        CLAUDE_ALLOW_BYPASS_PERMISSIONS: "1",
+      },
+    });
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log")).toStrictEqual([
+      "--bg --name a-1 --model opus --effort high /ticket-workflow:work-ticket 1",
+    ]);
+  });
 
   const BYPASS = [
     ["--dangerously-skip-permissions", "--dangerously-skip-permissions"],
