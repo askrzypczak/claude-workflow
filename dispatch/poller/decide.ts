@@ -1,4 +1,4 @@
-// Pure decisions: session states, caps, bypass flags, reconcile outcomes, and which tickets
+// Pure decisions: session states, caps, reconcile outcomes, and which tickets
 // and PRs get a session. Skip log lines are returned without the timestamp or `[prefix] `.
 import type { Attempts, Check, CiAttempts, Issue, IssueRow, Launched, PrRow, PrStatus, Session } from "./schemas.ts";
 
@@ -10,11 +10,6 @@ export const MAX_CI_ATTEMPTS = 2;
 
 const ENDED = ["done", "failed", "stopped"];
 const HANDED_OFF = ["needs-review", "blocked", "agent-failed"];
-const BYPASS_FLAGS = [
-  "--dangerously-skip-permissions",
-  "--allow-dangerously-skip-permissions",
-  "--permission-mode=bypassPermissions",
-];
 
 /** Go ahead (with any extra data), or skip, with a log line when the skip is worth reporting. */
 export type Verdict<T = object> = ({ ok: true } & T) | { ok: false; log?: string };
@@ -54,14 +49,6 @@ export function atCap(
   for (const count of live.values()) total += count;
   const repoLive = live.get(prefix) ?? 0;
   return (caps.repoMax !== undefined && repoLive >= caps.repoMax) || total >= caps.globalMax;
-}
-
-/** True if any flag grants bypassPermissions. */
-export function hasBypassFlag(flags: readonly string[]): boolean {
-  return flags.some(
-    (f, i) =>
-      BYPASS_FLAGS.includes(f) || (f === "bypassPermissions" && flags[i - 1] === "--permission-mode"),
-  );
 }
 
 export type ReconcileAction =

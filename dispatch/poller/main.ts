@@ -2,9 +2,9 @@
 // Validates the config, takes the lock, fetches sessions once, then polls each repo.
 // A failure in one repo is logged and the others still run; the exit code is then 1.
 import { parseArgs } from "node:util";
-import { launchFlags, loadConfig, parseMaxSessions } from "./config.ts";
+import { loadConfig, parseMaxSessions } from "./config.ts";
 import type { RepoConfig } from "./config.ts";
-import { hasBypassFlag, liveByPrefix, liveCount } from "./decide.ts";
+import { liveByPrefix, liveCount } from "./decide.ts";
 import { acquireLock, createIo, listSessions, loadState, log, releaseLock } from "./io.ts";
 import { pollRepo } from "./poll.ts";
 import type { Session } from "./schemas.ts";
@@ -15,10 +15,6 @@ interface RunOptions {
   stateDir: string;
   dryRun: boolean;
   maxSessions: number;
-  /** CLAUDE_BG_FLAGS */
-  envFlags: string | undefined;
-  /** CLAUDE_ALLOW_BYPASS_PERMISSIONS=1 */
-  allowBypass: boolean;
 }
 
 function pollAll(repos: RepoConfig[], opts: RunOptions): number {
@@ -53,17 +49,9 @@ function pollAll(repos: RepoConfig[], opts: RunOptions): number {
   let failures = 0;
   for (const { entry, state, error } of loaded) {
     const repoLog = (m: string) => log(`[${entry.sessionPrefix}] ${m}`);
-    const flags = launchFlags(opts.envFlags, entry.bgFlags);
-    if (!opts.allowBypass && hasBypassFlag(flags)) {
-      repoLog(
-        `refusing bypass flags (${flags.join(" ")}); set CLAUDE_ALLOW_BYPASS_PERMISSIONS=1 to allow; skipping this repo`,
-      );
-      failures++;
-      continue;
-    }
     try {
       if (!state) throw error;
-      pollRepo({ ...entry, flags }, state, run, io);
+      pollRepo(entry, state, run, io);
     } catch (err) {
       repoLog(`poll failed: ${message(err)}; continuing with the next repo`);
       failures++;
@@ -106,8 +94,6 @@ function main(): number {
       stateDir,
       dryRun: values["dry-run"],
       maxSessions,
-      envFlags: env.CLAUDE_BG_FLAGS,
-      allowBypass: env.CLAUDE_ALLOW_BYPASS_PERMISSIONS === "1",
     });
   } finally {
     releaseLock(stateDir);

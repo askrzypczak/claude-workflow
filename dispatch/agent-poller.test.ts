@@ -26,7 +26,6 @@ interface Repo {
   repo: string;
   sessionPrefix: string;
   owner: string;
-  bgFlags?: string;
   maxSessions?: unknown;
 }
 type Entry = Repo & { dir: string };
@@ -111,8 +110,6 @@ function exec({ dry = false, env = {} }: ExecOpts = {}) {
       EXTRA_PATH: extraPath(),
       STATE_DIR: join(dir, "state"),
       CLAUDE_WORKFLOW_CONFIG: join(dir, "repos.json"),
-      CLAUDE_BG_FLAGS: "",
-      CLAUDE_ALLOW_BYPASS_PERMISSIONS: "",
       CLAUDE_MAX_SESSIONS: "",
       ...env,
     },
@@ -828,23 +825,10 @@ describe("agent-poller multiple repos", () => {
     expect(!gh().some((c) => c.startsWith("pr list --repo org/alpha"))).toBe(true);
     expect(gh().some((c) => c.startsWith("pr list --repo org/beta"))).toBe(true);
   });
-
-  it("per-repo bgFlags are appended to CLAUDE_BG_FLAGS", () => {
-    configure([{ ...A, bgFlags: "--model opus" }, B]);
-    writeIssues(A.repo, [issue(1, "me", ["agent-ok", "ready"])]);
-    writeIssues(B.repo, [issue(2, "you", ["agent-ok", "ready"])]);
-    const r = exec({ env: { CLAUDE_BG_FLAGS: "--permission-mode plan" } });
-    expect(r.status, r.stdout + r.stderr).toBe(0);
-    expect(readLines("claude.log").sort()).toStrictEqual([
-      "--bg --name a-1 --model opus --effort high --permission-mode plan --model opus /ticket-workflow:work-ticket 1",
-      "--bg --name b-2 --model opus --effort high --permission-mode plan /ticket-workflow:work-ticket 2",
-    ]);
-  });
 });
 
 describe("agent-poller launch flags", () => {
   const A = { repo: "org/alpha", sessionPrefix: "a", owner: "me" };
-  const B = { repo: "org/beta", sessionPrefix: "b", owner: "me" };
   const ready = (number: number) => ({
     number,
     author: { login: "me" },
@@ -868,86 +852,15 @@ describe("agent-poller launch flags", () => {
     ]);
   });
 
-  const BYPASS = [
-    ["--dangerously-skip-permissions", "--dangerously-skip-permissions"],
-    ["--allow-dangerously-skip-permissions", "--allow-dangerously-skip-permissions"],
-    ["--permission-mode bypassPermissions", "--model opus --permission-mode bypassPermissions"],
-    ["--permission-mode=bypassPermissions", "--permission-mode=bypassPermissions"],
-  ];
-
-  for (const [label, flags] of BYPASS) {
-    it(`refuses ${label} in CLAUDE_BG_FLAGS, launching nothing`, () => {
-      configure([A]);
-      writeIssues(A.repo, [ready(1)]);
-      const r = exec({ env: { CLAUDE_BG_FLAGS: flags } });
-      expect(r.status).not.toBe(0);
-      expect(r.stdout).toMatch(/\[a\] refusing bypass flags/);
-      expect(r.stdout).toMatch(/CLAUDE_ALLOW_BYPASS_PERMISSIONS=1/);
-      expect(readLines("claude.log")).toStrictEqual([]);
-      expect(!gh().some((c) => c.startsWith("issue list"))).toBe(true);
-    });
-
-    it(`refuses ${label} in a repo's bgFlags; other repos still run`, () => {
-      configure([{ ...A, bgFlags: flags }, B]);
-      writeIssues(A.repo, [ready(1)]);
-      writeIssues(B.repo, [ready(2)]);
-      const r = exec();
-      expect(r.status).not.toBe(0);
-      expect(r.stdout).toMatch(/\[a\] refusing bypass flags/);
-      expect(readLines("claude.log")).toStrictEqual([
-        "--bg --name b-2 --model opus --effort high /ticket-workflow:work-ticket 2",
-      ]);
-    });
-  }
-
-  it("allows bypass flags with CLAUDE_ALLOW_BYPASS_PERMISSIONS=1 and logs them", () => {
-    configure([{ ...A, bgFlags: "--permission-mode bypassPermissions" }]);
-    writeIssues(A.repo, [ready(1)]);
-    const r = exec({
-      env: {
-        CLAUDE_ALLOW_BYPASS_PERMISSIONS: "1",
-        CLAUDE_BG_FLAGS: "--dangerously-skip-permissions",
-      },
-    });
-    expect(r.status, r.stdout + r.stderr).toBe(0);
-    expect(r.stdout).not.toMatch(/refusing/);
-    expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name a-1 --model opus --effort high --dangerously-skip-permissions --permission-mode bypassPermissions /ticket-workflow:work-ticket 1",
-    ]);
-    expect(r.stdout).toMatch(/#1: launching a-1 \(flags: --model opus --effort high --dangerously-skip-permissions --permission-mode bypassPermissions\)/);
-  });
-
-  it("only the exact opt-in value 1 allows them", () => {
-    configure([A]);
-    writeIssues(A.repo, [ready(1)]);
-    const r = exec({
-      env: {
-        CLAUDE_ALLOW_BYPASS_PERMISSIONS: "true",
-        CLAUDE_BG_FLAGS: "--dangerously-skip-permissions",
-      },
-    });
-    expect(r.status).not.toBe(0);
-    expect(readLines("claude.log")).toStrictEqual([]);
-  });
-
-  it("leaves other permission modes alone and logs the effective flags", () => {
-    configure([{ ...A, bgFlags: "--permission-mode acceptEdits" }]);
-    writeIssues(A.repo, [ready(1)]);
-    const r = exec();
-    expect(r.status, r.stdout + r.stderr).toBe(0);
-    expect(r.stdout).toMatch(/#1: launching a-1 \(flags: --model opus --effort high --permission-mode acceptEdits\)/);
-    expect(readLines("claude.log").length).toBe(1);
-  });
-
-  it("logs the default model and effort when no flags are set", () => {
+  it("logs the launch flags", () => {
     configure([A]);
     writeIssues(A.repo, [ready(1)]);
     const r = exec();
     expect(r.stdout).toMatch(/#1: launching a-1 \(flags: --model opus --effort high\)/);
   });
 
-  it("logs the effective flags on conflict launches too", () => {
-    configure([{ ...A, bgFlags: "--model opus" }]);
+  it("logs the launch flags on conflict launches too", () => {
+    configure([A]);
     const rd = rdir(A.repo);
     writeFileSync(join(rd, "sha"), "sha1");
     writeFileSync(
@@ -975,7 +888,7 @@ describe("agent-poller launch flags", () => {
     );
     const r = exec();
     expect(r.status, r.stdout + r.stderr).toBe(0);
-    expect(r.stdout).toMatch(/launching a-5-conflict \(flags: --model opus --effort high --model opus\)/);
+    expect(r.stdout).toMatch(/launching a-5-conflict \(flags: --model opus --effort high\)/);
   });
 });
 

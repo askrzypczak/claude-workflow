@@ -9,7 +9,6 @@ import {
   conflictRemains,
   conflictVerdict,
   handedOff,
-  hasBypassFlag,
   liveByPrefix,
   liveCount,
   prIssueVerdict,
@@ -85,26 +84,6 @@ describe("atCap", () => {
     expect(atCap(live, "a", { repoMax: 2, globalMax: 10 })).toBe(true);
     expect(atCap(live, "b", { repoMax: 2, globalMax: 10 })).toBe(false);
     expect(atCap(live, "new", { repoMax: 1, globalMax: 10 })).toBe(false);
-  });
-});
-
-describe("hasBypassFlag", () => {
-  it.each([
-    [["--dangerously-skip-permissions"]],
-    [["--model", "x", "--allow-dangerously-skip-permissions"]],
-    [["--permission-mode=bypassPermissions"]],
-    [["--permission-mode", "bypassPermissions"]],
-  ])("finds %j", (flags) => {
-    expect(hasBypassFlag(flags)).toBe(true);
-  });
-
-  it.each([
-    [[]],
-    [["--permission-mode", "acceptEdits"]],
-    [["bypassPermissions"]],
-    [["--model", "bypassPermissions"]],
-  ])("allows %j", (flags) => {
-    expect(hasBypassFlag(flags)).toBe(false);
   });
 });
 

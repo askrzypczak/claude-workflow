@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { expandHome, launchFlags, parseConfig, parseMaxSessions } from "./config.ts";
+import { expandHome, parseConfig, parseMaxSessions } from "./config.ts";
 
 const ok = { repo: "org/app", dir: "/work/app", sessionPrefix: "app", owner: "me" };
 const parse = (value: unknown, dirExists = (_dir: string) => true) =>
@@ -12,11 +12,11 @@ const parse = (value: unknown, dirExists = (_dir: string) => true) =>
 describe("parseConfig", () => {
   it("returns typed entries with optional fields and ~ expanded", () => {
     const repos = parse([
-      { ...ok, dir: "~/app", bgFlags: "--model opus", maxSessions: 2, extra: "ignored" },
+      { ...ok, dir: "~/app", maxSessions: 2, extra: "ignored" },
       { ...ok, repo: "org/b.c_d-e", sessionPrefix: "B_c-1", dir: "~" },
     ]);
     expect(repos).toEqual([
-      { ...ok, dir: "/home/me/app", bgFlags: "--model opus", maxSessions: 2 },
+      { ...ok, dir: "/home/me/app", maxSessions: 2 },
       { ...ok, repo: "org/b.c_d-e", sessionPrefix: "B_c-1", dir: "/home/me" },
     ]);
   });
@@ -51,10 +51,6 @@ describe("parseConfig", () => {
 
   it.each([0, -2, 1.5, "3", null, true])("rejects maxSessions %j", (maxSessions) => {
     expect(() => parse([{ ...ok, maxSessions }])).toThrow("[0].maxSessions: expected a positive integer");
-  });
-
-  it.each([null, false, 3])("rejects bgFlags %j", (bgFlags) => {
-    expect(() => parse([{ ...ok, bgFlags }])).toThrow("[0].bgFlags: expected a string");
   });
 
   it("ignores a leftover bgFlags key of any type", () => {
@@ -115,23 +111,5 @@ describe("parseMaxSessions", () => {
 
   it.each(["0", "abc", "-1", "1.5", "01", " 3"])("rejects %j", (raw) => {
     expect(() => parseMaxSessions(raw)).toThrow(`CLAUDE_MAX_SESSIONS='${raw}' is not a positive integer`);
-  });
-});
-
-describe("launchFlags", () => {
-  it("puts the defaults first, then CLAUDE_BG_FLAGS, then the repo's bgFlags", () => {
-    expect(launchFlags(" --permission-mode  plan ", "--model opus\n--x")).toEqual([
-      "--model", "opus", "--effort", "high", "--permission-mode", "plan", "--model", "opus", "--x",
-    ]);
-  });
-
-  it("lets CLAUDE_BG_FLAGS and bgFlags override the default effort by coming after it", () => {
-    expect(launchFlags("--effort xhigh", "--effort max")).toEqual([
-      "--model", "opus", "--effort", "high", "--effort", "xhigh", "--effort", "max",
-    ]);
-  });
-
-  it("is just the defaults when neither is set", () => {
-    expect(launchFlags(undefined, undefined)).toEqual(["--model", "opus", "--effort", "high"]);
   });
 });

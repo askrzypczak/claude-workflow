@@ -123,11 +123,10 @@ The poller is TypeScript run by Node 24. It needs `node` on the launchd `PATH`, 
 Labels on GitHub start unattended agent sessions locally:
 
 - Sessions run as you, with your `gh` token. They can read and write every repo that token reaches, not only the configured one.
-- They work in `dir` on your files, with your credentials and tools, under the permission mode you configure. With no flags that is Claude Code's default mode, so sessions stop and show as `blocked` in `claude agents` at permission prompts. `--permission-mode acceptEdits` and similar flags widen what they do without asking.
+- They work in `dir` on your files, with your credentials and tools, under the permission mode from your Claude Code settings for that directory (user, project or local `settings.json`, `permissions.defaultMode`). By default that is Claude Code's default mode, so sessions stop and show as `blocked` in `claude agents` at permission prompts. `acceptEdits` widens what they do without asking; the poller does not check this setting, so `bypassPermissions` there lets unattended sessions act with no prompts.
 - Every session uses your Claude usage limits and costs money if you pay per token. Several `ready` tickets start several sessions at once.
-- Bypass flags (`--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-mode bypassPermissions`) are refused: a repo whose combined `CLAUDE_BG_FLAGS` + `bgFlags` contain one is skipped, logged and the run exits non-zero. Set `CLAUDE_ALLOW_BYPASS_PERMISSIONS=1` to accept the risk.
 - At most 10 sessions are live at once across all repos (`CLAUDE_MAX_SESSIONS`; per-repo `maxSessions`). Extra tickets log `deferred #N: at session cap` and start on a later poll.
-- Effective flags are logged on every launch. Anyone who can get `owner` to label an issue `ready` can start a session, so keep labelling rights tight.
+- Launch flags are logged on every launch. Anyone who can get `owner` to label an issue `ready` can start a session, so keep labelling rights tight.
 
 ### Onboarding a repo
 
@@ -149,14 +148,13 @@ Labels on GitHub start unattended agent sessions locally:
    - `dir`: the main checkout sessions start in (not a worktree).
    - `sessionPrefix`: names sessions; unique per repo.
    - `owner`: the only ticket author whose tickets are launched.
-   - `bgFlags` (optional): extra `claude --bg` flags for this repo, e.g. `--permission-mode acceptEdits`.
    - `maxSessions` (optional, positive integer): cap on live sessions for this repo.
 5. Trust the directory: run `claude` once in `dir`, accept the prompt, exit. `claude --bg` fails in an untrusted workspace.
 6. Dry run: `npm ci` in the clone once, then `dispatch/agent-poller.sh --dry-run` logs which tickets would launch and with which flags, and launches nothing.
 7. Install the LaunchAgent once, from the main clone (not a worktree): `dispatch/install-launchd.sh`.
    - The installer first runs `npm ci` in the clone (a failure aborts with nothing installed).
    - The agent polls as soon as it loads, so the installer repeats the dry run, shows its output and asks `Install and start polling? [y/N]` before writing or starting anything. Anything but `y`, no input, a failing dry run, or a poll already running aborts. `--yes` skips the question for scripted reinstalls.
-   - launchd only gives the job `HOME` and `PATH`, so the dry run drops `CLAUDE_BG_FLAGS`, `CLAUDE_ALLOW_BYPASS_PERMISSIONS` and `CLAUDE_MAX_SESSIONS` from your shell. Set them in the plist's `EnvironmentVariables` for the real poller.
+   - launchd only gives the job `HOME` and `PATH`, so the dry run drops `CLAUDE_MAX_SESSIONS` from your shell. Set it in the plist's `EnvironmentVariables` for the real poller.
    - Remove with `dispatch/install-launchd.sh uninstall`. Adding repos later only needs a config edit.
 
 Migrating from an older single-repo poller: pass `--legacy-label <its launchd label>` (booted out, plist removed) and `--migrate-state <its state dir> <sessionPrefix>` (copies `launched.json` / `conflicts.json` into the per-repo state, never overwriting) so in-flight tickets are not relaunched. Keep the old session naming as `sessionPrefix` so reconciliation finds live sessions. With these flags the dry run runs before the migration and says so.
@@ -205,13 +203,11 @@ If a session fails, is stopped, or ends without handing the ticket off, the poll
 
 ### Options
 
-Per repo options are in `repos.json` (above). Global options are environment variables: set them in `EnvironmentVariables` of the plist template and rerun the installer (it regenerates the installed copy, so edits made only under `~/Library/LaunchAgents/` are overwritten), or prefix a one-off run, e.g. `CLAUDE_BG_FLAGS="--permission-mode acceptEdits" dispatch/agent-poller.sh --dry-run`.
+Per repo options are in `repos.json` (above). Global options are environment variables: set them in `EnvironmentVariables` of the plist template and rerun the installer (it regenerates the installed copy, so edits made only under `~/Library/LaunchAgents/` are overwritten), or prefix a one-off run, e.g. `CLAUDE_MAX_SESSIONS=3 dispatch/agent-poller.sh --dry-run`.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CLAUDE_BG_FLAGS` | empty | Extra flags for `claude --bg`, applied to every repo (per-repo `bgFlags` adds to it). Sessions always start with `--model opus --effort high` first; add your own `--model` or `--effort` here or in `bgFlags` to override. |
 | `CLAUDE_MAX_SESSIONS` | `10` | Most sessions live at once across all repos (positive integer; invalid values abort the run). A guard against a runaway label batch; raise it deliberately. |
-| `CLAUDE_ALLOW_BYPASS_PERMISSIONS` | unset | `1` allows bypass flags in `CLAUDE_BG_FLAGS` / `bgFlags`; otherwise such repos are refused. |
 | `EXTRA_PATH` | empty | Directories prepended to the poller's PATH (inherited by sessions). fnm's default bin dir (`~/.local/share/fnm/aliases/default/bin`) is always included so sessions find `node`/`npm`. |
 | `STATE_DIR` | `~/.local/state/claude-workflow` | Lock file and per-repo `launched.json` / `conflicts.json` / `ci-attempts.json`. |
 

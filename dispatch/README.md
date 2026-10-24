@@ -21,7 +21,7 @@ Polls every configured GitHub repo for agent-ready tickets and starts one intera
 agent-poller.sh        entrypoint: PATH setup, then exec node poller/main.ts
 poller/main.ts         startup checks, lock, session list, repo loop, exit code
 poller/poll.ts         one repo's poll: reconcile, launch tickets, resolve conflicts, fix CI
-poller/decide.ts       pure decisions: session state, caps, bypass flags, reconcile, eligibility
+poller/decide.ts       pure decisions: session state, caps, reconcile, eligibility
 poller/config.ts       the repos config (zod schema), CLAUDE_MAX_SESSIONS and launch flags
 poller/schemas.ts      zod schemas for gh / claude output and the state files
 poller/io.ts           side effects (gh, claude, state files, lock, log) behind PollerIo
@@ -40,7 +40,6 @@ Every JSON input (the config, `gh` and `claude agents` output, the state files) 
 | `dir`           | yes      | Local checkout the sessions start in (`~/` is expanded)                        |
 | `sessionPrefix` | yes      | Session name prefix and state dir name; `[A-Za-z0-9_-]+`, unique across repos, case-insensitively |
 | `owner`         | yes      | Only tickets (and, for conflict resolution, PRs) authored by this login are picked up |
-| `bgFlags`       | no       | Extra `claude --bg` flags for this repo, appended after `CLAUDE_BG_FLAGS`; bypass flags are refused (below) |
 | `maxSessions`   | no       | Positive integer: most live sessions for this repo (on top of the global `CLAUDE_MAX_SESSIONS`) |
 
 ```json
@@ -55,13 +54,12 @@ Every JSON input (the config, `gh` and `claude agents` output, the state files) 
     "repo": "example-owner/example-tools",
     "dir": "~/Projects/example-tools",
     "sessionPrefix": "tools",
-    "owner": "example-owner",
-    "bgFlags": "--permission-mode acceptEdits"
+    "owner": "example-owner"
   }
 ]
 ```
 
-The run aborts non-zero (with a log line naming each bad field, e.g. `[0].repo: not of the form owner/name`, before launching anything) if the file is missing or unreadable, is not valid JSON or not an array, an entry lacks a required non-empty string field, `sessionPrefix` has characters outside `[A-Za-z0-9_-]`, `repo` is not `owner/name`, `bgFlags` is present but not a string, `maxSessions` is present but not a positive integer, `dir` does not exist, or two entries share a `sessionPrefix` (compared case-insensitively). Unknown fields are ignored. Unique prefixes guarantee session names (`<prefix>-N`) never collide across repos.
+The run aborts non-zero (with a log line naming each bad field, e.g. `[0].repo: not of the form owner/name`, before launching anything) if the file is missing or unreadable, is not valid JSON or not an array, an entry lacks a required non-empty string field, `sessionPrefix` has characters outside `[A-Za-z0-9_-]`, `repo` is not `owner/name`, `maxSessions` is present but not a positive integer, `dir` does not exist, or two entries share a `sessionPrefix` (compared case-insensitively). Unknown fields are ignored. Unique prefixes guarantee session names (`<prefix>-N`) never collide across repos.
 
 ### State
 
@@ -99,10 +97,8 @@ Environment:
 
 - `CLAUDE_WORKFLOW_CONFIG`: config path (above).
 - `STATE_DIR`: state root (above).
-- `CLAUDE_BG_FLAGS`: default extra flags for every `claude --bg`, e.g. `--permission-mode acceptEdits`. Placed after the built-in `--model opus --effort high`, so a `--model` or `--effort` here (or in `bgFlags`) overrides them.
-- `CLAUDE_ALLOW_BYPASS_PERMISSIONS`: set to `1` to allow `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` and `--permission-mode bypassPermissions` (also the `=` form) in the combined flags. Without it a repo with such flags is skipped, logged (`refusing bypass flags ...`) and counted as a failure (non-zero exit); other repos still run.
 - `CLAUDE_MAX_SESSIONS`: positive integer, default `10`. Live sessions are tracked entries in `launched.json` (tickets and conflict sessions) whose session is not `done`, `failed` or `stopped`; unlisted just-launched ones count. The global cap counts across all repos, a repo's `maxSessions` only that repo. At a cap the poller logs `deferred #N: at session cap` and leaves state untouched, so the launch is retried next poll. `--dry-run` applies the same caps. An invalid value aborts the run.
-- The effective flags are logged on every launch line (`flags: ...`, or `<none>`).
+- The launch flags are logged on every launch line (`flags: ...`).
 - `EXTRA_PATH`: prepended to `PATH` (the script also adds the fnm default bin dir, `~/.local/bin` and Homebrew, since launchd does not read your shell profile). Used by the tests to inject fake binaries.
 
 Requires Node 24 (`node` on the `PATH` above, which is what the LaunchAgent sees), the clone's npm dependencies (`npm ci`; the installer runs it, and you rerun it, or the installer, after pulling a change to `package-lock.json`), plus `gh` and `claude`. The poller itself does not need `jq` (the installer's `uninstall` uses it, if present, to list leftover sessions).
