@@ -209,7 +209,7 @@ Per repo options are in `repos.json` (above). Global options are environment var
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CLAUDE_BG_FLAGS` | empty | Extra flags for `claude --bg`, applied to every repo (per-repo `bgFlags` adds to it). Sessions always start with `--model sonnet --effort high` first; add your own `--model` or `--effort` here or in `bgFlags` to override. |
+| `CLAUDE_BG_FLAGS` | empty | Extra flags for `claude --bg`, applied to every repo (per-repo `bgFlags` adds to it). Sessions always start with `--model opus --effort high` first; add your own `--model` or `--effort` here or in `bgFlags` to override. |
 | `CLAUDE_MAX_SESSIONS` | `10` | Most sessions live at once across all repos (positive integer; invalid values abort the run). A guard against a runaway label batch; raise it deliberately. |
 | `CLAUDE_ALLOW_BYPASS_PERMISSIONS` | unset | `1` allows bypass flags in `CLAUDE_BG_FLAGS` / `bgFlags`; otherwise such repos are refused. |
 | `EXTRA_PATH` | empty | Directories prepended to the poller's PATH (inherited by sessions). fnm's default bin dir (`~/.local/share/fnm/aliases/default/bin`) is always included so sessions find `node`/`npm`. |

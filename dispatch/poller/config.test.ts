@@ -111,17 +111,17 @@ describe("parseMaxSessions", () => {
 describe("launchFlags", () => {
   it("puts the defaults first, then CLAUDE_BG_FLAGS, then the repo's bgFlags", () => {
     expect(launchFlags(" --permission-mode  plan ", "--model opus\n--x")).toEqual([
-      "--model", "sonnet", "--effort", "high", "--permission-mode", "plan", "--model", "opus", "--x",
+      "--model", "opus", "--effort", "high", "--permission-mode", "plan", "--model", "opus", "--x",
     ]);
   });
 
   it("lets CLAUDE_BG_FLAGS and bgFlags override the default effort by coming after it", () => {
     expect(launchFlags("--effort xhigh", "--effort max")).toEqual([
-      "--model", "sonnet", "--effort", "high", "--effort", "xhigh", "--effort", "max",
+      "--model", "opus", "--effort", "high", "--effort", "xhigh", "--effort", "max",
     ]);
   });
 
   it("is just the defaults when neither is set", () => {
-    expect(launchFlags(undefined, undefined)).toEqual(["--model", "sonnet", "--effort", "high"]);
+    expect(launchFlags(undefined, undefined)).toEqual(["--model", "opus", "--effort", "high"]);
   });
 });

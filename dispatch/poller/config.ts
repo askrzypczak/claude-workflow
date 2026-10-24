@@ -4,8 +4,8 @@ import { readFileSync, statSync } from "node:fs";
 import { z } from "zod";
 import { parseJson } from "./schemas.ts";
 
-/** Sessions start on sonnet at high effort; a later --model / --effort overrides. */
-export const DEFAULT_FLAGS = "--model sonnet --effort high";
+/** Sessions start on opus at high effort; a later --model / --effort overrides. */
+export const DEFAULT_FLAGS = "--model opus --effort high";
 
 const text = (error: string) => z.string({ error }).min(1, error);
 
