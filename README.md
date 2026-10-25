@@ -88,7 +88,7 @@ Write `Part of #N` in a child ticket's body to link it to its epic; the epic bod
 
 ### Orchestrating an epic
 
-Use `orchestrate-epic` (`/ticket-workflow:orchestrate-epic E`) instead of the poller when an epic's dependency chain makes the human's attention the bottleneck. One session works the children as `work-ticket` sub-agents, stands in at their plan gates and reviews each PR as first reviewer, escalating only product questions (a recorded maintainer decision, or user-visible behaviour) to the human. It removes `agent-ok` from the children for the run so the poller leaves them alone.
+Use `orchestrate-epic` (`/ticket-workflow:orchestrate-epic E`) instead of the poller when an epic's dependency chain makes the human's attention the bottleneck. One session works the children as `work-ticket` sub-agents, stands in at their plan gates and reviews each PR as first reviewer, escalating only product questions (a recorded maintainer decision, or user-visible behaviour) to the human. It removes `agent-ok` from the children for the run so the poller leaves them alone. The children do not need `ready`: running the skill hands their readiness to the orchestrator, which judges them and the follow-ups it adds. The rule that only the maintainer adds `ready` is unchanged elsewhere.
 
 The children's PRs target an `epic-E` branch, not `main`. After its review, with CI green and the PR mergeable, the orchestrator merges each child into `epic-E` (a local merge and a plain push) and closes the child issue. The human still merges every PR that reaches `main`: one epic PR, read by its merge commits and the child PRs' review maps.
 

@@ -16,7 +16,7 @@ Run `git fetch origin --quiet`. Check the epic's author first: `gh api repos/{ow
 
 Claim it: `gh issue edit E --add-assignee @me --add-label in-progress` and comment "Claimed; orchestrating." If the epic already has `in-progress`: when `origin/epic-E` exists, this skill's own run is being resumed, so continue from the children's states; without `origin/epic-E` another session owns it, so stop.
 
-List the open children without reading any body: native sub-issues with `gh api repos/{owner}/{repo}/issues/E/sub_issues --jq '.[] | {number, state, author_association}'` (`E` literal), plus tickets whose body has `Part of #E` with `gh issue list --state open --search '"Part of #E" in:body' --json number,title,labels` (no `body`; the comment guard denies it). Then read each child with the same per-child author check and filter. Note its labels and `Blocked by` lines and derive the run order. Report children without `ready` to the human and do not launch them; only the maintainer adds `ready`.
+List the open children without reading any body: native sub-issues with `gh api repos/{owner}/{repo}/issues/E/sub_issues --jq '.[] | {number, state, author_association}'` (`E` literal), plus tickets whose body has `Part of #E` with `gh issue list --state open --search '"Part of #E" in:body' --json number,title,labels` (no `body`; the comment guard denies it). Then read each child with the same per-child author check and filter. Note its labels and `Blocked by` lines and derive the run order. Running this skill makes you responsible for the children, including judging whether each is ready to work: the premise still holds, the AC are checkable, no product question is open. A child that is not ready is fixed by you where the triage rule (step 5) makes it your call (edit the ticket, recording the change in a comment), otherwise it goes to the human as a question; a child is never silently skipped. The `ready` label is neither required nor added.
 
 ## 2. Keep the poller out
 Before the first launch, remove `agent-ok` from each open child (`gh issue edit N --remove-label agent-ok`) and comment on each why: the poller launches `ready` + `agent-ok` issues, and its CI-fix and conflict sessions also require `agent-ok` (`dispatch/poller/decide.ts`), so without the label this run owns the child. Restore nothing at the end: closed tickets need no label.
@@ -37,7 +37,7 @@ Launch prompt template. Fill every `<placeholder>` and substitute the absolute p
     - Attribution: the step 3 comment opens "Plan approved by the epic #<E> orchestrator session (Claude), standing in for the maintainer; not human-approved." The PR's plan heading is "Plan (approved by the epic #<E> orchestrator, not human-approved)". Every Decisions line names who decided; the maintainer's own decisions say "maintainer" and the date.
     - Standing decisions (do not reopen): <the maintainer's decisions from earlier gates and the orchestrator's from earlier children, each with its decider, or "none yet">.
     - Parallel work: <what sibling children own: files and tests, or "none">.
-    - Follow-ups: a ticket you file gets `Part of #<E>` as the first line of its body, no `ready` and no `agent-ok`. Report its number.
+    - Follow-ups: a ticket you file gets `Part of #<E>` as the first line of its body, no `ready` and no `agent-ok`. Report its number. The orchestrator decides whether it stays in the epic.
     - <plan early, branch late: only for a child blocked by one sibling; see below>
 
 **Plan early, branch late**, only for a child blocked by one sibling #M whose PR you approved but have not integrated. Add to its prompt: plan against that sibling's branch (`git show origin/issue-M-<slug>:<path>`); treat both `Blocked by #M` and the `blocked` label as not blocking for step 1's stop (that one blocker only; leave the label for label cleanup); hold step 3 (branch) until the orchestrator sends "integrated".
@@ -45,7 +45,7 @@ Launch prompt template. Fill every `<placeholder>` and substitute the absolute p
 ## 5. Gates
 Read each sub-agent's report: its plan, its questions, its amendments.
 
-**Triage.** A question goes to the human when it bends a recorded maintainer decision or changes user-visible behaviour, and for what `work-ticket` reserves for a human-approved plan (`contract N/A (cut)`). Everything else is your call: test fixture strategy, implementer tier, AC rewording, option cuts, plan gaps, contract amendments, follow-up filing. Report those to the human afterwards so they can veto.
+**Triage.** A question goes to the human when it bends a recorded maintainer decision or changes user-visible behaviour, and for what `work-ticket` reserves for a human-approved plan (`contract N/A (cut)`). Everything else is your call: test fixture strategy, implementer tier, AC rewording, option cuts, plan gaps, contract amendments, a follow-up that fits the epic (step 8). Report those to the human afterwards so they can veto.
 
 What goes to the human goes in one `AskUserQuestion` round, recommended option first, written to `work-ticket`'s question rule (header `#N <topic>`). Send answers and approvals back to the agent with `SendMessage`. Record every decision with its decider for the standing-decisions list that later launch prompts carry.
 
@@ -62,12 +62,15 @@ Only after the verdict approves, `gh pr checks` is green and `gh pr view --json 
 4. Release the next child; send "integrated" to a waiting plan-early agent.
 
 ## 8. Follow-ups
-For each ticket number an agent reports:
-- `Part of #E` is the first line of its body.
+For each ticket number an agent reports, judge whether it fits the epic: it fits when it is needed to finish the epic's stated goal, or fixes something one of this epic's children introduced.
+
+**Fits:** keep `Part of #E` as the first line of its body, then:
 - Link it as a native sub-issue: id from `gh api repos/{owner}/{repo}/issues/N --jq .id`, then `gh api -X POST repos/{owner}/{repo}/issues/E/sub_issues -F sub_issue_id=<id>` (numbers literal).
 - Add a line to the epic's plan list with its dependencies (edit the body with `--body-file`).
 - Give it a place in the run order: `Blocked by` a sibling plus `blocked` when both rewrite the same files.
-Ask the human whether to add it to this run. `ready` is set only on the maintainer's instruction, recorded in a comment ("ready set on the maintainer's instruction").
+- Launch it like any other child (steps 2 and 4). Report it to the human afterwards so they can veto; do not ask first.
+
+**Does not fit:** remove the `Part of #E` line from its body, do not link it, keep it out of the run, and ask the human about it (one `AskUserQuestion` round under the step 5 question rules).
 
 ## 9. Finish
 When every child is integrated and closed:
