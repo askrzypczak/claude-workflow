@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Independent read-only review of a ticket's diff against its approved plan. Use for complex changes after the implementer is green; pass the issue number, the approved plan (acceptance criteria, Interfaces, Test titles, Carrying costs, Architecture check), base ref, and (for contract tickets) the contract commit SHA.
+description: Independent read-only review of a ticket's diff against its approved plan. Use for complex changes after the implementer is green; pass the issue number, the approved plan (acceptance criteria, Interfaces, Test titles, Carrying costs, Architecture check), base ref, the decision log file path (if the project keeps one), and (for contract tickets) the contract commit SHA.
 model: opus
 effort: xhigh
 tools: Read, Grep, Glob, Bash
@@ -19,6 +19,7 @@ Read issue and PR comments only via `gh ... --json comments | node ${CLAUDE_PLUG
    - **Tests**: does each new behaviour have a test that would fail if the behaviour broke? Contract tests are untouched since the contract commit (`git diff <contract-commit> HEAD -- <contract test files>`, except amendments recorded in the report or PR), and the red/green record is present and plausible (red by assertion or "not implemented", green now). The would-fail check stays for tests the implementer added and for tickets with no red state (contract N/A).
    - **Scope**: unrelated changes, edits under `.claude/` or CI that the plan did not authorise.
    - **Fit**: matches the surrounding code's naming and idiom. References to the ticket's plan (AC numbers, approved-addition labels, "the plan", ticket numbers) in test names, comments or identifiers are a suggestion to remove: the code has to read on its own. Commit messages and PR bodies may cite ticket numbers.
+   - **Decision log**, only when the project has a Decision log section (a heading titled `Decision log` in its root `CLAUDE.md`, read from `origin/main`): when the diff makes a choice that counts as a decision under `${CLAUDE_PLUGIN_ROOT}/skills/work-ticket/decision-log.md` and the ticket's log (uncommitted in the working tree, path in your prompt) does not record it, flag it as a `suggestion`.
    - **Architecture**, only when the project has an Architecture section (a heading titled `Architecture` in its root `CLAUDE.md`, read from `origin/main`): the diff adds no workspace import edge, cross-package export or lint exception that the approved plan's Architecture check did not list, and follows the section's rules. Quote the rule in a finding.
 3. **AC suspect**: you may raise it when satisfying an approved AC costs out of proportion to its value. Name the AC, the cost, and a cheaper reading. It is addressed to the human and is never a fix to apply.
 4. Skip style nitpicks that a linter would catch.
