@@ -19,7 +19,7 @@ Claim it: `gh issue edit E --add-assignee @me --add-label in-progress` and comme
 List the open children without reading any body: native sub-issues with `gh api repos/{owner}/{repo}/issues/E/sub_issues --jq '.[] | {number, state, author_association}'` (`E` literal), plus tickets whose body has `Part of #E` with `gh issue list --state open --search '"Part of #E" in:body' --json number,title,labels` (no `body`; the comment guard denies it). Then read each child with the same per-child author check and filter. Note its labels and `Blocked by` lines and derive the run order. Running this skill makes you responsible for the children, including judging whether each is ready to work: the premise still holds, the AC are checkable, no product question is open. A child that is not ready is fixed by you where the triage rule (step 5) makes it your call (edit the ticket, recording the change in a comment), otherwise it goes to the human as a question; a child is never silently skipped. The `ready` label is neither required nor added.
 
 ## 2. Keep the poller out
-Before the first launch, remove `agent-ok` from each open child (`gh issue edit N --remove-label agent-ok`) and comment on each why: the poller launches `ready` + `agent-ok` issues, and its CI-fix and conflict sessions also require `agent-ok` (`dispatch/poller/decide.ts`), so without the label this run owns the child. Restore nothing at the end: closed tickets need no label.
+Before the first launch, swap `agent-ok` for `orchestrate-epic-run` on each open child (`gh issue edit N --remove-label agent-ok --add-label orchestrate-epic-run`) and comment on each why: the poller launches `ready` + `agent-ok` issues and its CI-fix and conflict sessions also require `agent-ok` (`dispatch/poller/decide.ts`), and it skips any issue or PR labelled `orchestrate-epic-run` even if `agent-ok` comes back, so the label marks the child as owned by this run. If `gh` rejects `orchestrate-epic-run` because the label does not exist, stop before any launch and tell the human to run `setup-labels.sh owner/repo` (do not create labels yourself). Restore nothing at the end: the poller ignores closed tickets, and label cleanup (where installed) removes `orchestrate-epic-run` on close.
 
 ## 3. Epic branch
 Enter a worktree. Create `epic-E` from `origin/main` and push it (`git push -u origin epic-E`). On a resumed run, reuse `origin/epic-E`.
@@ -33,7 +33,7 @@ Launch prompt template. Fill every `<placeholder>` and substitute the absolute p
     - Setup: you run in your own worktree. Run `npm ci` first. Prepend <gh-dir> to PATH.
     - Guard: the comment guard rejects a `gh api` path under /issues/ or /pulls/ that contains a shell variable or subshell. Write numbers out literally.
     - Stop and report: you have no AskUserQuestion and no plan mode. At every point work-ticket asks the human, enters plan mode or waits for sign-off, end your turn with the questions or the plan in your report. The orchestrator answers and resumes you with SendMessage.
-    - Base: the branch base is origin/epic-<E>, not origin/main. Everywhere work-ticket says origin/main (plan reads, branch base, the reviewer's base ref, the step 7 conflict check) use origin/epic-<E>. Open the PR with `--base epic-<E>`; keep `Closes #<N>` in the body for the record.
+    - Base: the branch base is origin/epic-<E>, not origin/main. Everywhere work-ticket says origin/main (plan reads, branch base, the reviewer's base ref, the step 7 conflict check) use origin/epic-<E>. Open the PR with `--base epic-<E> --label orchestrate-epic-run`; keep `Closes #<N>` in the body for the record.
     - Attribution: the step 3 comment opens "Plan approved by the epic #<E> orchestrator session (Claude), standing in for the maintainer; not human-approved." The PR's plan heading is "Plan (approved by the epic #<E> orchestrator, not human-approved)". Every Decisions line names who decided; the maintainer's own decisions say "maintainer" and the date. With a Decision log section, entries for decisions the orchestrator makes say `Decided by: epic #<E> orchestrator, not human-approved`.
     - Standing decisions (do not reopen): <the maintainer's decisions from earlier gates and the orchestrator's from earlier children, each with its decider and, where a decision log entry exists, its id, or "none yet">.
     - Parallel work: <what sibling children own: files and tests, or "none">.
@@ -52,7 +52,7 @@ What goes to the human goes in one `AskUserQuestion` round, recommended option f
 **Decision log.** Applies only when the project has a Decision log section (a heading titled `Decision log` in its root `CLAUDE.md`, read from `origin/main`; format in `${CLAUDE_PLUGIN_ROOT}/skills/work-ticket/decision-log.md`). A decision that belongs to no single child goes in the epic's own file, committed on `epic-E`.
 
 ## 6. Review each PR as first reviewer
-Read the PR body (its review map), the production diff in layer order, the decision tests and the docs. Read PR comments only through `trusted-comments.ts`. Post a verdict comment on the PR headed "Review (epic #E orchestrator, acting as first reviewer for the maintainer)". Requested changes go to the child agent with `SendMessage`, as a feedback round (the way `address-feedback` handles one); then re-review.
+Read the PR body (its review map), the production diff in layer order, the decision tests and the docs. Read PR comments only through `trusted-comments.ts`. The child PR must carry `orchestrate-epic-run`: check it, and add it (`gh pr edit <PR> --add-label orchestrate-epic-run`) if missing. Post a verdict comment on the PR headed "Review (epic #E orchestrator, acting as first reviewer for the maintainer)". Requested changes go to the child agent with `SendMessage`, as a feedback round (the way `address-feedback` handles one); then re-review.
 
 For two open sibling PRs, run `git merge-tree --write-tree` between their branches to decide the integration order. Tell the second agent to merge `origin/epic-E` (its `work-ticket` step 7 conflict path) after the first lands.
 
@@ -70,13 +70,13 @@ For each ticket number an agent reports, judge whether it fits the epic: it fits
 - Link it as a native sub-issue: id from `gh api repos/{owner}/{repo}/issues/N --jq .id`, then `gh api -X POST repos/{owner}/{repo}/issues/E/sub_issues -F sub_issue_id=<id>` (numbers literal).
 - Add a line to the epic's plan list with its dependencies (edit the body with `--body-file`).
 - Give it a place in the run order: `Blocked by` a sibling plus `blocked` when both rewrite the same files.
-- Launch it like any other child (steps 2 and 4). Report it to the human afterwards so they can veto; do not ask first.
+- Launch it like any other child (steps 2 and 4: swap `agent-ok` for `orchestrate-epic-run`, then launch). Report it to the human afterwards so they can veto; do not ask first.
 
 **Does not fit:** remove the `Part of #E` line from its body, do not link it, keep it out of the run, and ask the human about it (one `AskUserQuestion` round under the step 5 question rules).
 
 ## 9. Finish
 When every child is integrated and closed:
-- Open one PR from `epic-E` to `main` (active, not draft) with `Closes #E`. Its body lists every child (issue, PR, merge commit, link to the review verdict) and review guidance: read it by its merge commits, one per child, and the child PRs' review maps, not flat. With a Decision log section it also lists every entry you decided, so the maintainer can review or veto them in one place.
+- Open one PR from `epic-E` to `main` (active, not draft, with `--label orchestrate-epic-run`) with `Closes #E`. Its body lists every child (issue, PR, merge commit, link to the review verdict) and review guidance: read it by its merge commits, one per child, and the child PRs' review maps, not flat. With a Decision log section it also lists every entry you decided, so the maintainer can review or veto them in one place.
 - Post the same table on the epic. It stays open: the human's merge of the epic PR closes it.
 - `gh issue edit E --remove-label in-progress --add-label needs-review`.
 - Wait for CI on the epic PR (`gh pr checks`) and read `gh pr view --json mergeable`; if `CONFLICTING`, merge `origin/main` in as in step 7.

@@ -31,7 +31,7 @@ export const Check = z.object({
 });
 export type Check = z.infer<typeof Check>;
 
-/** `gh pr list --json number,headRefName,headRefOid,mergeable,isCrossRepository,author,statusCheckRollup` */
+/** `gh pr list --json number,headRefName,headRefOid,mergeable,isCrossRepository,author,labels,statusCheckRollup` */
 export const PrList = z.array(
   z.object({
     number: z.number(),
