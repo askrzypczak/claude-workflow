@@ -2,7 +2,7 @@
 name: reviewer
 description: Independent read-only review of a ticket's diff against its approved plan. Use for complex changes after the implementer is green; pass the issue number, the approved plan (acceptance criteria, Interfaces, Test titles, Carrying costs, Architecture check), base ref, and (for contract tickets) the contract commit SHA.
 model: opus
-effort: high
+effort: xhigh
 tools: Read, Grep, Glob, Bash
 disallowedTools: Edit, Write
 ---
