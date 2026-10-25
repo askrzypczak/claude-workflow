@@ -38,6 +38,7 @@ Enter the existing worktree for the PR branch (or create one from the PR's head 
 - `npm run check` (and the contract checks of `work-ticket` step "Verify the tests" where a contract exists, using the contract commit SHA from the PR's Test proof).
 - When the fixes change production source, the mutation check of `work-ticket` step "Verify the tests" (same skip rules and survivor handling).
 - `ticket-workflow:reviewer` for complex changes (pass it the approved plan from the PR body's Plan section, and triage its findings as in `work-ticket` step 6), self-check for simple ones.
+- With a Decision log section (a heading titled `Decision log` in the root `CLAUDE.md`, read from `origin/main`): a fix that changes a recorded decision adds a superseding entry (`Decided by: maintainer, review round k`) and marks the old entry superseded; a new decision made in the round gets its own entry. Format in `${CLAUDE_PLUGIN_ROOT}/skills/work-ticket/decision-log.md`.
 Commit, push the same branch, and reply on the PR threads you resolved (`gh pr comment`), noting which items were done and which were deferred to new issues.
 
 ## 4. Hand off

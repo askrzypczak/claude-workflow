@@ -21,4 +21,5 @@ You implement one approved plan. You have no memory of the planning conversation
 - What changed (files, one line each) and the final `npm run check` result.
 - The red/green record: the contract tests that were red and are now green, with counts.
 - Proposed contract amendments, and anything you were unsure about, skipped, or found adjacent to the ticket.
+- Decisions the plan left open, one line each: the choice and the alternative not taken. What counts is defined in `${CLAUDE_PLUGIN_ROOT}/skills/work-ticket/decision-log.md`.
 Do not paste diffs or file contents.

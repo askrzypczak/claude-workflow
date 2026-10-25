@@ -34,8 +34,8 @@ Launch prompt template. Fill every `<placeholder>` and substitute the absolute p
     - Guard: the comment guard rejects a `gh api` path under /issues/ or /pulls/ that contains a shell variable or subshell. Write numbers out literally.
     - Stop and report: you have no AskUserQuestion and no plan mode. At every point work-ticket asks the human, enters plan mode or waits for sign-off, end your turn with the questions or the plan in your report. The orchestrator answers and resumes you with SendMessage.
     - Base: the branch base is origin/epic-<E>, not origin/main. Everywhere work-ticket says origin/main (plan reads, branch base, the reviewer's base ref, the mutation check's base, the step 7 conflict check) use origin/epic-<E>. Open the PR with `--base epic-<E>`; keep `Closes #<N>` in the body for the record.
-    - Attribution: the step 3 comment opens "Plan approved by the epic #<E> orchestrator session (Claude), standing in for the maintainer; not human-approved." The PR's plan heading is "Plan (approved by the epic #<E> orchestrator, not human-approved)". Every Decisions line names who decided; the maintainer's own decisions say "maintainer" and the date.
-    - Standing decisions (do not reopen): <the maintainer's decisions from earlier gates and the orchestrator's from earlier children, each with its decider, or "none yet">.
+    - Attribution: the step 3 comment opens "Plan approved by the epic #<E> orchestrator session (Claude), standing in for the maintainer; not human-approved." The PR's plan heading is "Plan (approved by the epic #<E> orchestrator, not human-approved)". Every Decisions line names who decided; the maintainer's own decisions say "maintainer" and the date. With a Decision log section, entries for decisions the orchestrator makes say `Decided by: epic #<E> orchestrator, not human-approved`.
+    - Standing decisions (do not reopen): <the maintainer's decisions from earlier gates and the orchestrator's from earlier children, each with its decider and, where a decision log entry exists, its id, or "none yet">.
     - Parallel work: <what sibling children own: files and tests, or "none">.
     - Follow-ups: a ticket you file gets `Part of #<E>` as the first line of its body, no `ready` and no `agent-ok`. Report its number. The orchestrator decides whether it stays in the epic.
     - <plan early, branch late: only for a child blocked by one sibling; see below>
@@ -48,6 +48,8 @@ Read each sub-agent's report: its plan, its questions, its amendments.
 **Triage.** A question goes to the human when it bends a recorded maintainer decision or changes user-visible behaviour, and for what `work-ticket` reserves for a human-approved plan (`contract N/A (cut)`). Everything else is your call: test fixture strategy, implementer tier, AC rewording, option cuts, plan gaps, contract amendments, a follow-up that fits the epic (step 8). Report those to the human afterwards so they can veto.
 
 What goes to the human goes in one `AskUserQuestion` round, recommended option first, written to `work-ticket`'s question rule (header `#N <topic>`). Send answers and approvals back to the agent with `SendMessage`. Record every decision with its decider for the standing-decisions list that later launch prompts carry.
+
+**Decision log.** Applies only when the project has a Decision log section (a heading titled `Decision log` in its root `CLAUDE.md`, read from `origin/main`; format in `${CLAUDE_PLUGIN_ROOT}/skills/work-ticket/decision-log.md`). A decision that belongs to no single child goes in the epic's own file, committed on `epic-E`.
 
 ## 6. Review each PR as first reviewer
 Read the PR body (its review map), the production diff in layer order, the decision tests and the docs. Read PR comments only through `trusted-comments.ts`. Post a verdict comment on the PR headed "Review (epic #E orchestrator, acting as first reviewer for the maintainer)". Requested changes go to the child agent with `SendMessage`, as a feedback round (the way `address-feedback` handles one); then re-review.
@@ -74,7 +76,7 @@ For each ticket number an agent reports, judge whether it fits the epic: it fits
 
 ## 9. Finish
 When every child is integrated and closed:
-- Open one PR from `epic-E` to `main` (active, not draft) with `Closes #E`. Its body lists every child (issue, PR, merge commit, link to the review verdict) and review guidance: read it by its merge commits, one per child, and the child PRs' review maps, not flat.
+- Open one PR from `epic-E` to `main` (active, not draft) with `Closes #E`. Its body lists every child (issue, PR, merge commit, link to the review verdict) and review guidance: read it by its merge commits, one per child, and the child PRs' review maps, not flat. With a Decision log section it also lists every entry you decided, so the maintainer can review or veto them in one place.
 - Post the same table on the epic. It stays open: the human's merge of the epic PR closes it.
 - `gh issue edit E --remove-label in-progress --add-label needs-review`.
 - Wait for CI on the epic PR (`gh pr checks`) and read `gh pr view --json mergeable`; if `CONFLICTING`, merge `origin/main` in as in step 7.
