@@ -25,7 +25,7 @@ Before the first launch, remove `agent-ok` from each open child (`gh issue edit 
 Enter a worktree. Create `epic-E` from `origin/main` and push it (`git push -u origin epic-E`). On a resumed run, reuse `origin/epic-E`.
 
 ## 4. Launch children
-For each released child (no open blocker, or blocked only by a sibling awaiting integration, see "plan early" below) launch a `general-purpose` sub-agent with `isolation: worktree`, `model: opus`, `effort: high` (the poller's dispatched-session flags, `LAUNCH_FLAGS` in `dispatch/poller/config.ts`). Children with no open blocker between them may run in parallel; tell each what the others own (files, tests). Get the directory of `gh` with `command -v gh`.
+For each released child (no open blocker, or blocked only by a sibling awaiting integration, see "plan early" below) launch a `general-purpose` sub-agent with `isolation: worktree`, `model: opus`, `effort: xhigh` (the poller's dispatched-session flags, `LAUNCH_FLAGS` in `dispatch/poller/config.ts`). Children with no open blocker between them may run in parallel; tell each what the others own (files, tests). Get the directory of `gh` with `command -v gh`.
 
 Launch prompt template. Fill every `<placeholder>` and substitute the absolute plugin root for `${CLAUDE_PLUGIN_ROOT}` (the sub-agent's environment does not resolve it):
 
