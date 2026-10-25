@@ -89,6 +89,16 @@ describe("cleanupClosedIssue", () => {
     ]);
   });
 
+  it("removes orchestrate-epic-run from the closed issue along with its state labels", () => {
+    const { gh, edits } = fake({
+      1: closed(["in-progress", "orchestrate-epic-run", "feature"]),
+    });
+    cleanupClosedIssue(1, gh);
+    expect(edits).toHaveLength(1);
+    expect(edits[0]!.issue).toBe(1);
+    expect([...edits[0]!.labels].sort()).toEqual(["in-progress", "orchestrate-epic-run"]);
+  });
+
   it("does nothing when the closed issue has no state labels", () => {
     const { gh, edits } = fake({ 1: closed(["bug"]) });
     cleanupClosedIssue(1, gh);

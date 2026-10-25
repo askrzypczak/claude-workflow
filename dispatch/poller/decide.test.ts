@@ -143,6 +143,10 @@ describe("ticketVerdict and ticketPrompt", () => {
     });
   });
 
+  it("skips an orchestrate-epic-run ticket even with ready and agent-ok", () => {
+    expect(ticketVerdict(issue(["ready", "orchestrate-epic-run"]), "me", {})).toEqual({ ok: false });
+  });
+
   it("skips a ticket that already has a tracked session", () => {
     expect(ticketVerdict(issue(["ready"]), "me", { 5: { name: "a-5", at: 1 } })).toEqual({ ok: false });
   });
@@ -161,6 +165,7 @@ describe("conflictVerdict", () => {
     mergeable: "CONFLICTING",
     isCrossRepository: false,
     author: { login: "me" },
+    labels: [],
     statusCheckRollup: [],
     ...p,
   });
@@ -180,6 +185,10 @@ describe("conflictVerdict", () => {
     [{ mergeable: "MERGEABLE" }, undefined],
   ])("skips %j", (p, log) => {
     expect(verdict(pr(p))).toEqual(log ? { ok: false, log } : { ok: false });
+  });
+
+  it("skips a conflicting PR labelled orchestrate-epic-run", () => {
+    expect(verdict(pr({ labels: ["orchestrate-epic-run"] }))).toEqual({ ok: false });
   });
 
   it("skips while the ticket session is working or blocked, not otherwise", () => {
@@ -217,6 +226,11 @@ describe("prIssueVerdict", () => {
     expect(prIssueVerdict({ ...issue, ...p }, 5, "me", "conflict resolution")).toEqual(
       log ? { ok: false, log } : { ok: false },
     );
+  });
+
+  it("skips an orchestrate-epic-run issue even with agent-ok", () => {
+    const run = { ...issue, labels: ["agent-ok", "orchestrate-epic-run"] };
+    expect(prIssueVerdict(run, 5, "me", "conflict resolution")).toEqual({ ok: false });
   });
 
   it("prIssueVerdict keeps the conflict wording and uses the given action in its log", () => {
@@ -278,6 +292,7 @@ describe("ciVerdict", () => {
     mergeable: "MERGEABLE",
     isCrossRepository: false,
     author: { login: "me" },
+    labels: [],
     statusCheckRollup: [PASSED, FAILED],
     ...p,
   });
@@ -287,6 +302,10 @@ describe("ciVerdict", () => {
   it("ciVerdict accepts a MERGEABLE red PR on an `issue-N-*` branch and returns N (AC1)", () => {
     expect(verdict(pr())).toEqual({ ok: true, n: 5 });
     expect(verdict(pr({ headRefName: "issue-12-other" }))).toEqual({ ok: true, n: 12 });
+  });
+
+  it("skips a red PR labelled orchestrate-epic-run", () => {
+    expect(verdict(pr({ labels: ["orchestrate-epic-run"] }))).toEqual({ ok: false });
   });
 
   it("ciVerdict launches nothing for a CONFLICTING PR, silently (AC1)", () => {

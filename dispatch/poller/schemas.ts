@@ -40,6 +40,7 @@ export const PrList = z.array(
     mergeable: z.string(),
     isCrossRepository: z.boolean(),
     author: Author,
+    labels: Labels,
     statusCheckRollup: z.array(Check),
   }),
 );

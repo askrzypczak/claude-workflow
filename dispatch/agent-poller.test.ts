@@ -232,6 +232,7 @@ describe("agent-poller conflict phase", () => {
     issueState?: string;
     author?: string;
     labels?: string[];
+    prLabels?: string[];
     dry?: boolean;
     status?: number;
   }
@@ -262,6 +263,7 @@ describe("agent-poller conflict phase", () => {
       mergeable: "CONFLICTING",
       mergeStateStatus: "DIRTY",
       headRefOid: "head1",
+      labels: [],
       statusCheckRollup: [],
       ...p,
     });
@@ -275,6 +277,7 @@ describe("agent-poller conflict phase", () => {
           // `crossRepo: undefined` drops the field from the JSON.
           ...("crossRepo" in opts ? { isCrossRepository: opts.crossRepo } : {}),
           ...(opts.prAuthor ? { author: { login: opts.prAuthor } } : {}),
+          ...(opts.prLabels ? { labels: opts.prLabels.map((name) => ({ name })) } : {}),
         }),
         ...(opts.extraPrs ?? []).map(prRow),
       ]),
@@ -411,6 +414,12 @@ describe("agent-poller conflict phase", () => {
     expect(runConflict({ labels: ["agent-ok", "agent-failed"] }).launches).toStrictEqual([]);
   });
 
+  it("launches no conflict session for a PR labelled orchestrate-epic-run", () => {
+    const r = runConflict({ labels: ["agent-ok"], prLabels: ["orchestrate-epic-run"] });
+    expect(r.launches).toStrictEqual([]);
+    expect(r.state).toStrictEqual({});
+  });
+
   it("skips tickets by another author", () => {
     expect(runConflict({ author: "someone" }).launches).toStrictEqual([]);
   });
@@ -518,6 +527,7 @@ describe("agent-poller conflict reconcile", () => {
           mergeable: opts.mergeable ?? "CONFLICTING",
           mergeStateStatus: "DIRTY",
           headRefOid: "head1",
+          labels: [],
           statusCheckRollup: [],
         },
       ]),
@@ -639,6 +649,7 @@ describe("agent-poller CI phase", () => {
           author: { login: "example-owner" },
           mergeable: "MERGEABLE",
           mergeStateStatus: "UNSTABLE",
+          labels: [],
           statusCheckRollup: RED,
         },
       ]),
@@ -874,6 +885,7 @@ describe("agent-poller launch flags", () => {
           mergeable: "CONFLICTING",
           mergeStateStatus: "DIRTY",
           headRefOid: "head1",
+          labels: [],
           statusCheckRollup: [],
         },
       ]),
@@ -1099,6 +1111,7 @@ describe("agent-poller session cap", () => {
           mergeable: "CONFLICTING",
           mergeStateStatus: "DIRTY",
           headRefOid: "head1",
+          labels: [],
           statusCheckRollup: [],
         },
       ]),
