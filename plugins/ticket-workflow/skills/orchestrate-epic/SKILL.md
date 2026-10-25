@@ -25,7 +25,7 @@ Before the first launch, remove `agent-ok` from each open child (`gh issue edit 
 Enter a worktree. Create `epic-E` from `origin/main` and push it (`git push -u origin epic-E`). On a resumed run, reuse `origin/epic-E`.
 
 ## 4. Launch children
-For each released child (no open blocker, or blocked only by a sibling awaiting integration, see "plan early" below) launch a `general-purpose` sub-agent with `isolation: worktree`, `model: opus`, `effort: high` (the poller's dispatched-session flags, `LAUNCH_FLAGS` in `dispatch/poller/config.ts`). Children with no open blocker between them may run in parallel; tell each what the others own (files, tests). Get the directory of `gh` with `command -v gh`.
+For each released child (no open blocker, or blocked only by a sibling awaiting integration, see "plan early" below) launch a `general-purpose` sub-agent with `isolation: worktree`, `model: opus`, `effort: xhigh` (the poller's dispatched-session flags, `LAUNCH_FLAGS` in `dispatch/poller/config.ts`). Children with no open blocker between them may run in parallel; tell each what the others own (files, tests). Get the directory of `gh` with `command -v gh`.
 
 Launch prompt template. Fill every `<placeholder>` and substitute the absolute plugin root for `${CLAUDE_PLUGIN_ROOT}` (the sub-agent's environment does not resolve it):
 
@@ -33,7 +33,7 @@ Launch prompt template. Fill every `<placeholder>` and substitute the absolute p
     - Setup: you run in your own worktree. Run `npm ci` first. Prepend <gh-dir> to PATH.
     - Guard: the comment guard rejects a `gh api` path under /issues/ or /pulls/ that contains a shell variable or subshell. Write numbers out literally.
     - Stop and report: you have no AskUserQuestion and no plan mode. At every point work-ticket asks the human, enters plan mode or waits for sign-off, end your turn with the questions or the plan in your report. The orchestrator answers and resumes you with SendMessage.
-    - Base: the branch base is origin/epic-<E>, not origin/main. Everywhere work-ticket says origin/main (plan reads, branch base, the reviewer's base ref, the mutation check's base, the step 7 conflict check) use origin/epic-<E>. Open the PR with `--base epic-<E>`; keep `Closes #<N>` in the body for the record.
+    - Base: the branch base is origin/epic-<E>, not origin/main. Everywhere work-ticket says origin/main (plan reads, branch base, the reviewer's base ref, the step 7 conflict check) use origin/epic-<E>. Open the PR with `--base epic-<E>`; keep `Closes #<N>` in the body for the record.
     - Attribution: the step 3 comment opens "Plan approved by the epic #<E> orchestrator session (Claude), standing in for the maintainer; not human-approved." The PR's plan heading is "Plan (approved by the epic #<E> orchestrator, not human-approved)". Every Decisions line names who decided; the maintainer's own decisions say "maintainer" and the date. With a Decision log section, entries for decisions the orchestrator makes say `Decided by: epic #<E> orchestrator, not human-approved`.
     - Standing decisions (do not reopen): <the maintainer's decisions from earlier gates and the orchestrator's from earlier children, each with its decider and, where a decision log entry exists, its id, or "none yet">.
     - Parallel work: <what sibling children own: files and tests, or "none">.

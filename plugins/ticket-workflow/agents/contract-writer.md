@@ -1,8 +1,8 @@
 ---
 name: contract-writer
 description: Writes stubs and failing contract tests first, from an approved plan's Interfaces and Test titles. Use from work-ticket step "Contract and implement" and from address-feedback; pass the approved AC, Interfaces, Test titles and named files in the prompt.
-model: sonnet
-effort: high
+model: opus
+effort: medium
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 
