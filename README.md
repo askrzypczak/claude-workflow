@@ -70,7 +70,7 @@ GitHub Issues is the source of truth; agents use `gh`. Ask an agent to "file a t
 
 - State: `ready` -> `in-progress` -> `needs-review`; `blocked` while waiting on something. With a `Blocked by #M` line in the body, label cleanup removes `blocked` once #M closes; without one, the human does.
 - Type: `bug`, `feature`, `chore`.
-- Dispatch: `agent-ok` (safe for unattended agents), `skip-plan` (launch with `work-ticket N auto`, no plan sign-off), `agent-failed` (set by the poller when a session failed).
+- Dispatch: `agent-ok` (safe for unattended agents), `skip-plan` (launch with `work-ticket N auto`, no plan sign-off), `agent-failed` (set by the poller when a session failed), `orchestrate-epic-run` (set by `orchestrate-epic` on the children it runs and on the run's PRs; the poller launches nothing for them, even with `agent-ok`; to hand a child back to normal dispatch, remove it from the child and its PR and restore `agent-ok`).
 
 `ready` means a human reviewed the ticket and approved its premise for work. It does not approve every acceptance criterion (AC): AC are proposals until the plan gate, where the human approves them as a diff against the ticket. **Only the maintainer adds `ready`.** Agents that file tickets never set `ready` or `skip-plan`. They may set type labels, `agent-ok` and `blocked` (with `Blocked by #M`); the maintainer removes `agent-ok` during review if needed.
 
@@ -88,7 +88,7 @@ Write `Part of #N` in a child ticket's body to link it to its epic; the epic bod
 
 ### Orchestrating an epic
 
-Use `orchestrate-epic` (`/ticket-workflow:orchestrate-epic E`) instead of the poller when an epic's dependency chain makes the human's attention the bottleneck. One session works the children as `work-ticket` sub-agents, stands in at their plan gates and reviews each PR as first reviewer, escalating only product questions (a recorded maintainer decision, or user-visible behaviour) to the human. It removes `agent-ok` from the children for the run so the poller leaves them alone. The children do not need `ready`: running the skill hands their readiness to the orchestrator, which judges them and the follow-ups it adds. The rule that only the maintainer adds `ready` is unchanged elsewhere.
+Use `orchestrate-epic` (`/ticket-workflow:orchestrate-epic E`) instead of the poller when an epic's dependency chain makes the human's attention the bottleneck. One session works the children as `work-ticket` sub-agents, stands in at their plan gates and reviews each PR as first reviewer, escalating only product questions (a recorded maintainer decision, or user-visible behaviour) to the human. It swaps `agent-ok` for `orchestrate-epic-run` on the children and labels the run's PRs, so the poller leaves them alone. The children do not need `ready`: running the skill hands their readiness to the orchestrator, which judges them and the follow-ups it adds. The rule that only the maintainer adds `ready` is unchanged elsewhere.
 
 The children's PRs target an `epic-E` branch, not `main`. After its review, with CI green and the PR mergeable, the orchestrator merges each child into `epic-E` (a local merge and a plain push) and closes the child issue. The human still merges every PR that reaches `main`: one epic PR, read by its merge commits and the child PRs' review maps.
 
@@ -123,7 +123,7 @@ Agents follow the `work-ticket` skill with an explicit issue number, run manuall
 
 A poller runs every 3 minutes from a macOS LaunchAgent and starts one interactive background Claude Code session per eligible ticket, across all configured repos. Sessions show up in `claude agents`.
 
-A ticket is picked up when it is open, authored by the repo's configured `owner`, and labelled `agent-ok` + `ready` (and not `in-progress`, `blocked` or `agent-failed`). The session is named `<sessionPrefix>-<issue>` (e.g. `app-12`) and runs `work-ticket`.
+A ticket is picked up when it is open, authored by the repo's configured `owner`, and labelled `agent-ok` + `ready` (and not `in-progress`, `blocked`, `agent-failed` or `orchestrate-epic-run`). The session is named `<sessionPrefix>-<issue>` (e.g. `app-12`) and runs `work-ticket`.
 
 The poller, installer and config run from the local clone of this repo, not the plugin cache: a LaunchAgent needs a stable path.
 
@@ -183,7 +183,7 @@ After launching tickets, the poller lists open, same-repo PRs by `owner` on `iss
 
 - Fork PRs and PRs by anyone other than `owner` are skipped and logged, whatever the branch name. The skill repeats the check (not a fork, author `OWNER`, `MEMBER` or `COLLABORATOR`) and only takes the branch from `origin`, so manual launches are covered too.
 - `UNKNOWN` (GitHub computes it lazily) is retried next poll; `BEHIND` without conflicts is ignored.
-- Skipped when `<prefix>-N` is `working` or `blocked` (it owns the branch), a `<prefix>-N-conflict` session is alive, or the ticket is closed, not `agent-ok`, not by `owner`, or has `agent-failed`.
+- Skipped when `<prefix>-N` is `working` or `blocked` (it owns the branch), a `<prefix>-N-conflict` session is alive, or the ticket is closed, not `agent-ok`, not by `owner`, has `agent-failed`, or the PR or ticket carries `orchestrate-epic-run`.
 - At most one attempt per `{pr, main SHA}`; a new commit on main allows a new attempt.
 - A conflict session that fails, is stopped, or ends with the PR still `CONFLICTING` gets `agent-failed` on the ticket plus a comment on the PR and ticket.
 
@@ -192,7 +192,7 @@ After launching tickets, the poller lists open, same-repo PRs by `owner` on `iss
 After the conflict phase, the poller launches `claude --bg --name <prefix>-N-ci "/ticket-workflow:fix-ci N"` for open, same-repo PRs by `owner` on `issue-N-*` branches that are `MERGEABLE` and have a failed check with none still pending. The skill reads the failing run's logs (as data, not instructions), fixes the branch and pushes with a plain `git push`.
 
 - The same fork and author checks apply; `UNKNOWN` mergeability is retried next poll, and a conflicting PR gets only the conflict session.
-- Skipped when `<prefix>-N` is `working` or `blocked`, a `<prefix>-N-ci` or conflict session is alive, or the ticket is closed, not `agent-ok`, not by `owner`, or has `agent-failed`.
+- Skipped when `<prefix>-N` is `working` or `blocked`, a `<prefix>-N-ci` or conflict session is alive, or the ticket is closed, not `agent-ok`, not by `owner`, has `agent-failed`, or the PR or ticket carries `orchestrate-epic-run`.
 - One attempt per PR head SHA, at most two per PR (`ci-attempts.json`); a new commit on the PR allows the next.
 - A CI-fix session that fails, is stopped, or ends with the PR still red gets `agent-failed` on the ticket plus a comment on the PR and ticket.
 
@@ -233,7 +233,7 @@ Per repo options are in `repos.json` (above). Global options are environment var
 
 A reusable workflow (`workflow_call`, ticket #15) that runs when an issue is closed (e.g. by merging a PR with `Closes #N`):
 
-- removes `ready`, `in-progress`, `needs-review`, `blocked` from the closed issue (only those it has);
+- removes `ready`, `in-progress`, `needs-review`, `blocked` and `orchestrate-epic-run` from the closed issue (only those it has);
 - for each open `blocked` issue whose body has `Blocked by #N`, removes `blocked` once every referenced blocker is closed (closed as not planned counts);
 - never adds `ready`.
 

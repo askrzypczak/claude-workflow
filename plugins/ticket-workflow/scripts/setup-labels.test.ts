@@ -44,7 +44,7 @@ describe("setup-labels.sh", () => {
   it("creates only missing labels and leaves existing ones untouched", () => {
     const r = run(["bug", "ready"]);
     expect(r.status).toBe(0);
-    expect(r.creates).toHaveLength(8);
+    expect(r.creates).toHaveLength(9);
     expect(r.creates.some((l) => l.startsWith("label create bug "))).toBe(false);
     expect(r.creates.some((l) => l.startsWith("label create ready "))).toBe(false);
     expect(r.creates.some((l) => l.startsWith("label create chore "))).toBe(true);
@@ -55,7 +55,7 @@ describe("setup-labels.sh", () => {
 
   it("does not treat a longer name as an existing label", () => {
     const r = run(["bugfix", "in-progress-2"]);
-    expect(r.creates).toHaveLength(10);
+    expect(r.creates).toHaveLength(11);
   });
 
   it("matches existing names case-insensitively (GitHub treats Bug and bug as one label)", () => {
@@ -75,14 +75,20 @@ describe("setup-labels.sh", () => {
 
   it("creates everything when none exist", () => {
     const r = run([]);
-    expect(r.creates).toHaveLength(10);
+    expect(r.creates).toHaveLength(11);
     expect(r.stdout).not.toContain("skipped");
+  });
+
+  it("creates orchestrate-epic-run with the rest of the label set", () => {
+    const r = run([]);
+    expect(r.status).toBe(0);
+    expect(r.creates.some((l) => l.startsWith("label create orchestrate-epic-run "))).toBe(true);
   });
 
   it("--update overwrites existing labels with --force and still creates missing ones", () => {
     const r = run(["bug"], "--update");
     expect(r.status).toBe(0);
-    expect(r.creates).toHaveLength(10);
+    expect(r.creates).toHaveLength(11);
     expect(r.creates.find((l) => l.startsWith("label create bug "))).toContain("--force");
     expect(r.creates.find((l) => l.startsWith("label create chore "))).not.toContain(
       "--force",

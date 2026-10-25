@@ -118,7 +118,7 @@ export function createIo(stateDir: string, dryRun: boolean): PollerIo {
     listPrs: (repo) =>
       ghJson(PrList, [
         "pr", "list", "--repo", repo, "--state", "open", "--limit", "100",
-        "--json", "number,headRefName,headRefOid,mergeable,isCrossRepository,author,statusCheckRollup",
+        "--json", "number,headRefName,headRefOid,mergeable,isCrossRepository,author,labels,statusCheckRollup",
       ]),
     viewIssue: (repo, n) =>
       ghJson(Issue, ["issue", "view", String(n), "--repo", repo, "--json", "author,labels,state"]),

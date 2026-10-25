@@ -31,7 +31,7 @@ export const Check = z.object({
 });
 export type Check = z.infer<typeof Check>;
 
-/** `gh pr list --json number,headRefName,headRefOid,mergeable,isCrossRepository,author,statusCheckRollup` */
+/** `gh pr list --json number,headRefName,headRefOid,mergeable,isCrossRepository,author,labels,statusCheckRollup` */
 export const PrList = z.array(
   z.object({
     number: z.number(),
@@ -40,6 +40,7 @@ export const PrList = z.array(
     mergeable: z.string(),
     isCrossRepository: z.boolean(),
     author: Author,
+    labels: Labels,
     statusCheckRollup: z.array(Check),
   }),
 );

@@ -89,6 +89,7 @@ const conflictPr = (number: number, n: number): PrRow => ({
   mergeable: "CONFLICTING",
   isCrossRepository: false,
   author: { login: "me" },
+  labels: [],
   statusCheckRollup: [],
 });
 const openIssue: Issue = { state: "OPEN", author: { login: "me" }, labels: ["agent-ok"] };
@@ -103,6 +104,7 @@ const redPr = (number: number, n: number, headRefOid = "head1"): PrRow => ({
   mergeable: "MERGEABLE",
   isCrossRepository: false,
   author: { login: "me" },
+  labels: [],
   statusCheckRollup: [PASSED, FAILED],
 });
 

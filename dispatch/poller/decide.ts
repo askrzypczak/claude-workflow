@@ -81,7 +81,9 @@ export function conflictRemains(pr: PrStatus): boolean {
 /** Whether an open `agent-ok` issue gets a ticket session (before the cap check). */
 export function ticketVerdict(issue: IssueRow, owner: string, launched: Launched): Verdict {
   const has = (label: string) => issue.labels.includes(label);
-  if (!has("ready") || has("in-progress") || has("blocked") || has("agent-failed")) return { ok: false };
+  if (!has("ready") || has("in-progress") || has("blocked") || has("agent-failed") || has("orchestrate-epic-run")) {
+    return { ok: false };
+  }
   if (issue.author.login !== owner) {
     return { ok: false, log: `#${issue.number}: author ${issue.author.login} is not ${owner}; skipping` };
   }
@@ -98,7 +100,8 @@ export function ticketPrompt(issue: IssueRow): string {
 /**
  * Whether a PR gets a conflict session, before its issue is read: an `issue-N-*` branch in
  * this repo (anyone can name a fork's branch that way), by the owner, CONFLICTING, while
- * ticket N's session is not active and no conflict session for N is live or tracked.
+ * ticket N's session is not active and no conflict session for N is live or tracked. A PR
+ * labelled `orchestrate-epic-run` is skipped.
  */
 export function conflictVerdict(
   pr: PrRow,
@@ -107,6 +110,7 @@ export function conflictVerdict(
   const match = /^issue-([0-9]+)-/.exec(pr.headRefName);
   if (!match) return { ok: false };
   const n = Number(match[1]);
+  if (pr.labels.includes("orchestrate-epic-run")) return { ok: false };
   const at = `#${n}: PR #${pr.number}`;
   if (pr.isCrossRepository) return { ok: false, log: `${at} is from a fork; skipping` };
   if (pr.author.login !== opts.owner) {
@@ -126,10 +130,16 @@ export function conflictVerdict(
   return { ok: true, n };
 }
 
-/** The ticket behind a PR session must be open, agent-ok, not agent-failed, by the owner. */
+/** The ticket behind a PR session must be open, agent-ok, not agent-failed or orchestrate-epic-run, by the owner. */
 export function prIssueVerdict(issue: Issue, n: number, owner: string, action: string): Verdict {
   if (issue.state !== "OPEN") return { ok: false, log: `#${n}: issue is not open; skipping ${action}` };
-  if (!issue.labels.includes("agent-ok") || issue.labels.includes("agent-failed")) return { ok: false };
+  if (
+    !issue.labels.includes("agent-ok") ||
+    issue.labels.includes("agent-failed") ||
+    issue.labels.includes("orchestrate-epic-run")
+  ) {
+    return { ok: false };
+  }
   if (issue.author?.login !== owner) {
     return { ok: false, log: `#${n}: author is not ${owner}; skipping ${action}` };
   }
@@ -152,7 +162,8 @@ export function ciState(checks: readonly Check[]): "red" | "pending" | "ok" {
 /**
  * Whether a PR gets a CI-fix session, before its issue is read: an `issue-N-*` branch in this
  * repo, by the owner, MERGEABLE with red checks, while ticket N's session is not active and no
- * CI-fix or conflict session for N is live or tracked.
+ * CI-fix or conflict session for N is live or tracked. A PR labelled `orchestrate-epic-run`
+ * is skipped.
  */
 export function ciVerdict(
   pr: PrRow,
@@ -161,6 +172,7 @@ export function ciVerdict(
   const match = /^issue-([0-9]+)-/.exec(pr.headRefName);
   if (!match) return { ok: false };
   const n = Number(match[1]);
+  if (pr.labels.includes("orchestrate-epic-run")) return { ok: false };
   const at = `#${n}: PR #${pr.number}`;
   if (pr.isCrossRepository) return { ok: false, log: `${at} is from a fork; skipping` };
   if (pr.author.login !== opts.owner) {

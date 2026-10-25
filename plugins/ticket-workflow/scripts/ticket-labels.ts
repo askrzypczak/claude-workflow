@@ -8,6 +8,9 @@ export const STATE_LABELS = [
   "blocked",
 ] as const;
 
+// Ownership, not state, but it also goes stale once the issue closes.
+const OWNERSHIP_LABELS = ["orchestrate-epic-run"] as const;
+
 export interface BlockedIssue {
   number: number;
   body: string;
@@ -59,7 +62,7 @@ export function cleanupClosedIssue(issue: number, gh: GhRunner): void {
     labels: { name: string }[];
   };
   const present = new Set(view.labels.map((l) => l.name));
-  const toRemove = STATE_LABELS.filter((l) => present.has(l));
+  const toRemove = [...STATE_LABELS, ...OWNERSHIP_LABELS].filter((l) => present.has(l));
   if (toRemove.length > 0) {
     gh(["issue", "edit", String(issue), "--remove-label", toRemove.join(",")]);
   }
