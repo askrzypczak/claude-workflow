@@ -15,6 +15,7 @@ Plugin `ticket-workflow`:
   - `resolve-conflicts`: merges `origin/main` into a conflicting `issue-N-*` PR branch, runs `npm run check`, publishes. Stops with `needs input` on semantic conflicts; never rebases or force-pushes.
   - `fix-ci`: reads the failing run's logs on an `issue-N-*` PR, fixes the cause, runs `npm run check`, pushes. Stops with `needs input` for infrastructure, secrets or required-check changes; never force-pushes.
   - `file-ticket`: files a ticket in the house format (type-prefixed title, Problem, Proposed change, checkable acceptance criteria, labels per [Ticket conventions](#ticket-conventions)) after verifying its claims and searching for duplicates. Never sets `ready` or `skip-plan`. After filing an epic with children it links them as sub-issues, runs the `spec-auditor` over the set, applies the findings it verifies to the tickets it just filed, and asks the human only about the unclear ones (the auditor itself writes nothing to GitHub).
+  - `orchestrate-epic`: runs an epic's children as `work-ticket` sub-agents into an `epic-E` branch, stands in at the plan gates (escalating only product questions), reviews and integrates each child PR, then opens one epic PR to `main` for the human to merge. See [Orchestrating an epic](#orchestrating-an-epic).
 - Subagents: `contract-writer` (sonnet, high) writes stubs and failing tests first; `implementer` (haiku, xhigh; sonnet high or opus per the approved plan) builds the code that makes them pass; `reviewer` (opus, high, read-only) reviews complex diffs; `spec-auditor` (opus, high, read-only) audits epics, and each ticket's plan, for necessity.
 - Hooks: a git guard and a comment guard (see [Requirements](#requirements) and [Trust rule](#trust-rule-for-public-repos)).
 
@@ -75,7 +76,7 @@ GitHub Issues is the source of truth; agents use `gh`. Ask an agent to "file a t
 
 ### One ticket, one worktree
 
-One ticket = one worktree = one branch (`issue-N-slug`) = one PR containing `Closes #N`. Agents may push their own `issue-N-*` branch; humans merge. Nobody pushes to `main`, force-pushes, or merges PRs from an agent session.
+One ticket = one worktree = one branch (`issue-N-slug`) = one PR containing `Closes #N`. Agents may push their own `issue-N-*` branch; humans merge. Nobody pushes to `main`, force-pushes, or merges PRs into `main` from an agent session. The one exception to merging is `orchestrate-epic`, which merges child branches into its `epic-E` branch (see [Orchestrating an epic](#orchestrating-an-epic)).
 
 ### Dependencies
 
@@ -84,6 +85,12 @@ Write `Blocked by #M` in the issue body (also `#3, #5` or `#3 and #5`; several l
 ### Epics
 
 Write `Part of #N` in a child ticket's body to link it to its epic; the epic body lists its children. Unlike `Blocked by`, it carries no state (label cleanup ignores it). For an epic, `file-ticket` also links each child as a native sub-issue (GitHub's sub-issues API), which drives the epic's progress indicator; linking the children of epics filed earlier is done by hand.
+
+### Orchestrating an epic
+
+Use `orchestrate-epic` (`/ticket-workflow:orchestrate-epic E`) instead of the poller when an epic's dependency chain makes the human's attention the bottleneck. One session works the children as `work-ticket` sub-agents, stands in at their plan gates and reviews each PR as first reviewer, escalating only product questions (a recorded maintainer decision, or user-visible behaviour) to the human. It removes `agent-ok` from the children for the run so the poller leaves them alone.
+
+The children's PRs target an `epic-E` branch, not `main`. After its review, with CI green and the PR mergeable, the orchestrator merges each child into `epic-E` (a local merge and a plain push) and closes the child issue. The human still merges every PR that reaches `main`: one epic PR, read by its merge commits and the child PRs' review maps.
 
 ### Architecture rules
 
