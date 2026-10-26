@@ -210,7 +210,8 @@ If a session fails, is stopped, or ends without handing the ticket off, the poll
 | One session's output | `claude logs <prefix>-<issue>` |
 | Stop a session | `claude stop <prefix>-<issue>` |
 | What would launch now | `dispatch/agent-poller.sh --dry-run` |
-| Pause everything | `dispatch/install-launchd.sh uninstall` |
+| Pause everything | `dispatch/install-launchd.sh pause` |
+| Resume | `dispatch/install-launchd.sh resume` |
 
 ### Options
 

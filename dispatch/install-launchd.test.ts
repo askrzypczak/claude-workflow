@@ -572,7 +572,7 @@ describe("install-launchd.sh", () => {
     it("resume without an installed plist exits non-zero, points at install and calls no launchctl", () => {
       const r = run("resume");
       expect(r.status).not.toBe(0);
-      expect(r.stderr).toMatch(/install/);
+      expect(r.stderr).toMatch(/install-launchd\.sh install\b/);
       expect(calls()).toStrictEqual([]);
     });
 
