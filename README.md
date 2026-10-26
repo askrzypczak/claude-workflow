@@ -64,7 +64,7 @@ A consuming project needs:
 
 ## Ticket conventions
 
-GitHub Issues is the source of truth; agents use `gh`. Ask an agent to "file a ticket for X" and the `file-ticket` skill writes it in this format: a `bug:`, `feature:` or `chore:` title prefix, Problem, Proposed change and checkable acceptance criteria sections, and the labels below.
+GitHub Issues is the source of truth; agents use `gh`. Ask an agent to "file a ticket for X" and the `file-ticket` skill writes it in this format: a `bug:`, `feature:`, `chore:` or `spike:` title prefix, Problem, Proposed change and checkable acceptance criteria sections, and the labels below.
 
 ### Labels
 
@@ -76,7 +76,7 @@ GitHub Issues is the source of truth; agents use `gh`. Ask an agent to "file a t
 
 ### One ticket, one worktree
 
-One ticket = one worktree = one branch (`issue-N-slug`) = one PR containing `Closes #N`. Agents may push their own `issue-N-*` branch; humans merge. Nobody pushes to `main`, force-pushes, or merges PRs into `main` from an agent session. The one exception to merging is `orchestrate-epic`, which merges child branches into its `epic-E` branch (see [Orchestrating an epic](#orchestrating-an-epic)).
+One ticket = one worktree = one branch (`issue-N-slug`) = one PR containing `Closes #N`. A spike (`spike:` title, `chore` label) is the exception: its output is a findings comment on the ticket, with no worktree, branch or PR, and the human closes it on accepting the findings. Agents may push their own `issue-N-*` branch; humans merge. Nobody pushes to `main`, force-pushes, or merges PRs into `main` from an agent session. The one exception to merging is `orchestrate-epic`, which merges child branches into its `epic-E` branch (see [Orchestrating an epic](#orchestrating-an-epic)).
 
 ### Dependencies
 
@@ -90,7 +90,7 @@ Write `Part of #N` in a child ticket's body to link it to its epic; the epic bod
 
 Use `orchestrate-epic` (`/ticket-workflow:orchestrate-epic E`) instead of the poller when an epic's dependency chain makes the human's attention the bottleneck. One session works the children as `work-ticket` sub-agents, stands in at their plan gates and reviews each PR as first reviewer through a fresh fable sub-agent whose report it judges, keeping the final call, escalating only product questions (a recorded maintainer decision, or user-visible behaviour) to the human. The children read standing decisions and sibling ownership from a brief, a local file outside git deleted at the end, instead of long launch prompts. It swaps `agent-ok` for `orchestrate-epic-run` on the children and labels the run's PRs, so the poller leaves them alone. The children do not need `ready`: running the skill hands their readiness to the orchestrator, which judges them and the follow-ups it adds. The rule that only the maintainer adds `ready` is unchanged elsewhere.
 
-The children's PRs target an `epic-E` branch, not `main`. After its review, with CI green and the PR mergeable, the orchestrator runs `plugins/ticket-workflow/scripts/integrate-child.sh` to merge each child into `epic-E` (a local merge and a plain push) and close the child issue. The human still merges every PR that reaches `main`: one epic PR, read by its merge commits and the child PRs' review maps.
+The children's PRs target an `epic-E` branch, not `main`. After its review, with CI green and the PR mergeable, the orchestrator runs `plugins/ticket-workflow/scripts/integrate-child.sh` to merge each child into `epic-E` (a local merge and a plain push) and close the child issue. The human still merges every PR that reaches `main`: one epic PR, read by its merge commits and the child PRs' review maps. Spike children are not run inside an epic: the orchestrator leaves them out, and the human works each on its own with `work-ticket`; children blocked by one wait until it closes.
 
 ### Architecture rules
 
@@ -175,7 +175,7 @@ Migrating from an older single-repo poller: pass `--legacy-label <its launchd la
 1. Write and review the ticket, then add `ready`. Within ~3 minutes a session starts.
 2. In `claude agents`, a `blocked` session is waiting for you: usually plan sign-off, also questions and permission prompts. Use `claude attach <prefix>-<issue>`, answer, and leave it running.
 3. For easy tickets add `skip-plan`: the session runs `work-ticket N auto` and skips sign-off (it still asks if the ticket is ambiguous or risky).
-4. When it finishes, the ticket is `needs-review` with a PR. Review, then use `address-feedback`.
+4. When it finishes, the ticket is `needs-review` with a PR (a spike: with a findings comment and no PR). Review, then use `address-feedback`.
 
 ### Conflict resolution
 
@@ -264,6 +264,8 @@ The workflow checks out this public repo, sets up Node 24 itself and runs `plugi
 7. Open an active (non-draft) PR with CI green and no conflicts with main (a conflicting branch gets `origin/main` merged in first); its body links the approved plan comment and carries only its AC diff, Interfaces and Test titles, a review map and a Test proof; with a Decision log section the log is committed in its own commit after the code and the body links its entries, or says `Decision log: none` with a reason.
 8. Human review, then address-feedback.
 9. Human merges.
+
+A spike (a plan whose output is a findings comment and no repo change) takes the place of steps 3 to 9: experiments run outside the repo, follow-up tickets are filed, the findings are posted on the ticket and it is handed off `needs-review` with no PR; the human reviews the findings and closes the ticket.
 
 ## License
 

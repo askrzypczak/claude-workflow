@@ -27,7 +27,7 @@ Write every question for a reader who has just switched in from another session 
 - When the options are concrete wording, show each in the option's `preview` (single-select questions only).
 
 ## 4. Size it
-One ticket is one PR (one worktree, one branch). If the request is more than that (separable parts that would each pass the repo's checks alone), file an epic plus children:
+One ticket is one PR (one worktree, one branch); a spike is one findings comment (step 5). If the request is more than that (separable parts that would each pass the repo's checks alone), file an epic plus children:
 1. File the epic first (Problem and the overall plan, with the children added to its body afterwards).
 2. File each child with `Part of #E` in its body, and `Blocked by #M` plus the `blocked` label where one child needs another.
 3. Edit the epic body (`gh issue edit E --body-file <file>`) to list the children.
@@ -40,7 +40,7 @@ One ticket is one PR (one worktree, one branch). If the request is more than tha
    - Ask the human, in one `AskUserQuestion` round under step 3's question rules, except that each question names the filed ticket (`#M`) it concerns in its header and first sentence (rewrite the auditor's questions to them), only about: a verdict you disagree with or cannot verify; an auditor question you cannot settle; a verdict that would drop or merge a whole filed ticket (closing is the human's: apply the surviving edits, leave the closing to them and name the ticket in the report). Then apply the answers.
 
 ## 5. Write
-Title: prefixed with the type, `bug:`, `feature:` or `chore:`. Body, in this shape:
+Title: prefixed with the type, `bug:`, `feature:`, `chore:` or `spike:`. Body, in this shape:
 
     ## Problem
     What is wrong or missing, with evidence: quoted behaviour, file paths and symbol names, source links.
@@ -53,6 +53,7 @@ Title: prefixed with the type, `bug:`, `feature:` or `chore:`. Body, in this sha
 
 - Each acceptance criterion (AC) is checkable from the diff, a command or a test, and covers only what the problem needs. Nice-to-haves go in the body marked optional, not in AC: the plan gate treats AC as the scope.
 - Tickets outlive the code they describe, so point at code in ways that survive edits. Name files by path and code by symbol (function, section heading, config key), not by line number or line range. Do not paste code from the repo: describe what it does, and quote only external text, error output or a short phrase that identifies the spot. Say what must be true or what is wrong (a behaviour), not where the lines currently sit. The implementer re-reads the code at plan time, so a reference only has to find the spot, not stay exact.
+- A **spike** answers questions instead of changing the repo. Title it `spike: ...` with the `chore` label. The Problem lists the questions and why they are open; the Proposed change names the experiment or source for each. The acceptance criteria ask for a findings comment on the ticket: each question answered with an experiment or a cited source, a recommendation, and follow-up tickets for the work it recommends. A decision the findings lead to is logged by the follow-up ticket that acts on it, so a spike's AC never ask for a decision-log entry, a doc or any other repo change; `work-ticket` works a spike with no branch or PR.
 - Add `Part of #N` and `Blocked by #M` lines (one per line, in the body) when they apply.
 - When the project has an Architecture section (a heading titled `Architecture` in its root `CLAUDE.md`, read from `origin/main`) and the Proposed change adds a workspace dependency, a cross-package import or a lint exception, name the port and adapter it goes through, or say why none applies. If the section does not settle which, ask in step 3.
 - Follow the repo's public-repo rules from its CLAUDE.md, if it has any: no home-directory paths, personal emails, tokens or names of private projects; refer to people by role ("the human", "the maintainer"). Re-read the body for these before filing.
@@ -61,7 +62,7 @@ Write the body to a temporary file outside the repo and pass it with `--body-fil
 
 ## 6. Label
 Labels follow the README's "Ticket conventions":
-- The type label: `bug`, `feature` or `chore`.
+- The type label: `bug`, `feature` or `chore` (a spike takes `chore`).
 - `agent-ok` when the change is safe for an unattended agent: the premise is verified, every AC is checkable by a command or test, nothing touches security, data handling or shared code, and no question is open.
 - `blocked`, together with a `Blocked by #M` line.
 - **Never `ready` or `skip-plan`.** Those are the maintainer's.
