@@ -216,3 +216,14 @@ describe("integrate-child.sh", () => {
     expect(ghLog()).toEqual([]);
   });
 });
+
+describe("integrate-child.sh after the merge", () => {
+  it("exits 3 when closing the issue fails after the push, with origin's epic-E at the merge commit", () => {
+    writeFileSync(join(bin, "gh"), "#!/usr/bin/env bash\nexit 1\n");
+    const r = runStandard();
+    expect(r.status).toBe(3);
+    expect(git(origin, "rev-parse", `refs/heads/${EPIC_BRANCH}`)).toBe(
+      git(epic, "rev-parse", "HEAD"),
+    );
+  });
+});
