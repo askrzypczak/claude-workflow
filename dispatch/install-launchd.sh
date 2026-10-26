@@ -218,5 +218,9 @@ case "$cmd" in
     echo "Removed."
     report_leftovers
     ;;
+  pause | resume | status)
+    echo "not implemented" >&2
+    exit 1
+    ;;
   *) echo "Usage: $0 [install|uninstall] [--yes] [--purge] ..." >&2; exit 2 ;;
 esac

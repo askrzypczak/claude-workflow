@@ -28,7 +28,10 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "install-"));
   writeFileSync(
     p("launchctl"),
-    `#!/usr/bin/env bash\necho "$*" >>"${p("launchctl.log")}"\necho "launchctl $*" >>"${p("order.log")}"\n`,
+    `#!/usr/bin/env bash\necho "$*" >>"${p("launchctl.log")}"\necho "launchctl $*" >>"${p("order.log")}"\n` +
+      // print-disabled prints the fixture if present; launchctl-fail-<subcommand> makes that subcommand fail.
+      `if [ "$1" = print-disabled ] && [ -f "${p("print-disabled.txt")}" ]; then cat "${p("print-disabled.txt")}"; fi\n` +
+      `if [ -f "${p("launchctl-fail-")}$1" ]; then echo "launchctl $1 failed" >&2; exit 5; fi\n`,
   );
   chmodSync(p("launchctl"), 0o755);
   // Fake poller: records its args, prints a recognisable line, fails if poller-fail exists.
@@ -482,6 +485,146 @@ describe("install-launchd.sh", () => {
       expect(r.stdout).toMatch(/Purged/);
       expect(r.stdout).toMatch(/claude stop app-7\b/);
       expect(r.stdout).toMatch(/claude plugin uninstall ticket-workflow/);
+    });
+  });
+
+  describe("pause, resume and status", () => {
+    const uid = () => String(process.getuid!());
+    const job = () => `gui/${uid()}/${LABEL}`;
+    const plist = () => p("agents", `${LABEL}.plist`);
+    const installPlist = () => writeFileSync(plist(), "installed plist");
+    const failLaunchctl = (sub: string) => writeFileSync(p(`launchctl-fail-${sub}`), "");
+    const printDisabled = (state: "enabled" | "disabled") =>
+      writeFileSync(
+        p("print-disabled.txt"),
+        `disabled services = {\n\t\t"com.apple.other" => enabled\n\t\t"${LABEL}" => ${state}\n\t}\n\nlogin item associations = {\n\t}\n`,
+      );
+    const statusLines = (stdout: string) => stdout.split("\n").filter(Boolean);
+
+    it("pause disables then boots out the poller and keeps the plist", () => {
+      installPlist();
+      const r = run("pause");
+      expect(r.status, r.stderr).toBe(0);
+      const c = calls();
+      const disable = c.indexOf(`disable ${job()}`);
+      const bootout = c.indexOf(`bootout ${job()}`);
+      expect(disable, c.join("\n")).toBeGreaterThanOrEqual(0);
+      expect(bootout, c.join("\n")).toBeGreaterThan(disable);
+      expect(readFileSync(plist(), "utf8")).toBe("installed plist");
+    });
+
+    it("pause succeeds when the job is not loaded", () => {
+      installPlist();
+      failLaunchctl("bootout");
+      const r = run("pause");
+      expect(r.status, r.stderr).toBe(0);
+      expect(calls()).toContain(`bootout ${job()}`);
+    });
+
+    it("pause lists claude stop for each recorded session", () => {
+      installPlist();
+      mkdirSync(p("state", "repos", "app"), { recursive: true });
+      mkdirSync(p("state", "repos", "web"), { recursive: true });
+      const app = '{"7":{"name":"app-7","at":1},"9":{"name":"app-9","at":2}}';
+      const web = '{"3":{"name":"web-3","at":1}}';
+      writeFileSync(p("state", "repos", "app", "launched.json"), app);
+      writeFileSync(p("state", "repos", "web", "launched.json"), web);
+      const r = run("pause");
+      expect(r.status, r.stderr).toBe(0);
+      for (const n of ["app-7", "app-9", "web-3"])
+        expect(r.stdout).toMatch(new RegExp(`claude stop ${n}\\b`));
+      expect(calls()).toStrictEqual([`disable ${job()}`, `bootout ${job()}`]);
+      expect(readFileSync(p("state", "repos", "app", "launched.json"), "utf8")).toBe(app);
+      expect(readFileSync(p("state", "repos", "web", "launched.json"), "utf8")).toBe(web);
+    });
+
+    it("resume enables then bootstraps the installed plist without npm ci or the dry run", () => {
+      installPlist();
+      const r = run("resume");
+      expect(r.status, r.stderr).toBe(0);
+      const c = calls();
+      const enable = c.indexOf(`enable ${job()}`);
+      const bootstrap = c.indexOf(`bootstrap gui/${uid()} ${plist()}`);
+      expect(enable, c.join("\n")).toBeGreaterThanOrEqual(0);
+      expect(bootstrap, c.join("\n")).toBeGreaterThan(enable);
+      expect(order().filter((l) => l.startsWith("npm") || l.startsWith("poller"))).toStrictEqual([]);
+    });
+
+    it("resume succeeds when the job is already loaded", () => {
+      installPlist();
+      failLaunchctl("bootstrap");
+      const r = run("resume");
+      expect(r.status, r.stderr).toBe(0);
+      expect(calls()).toContain(`bootstrap gui/${uid()} ${plist()}`);
+    });
+
+    it("resume exits non-zero when bootstrap fails and the job is not loaded", () => {
+      installPlist();
+      failLaunchctl("bootstrap");
+      failLaunchctl("print");
+      const r = run("resume");
+      expect(r.status).not.toBe(0);
+      const c = calls();
+      expect(c).toContain(`enable ${job()}`);
+      expect(c).toContain(`bootstrap gui/${uid()} ${plist()}`);
+    });
+
+    it("resume without an installed plist exits non-zero, points at install and calls no launchctl", () => {
+      const r = run("resume");
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toMatch(/install/);
+      expect(calls()).toStrictEqual([]);
+    });
+
+    it("status reports an installed, loaded, enabled job and exits 0", () => {
+      installPlist();
+      printDisabled("enabled");
+      const r = run("status");
+      expect(r.status, r.stderr).toBe(0);
+      expect(statusLines(r.stdout)).toStrictEqual([
+        `Installed: yes (${plist()})`,
+        "Loaded:    yes",
+        "Disabled:  no",
+      ]);
+    });
+
+    it("status reports a missing, unloaded, disabled job and exits 0", () => {
+      failLaunchctl("print");
+      printDisabled("disabled");
+      const r = run("status");
+      expect(r.status, r.stderr).toBe(0);
+      expect(statusLines(r.stdout)).toStrictEqual([
+        "Installed: no",
+        "Loaded:    no",
+        "Disabled:  yes",
+      ]);
+    });
+
+    it("pause, resume and status reject --purge, --legacy-label and --migrate-state with exit 2 before calling launchctl", () => {
+      installPlist();
+      const flags = [
+        ["--purge"],
+        ["--legacy-label", "com.old.job"],
+        ["--migrate-state", p("old"), "app"],
+      ];
+      for (const cmd of ["pause", "resume", "status"]) {
+        for (const f of flags) {
+          rmSync(p("launchctl.log"), { force: true });
+          const r = run(cmd, ...f);
+          expect(r.status, `${cmd} ${f[0]}`).toBe(2);
+          expect(calls(), `${cmd} ${f[0]}`).toStrictEqual([]);
+        }
+      }
+    });
+
+    it("install enables the job before bootstrapping it", () => {
+      const r = run("install", "--yes");
+      expect(r.status, r.stderr).toBe(0);
+      const c = calls();
+      const enable = c.indexOf(`enable ${job()}`);
+      const bootstrap = c.findIndex((l) => l.startsWith("bootstrap "));
+      expect(enable, c.join("\n")).toBeGreaterThanOrEqual(0);
+      expect(bootstrap, c.join("\n")).toBeGreaterThan(enable);
     });
   });
 });
