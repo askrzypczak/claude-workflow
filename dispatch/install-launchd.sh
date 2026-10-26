@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Install (or remove) the LaunchAgent that runs dispatch/agent-poller.sh every 3 minutes
+# Install, remove, pause or resume the LaunchAgent that runs dispatch/agent-poller.sh every 3 minutes
 # for every repo in the config. Run from the main clone, not a worktree. See dispatch/README.md.
-# Usage: dispatch/install-launchd.sh [install|uninstall] [--yes] [--purge] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]...
+# Usage: dispatch/install-launchd.sh [install|uninstall|pause|resume|status] [--yes] [--purge] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]...
+#   pause                     stop polling until resume: disable and boot out the poller (also across logins and reboots).
+#                             The plist stays. Sessions already running are not stopped; they are listed with claude stop.
+#   resume                    enable and bootstrap the installed plist, so the poller runs now. No npm ci or dry run.
+#   status                    print whether the plist is installed and whether the job is loaded and disabled. Exits 0.
 #   --yes                     install without the confirmation prompt (the dry run is still shown, and a
 #                             failing dry run still aborts). Without it, install runs the poller with
 #                             --dry-run, prints what it would launch and asks "Install and start polling? [y/N]".
@@ -52,12 +56,18 @@ while [ $# -gt 0 ]; do
         echo "Invalid --migrate-state PREFIX '$3': use letters, digits, '_' and '-' only (a sessionPrefix)." >&2; exit 2
       fi
       mig_dirs+=("$2"); mig_prefixes+=("$3"); shift 3 ;;
-    *) echo "Usage: $0 [install|uninstall] [--yes] [--purge] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]..." >&2; exit 2 ;;
+    *) echo "Usage: $0 [install|uninstall|pause|resume|status] [--yes] [--purge] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]..." >&2; exit 2 ;;
   esac
 done
 if [ "$purge" = 1 ] && [ "$cmd" != uninstall ]; then
   echo "--purge only applies to uninstall." >&2; exit 2
 fi
+case "$cmd" in
+  pause | resume | status)
+    [ ${#legacy[@]} -eq 0 ] || { echo "--legacy-label does not apply to $cmd." >&2; exit 2; }
+    [ ${#mig_dirs[@]} -eq 0 ] || { echo "--migrate-state does not apply to $cmd." >&2; exit 2; }
+    ;;
+esac
 
 remove_legacy() {
   local l
@@ -121,11 +131,9 @@ write_plist() {
   mv -f "$tmp" "$PLIST" || { rm -f "$tmp"; return 1; }
 }
 
-# Print what uninstall does not remove (and, with --purge, remove the files it owns).
-report_leftovers() {
-  local f names n log="$LOG_DIR/claude-workflow-poller.log" found=0 nojq=0
-  # Sessions are read before a purge deletes the state dir.
-  names=""
+# Print the sessions recorded in each repo's launched.json, each with its stop command.
+list_sessions() {
+  local f names="" n found=0 nojq=0
   for f in "$STATE_DIR"/repos/*/launched.json; do
     [ -f "$f" ] || continue
     if command -v jq >/dev/null 2>&1; then
@@ -134,6 +142,21 @@ report_leftovers() {
       nojq=1
     fi
   done
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if [ "$found" = 0 ]; then echo "  Sessions possibly still running (stop each if you want it gone):"; found=1; fi
+    echo "    claude stop $n"
+  done <<<"$names"
+  if [ "$nojq" = 1 ]; then
+    echo "  (jq not found; check $STATE_DIR/repos/*/launched.json for live sessions)"
+  fi
+}
+
+# Print what uninstall does not remove (and, with --purge, remove the files it owns).
+report_leftovers() {
+  local log="$LOG_DIR/claude-workflow-poller.log" sessions
+  # Sessions are read before a purge deletes the state dir.
+  sessions="$(list_sessions)"
   if [ "$purge" = 1 ]; then
     rm -rf "${STATE_DIR:?}"
     rm -f "$CONFIG" "$log"
@@ -146,14 +169,7 @@ report_leftovers() {
     echo "  Log:       $log"
     echo "  (rerun with --purge to delete these three)"
   fi
-  while IFS= read -r n; do
-    [ -n "$n" ] || continue
-    if [ "$found" = 0 ]; then echo "  Sessions possibly still running (stop each if you want it gone):"; found=1; fi
-    echo "    claude stop $n"
-  done <<<"$names"
-  if [ "$nojq" = 1 ]; then
-    echo "  (jq not found; check $STATE_DIR/repos/*/launched.json for live sessions)"
-  fi
+  if [ -n "$sessions" ]; then printf '%s\n' "$sessions"; fi
   echo "  Plugin (remove if you no longer want it):"
   echo "    claude plugin uninstall ticket-workflow"
   echo "    claude plugin marketplace remove askrzypczak-plugins"
@@ -208,6 +224,8 @@ case "$cmd" in
     migrate_state
     write_plist || exit 1
     "$LAUNCHCTL" bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+    # A label that pause disabled refuses bootstrap, so enable it first.
+    "$LAUNCHCTL" enable "$DOMAIN/$LABEL"
     "$LAUNCHCTL" bootstrap "$DOMAIN" "$PLIST"
     echo "Installed. Log: $LOG_DIR/claude-workflow-poller.log"
     ;;
@@ -218,5 +236,44 @@ case "$cmd" in
     echo "Removed."
     report_leftovers
     ;;
-  *) echo "Usage: $0 [install|uninstall] [--yes] [--purge] ..." >&2; exit 2 ;;
+  pause)
+    "$LAUNCHCTL" disable "$DOMAIN/$LABEL"
+    "$LAUNCHCTL" bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+    echo "Polling is paused: the poller is stopped and disabled, also across logins and reboots."
+    echo "Sessions already running are not stopped."
+    list_sessions
+    echo "Resume with: dispatch/install-launchd.sh resume"
+    ;;
+  resume)
+    if [ ! -f "$PLIST" ]; then
+      echo "No LaunchAgent at $PLIST; run dispatch/install-launchd.sh install." >&2
+      exit 1
+    fi
+    "$LAUNCHCTL" enable "$DOMAIN/$LABEL"
+    if ! boot_err="$("$LAUNCHCTL" bootstrap "$DOMAIN" "$PLIST" 2>&1)"; then
+      # Bootstrap also fails when the job is already loaded, which is not a failure here.
+      if "$LAUNCHCTL" print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
+        echo "Already loaded: the poller was not restarted; it runs every 3 minutes."
+        exit 0
+      fi
+      printf '%s\n' "$boot_err" >&2
+      exit 1
+    fi
+    echo "Resumed: the poller runs now and every 3 minutes. Log: $LOG_DIR/claude-workflow-poller.log"
+    ;;
+  status)
+    if [ -f "$PLIST" ]; then echo "Installed: yes ($PLIST)"; else echo "Installed: no"; fi
+    loaded=no
+    if "$LAUNCHCTL" print "$DOMAIN/$LABEL" >/dev/null 2>&1; then loaded=yes; fi
+    # A failing print-disabled reads as "not disabled".
+    disabled_list="$("$LAUNCHCTL" print-disabled "$DOMAIN" 2>/dev/null || true)"
+    needle="\"$LABEL\" => disabled"
+    disabled=no
+    case "$disabled_list" in
+      *"$needle"*) disabled=yes ;;
+    esac
+    echo "Loaded:    $loaded"
+    echo "Disabled:  $disabled"
+    ;;
+  *) echo "Usage: $0 [install|uninstall|pause|resume|status] [--yes] [--purge] ..." >&2; exit 2 ;;
 esac
