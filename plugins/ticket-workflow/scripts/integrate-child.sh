@@ -24,7 +24,7 @@ git fetch origin --quiet
 git rev-parse -q --verify "refs/remotes/origin/$child_branch" >/dev/null \
   || { echo "origin/$child_branch not found" >&2; exit 2; }
 
-if ! git merge --no-ff -m "Merge PR #$pr ($child_branch) into $epic_branch" "origin/$child_branch"; then
+if ! git merge --no-ff -m "Merge $child_branch into $epic_branch (#$issue, PR #$pr)" "origin/$child_branch"; then
   if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
     echo "Merge conflict in:" >&2
     git diff --name-only --diff-filter=U >&2

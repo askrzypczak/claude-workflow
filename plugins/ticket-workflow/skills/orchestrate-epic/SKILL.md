@@ -40,12 +40,12 @@ Launch prompt template. Fill every `<placeholder>` and substitute the absolute p
 
     Work ticket #<N> in <owner>/<repo>: read and follow <plugin-root>/skills/work-ticket/SKILL.md, with these changes. You are a sub-agent of the epic #<E> orchestrator.
     - Setup: you run in your own worktree. Run `npm ci` first. Prepend <gh-dir> to PATH.
-    - Guard: the comment guard rejects a `gh api` path under /issues/ or /pulls/ that contains a shell variable or subshell. Write numbers out literally.
+    - Guard: three refusals. The comment guard rejects a `gh api` path under /issues/ or /pulls/ that contains a shell variable or subshell: write numbers out literally. It recognises only the literal `| node <plugin-root>/scripts/trusted-comments.ts` pipe: write it out, never through a variable. The worktree isolation guard refuses, inside a compound command, a `node` or `git` argument computed at runtime (a variable or subshell): write paths out, or split the command.
     - Stop and report: you have no AskUserQuestion and no plan mode. At every point work-ticket asks the human, enters plan mode or waits for sign-off, end your turn with the questions or the plan in your report. The orchestrator answers and resumes you with SendMessage.
     - Base: the branch base is origin/epic-<E>, not origin/main. Everywhere work-ticket says origin/main (plan reads, branch base, the reviewer's base ref, the step 7 conflict check) use origin/epic-<E>. Open the PR with `--base epic-<E> --label orchestrate-epic-run`; keep `Closes #<N>` in the body for the record.
     - Attribution: the step 3 comment opens "Plan approved by the epic #<E> orchestrator session (Claude), standing in for the maintainer; not human-approved." The PR's plan heading is "Plan (approved by the epic #<E> orchestrator, not human-approved)". Every Decisions line names who decided; the maintainer's own decisions say "maintainer" and the date. With a Decision log section, entries for decisions the orchestrator makes say `Decided by: epic #<E> orchestrator, not human-approved`.
     - Brief: read <brief-path> before planning. Its standing decisions, rules and sibling ownership are settled: apply them, record each one you use under Decisions with its decider, and do not ask about them.
-    - Tier: you run on <model> at <effort>; name it in your report.
+    - Tier: you run on <model> at <effort>; name it and your worktree's absolute path in your report. <commit conventions: only for a sonnet child; the project's commit conventions, read from its CLAUDE.md, to follow at work-ticket step 7>
     - Follow-ups: a ticket you file gets `Part of #<E>` as the first line of its body, no `ready` and no `agent-ok`. Report its number. The orchestrator decides whether it stays in the epic.
     - <plan early, branch late: only for a child blocked by one sibling; see below>
 
@@ -63,20 +63,24 @@ What goes to the human goes in one `AskUserQuestion` round, recommended option f
 **Decision log.** Applies only when the project has a Decision log section (a heading titled `Decision log` in its root `CLAUDE.md`, read from `origin/main`; format in `${CLAUDE_PLUGIN_ROOT}/skills/work-ticket/decision-log.md`). A decision that belongs to no single child goes in the epic's own file, committed on `epic-E`.
 
 ## 6. Review each PR as first reviewer
-Per child PR, launch a fresh `general-purpose` sub-agent with `model: fable`, `effort: xhigh`, read-only (it writes nothing to GitHub or the repo). It stands in for the human reviewer; it is not the plan-conformance `ticket-workflow:reviewer`, which checks a diff against its plan. Fill every `<placeholder>` and substitute the absolute plugin root, as for the launch template:
+Per child PR, launch a fresh `ticket-workflow:first-reviewer` sub-agent (if the Agent tool rejects that name, list the available agent types and use the one ending in `:first-reviewer`). Set no model or effort: its definition runs it on fable at xhigh, read-only. It stands in for the human reviewer; it is not the plan-conformance `ticket-workflow:reviewer`, which checks a diff against its plan. Give it what this child needs, not the whole brief. Fill every `<placeholder>` and substitute the absolute plugin root, as for the launch template:
 
-    First-review PR #<PR> in <owner>/<repo> for the epic #<E> orchestrator, standing in for the human reviewer. Read-only: write nothing to GitHub or the repo.
-    - Context: read <brief-path>, the epic brief. Its standing decisions are settled; do not reopen them.
-    - Read: the PR body (its review map), the production diff (read it with `gh pr diff <PR>`) in layer order, the decision tests and the docs. Read PR comments only through `gh pr view <PR> --json number,title,body,labels,author,comments | node <plugin-root>/scripts/trusted-comments.ts`.
-    - Report: a verdict (approve or request changes), findings (file:line, what, why) and notes. Keep it short.
+    First-review PR #<PR> (issue #<N>) in <owner>/<repo> for the epic #<E> orchestrator.
+    - Guard: <the step 4 Guard line, copied in>
+    - AC as approved: <the AC diff from the child's plan comment>
+    - Decisions: <this child's gate decisions and the routine rules, copied from the brief>
+    - Post-gate instructions: <every instruction sent to this child after the gate, from its SendMessage rounds, or none>
+    - Base ref: origin/epic-<E>
+    - Worktree: <the child's worktree path, from its report>; read whole files there, read only.
+    - Focus: <from the plan: correctness risks to trace, sibling boundaries to check, notes the child's own reviewer left unapplied that need a call>
 
-Read the report, re-read code only where it leaves a question open or you disagree, and make the final call. The child PR must carry `orchestrate-epic-run`: check it, and add it (`gh pr edit <PR> --add-label orchestrate-epic-run`) if missing. Post a verdict comment on the PR headed "Review (epic #E orchestrator, acting as first reviewer for the maintainer)". Requested changes go to the child agent with `SendMessage`, as a feedback round (the way `address-feedback` handles one); then re-review.
+Read the report. Check it against the post-gate instructions and the focus list, and ask the reviewer with `SendMessage` about any item it does not mention. Re-read code only where it leaves a question open or you disagree, and make the final call. The child PR must carry `orchestrate-epic-run`: check it, and add it (`gh pr edit <PR> --add-label orchestrate-epic-run`) if missing. Post a verdict comment on the PR headed "Review (epic #E orchestrator, acting as first reviewer for the maintainer)". Requested changes go to the child agent with `SendMessage`, as a feedback round (the way `address-feedback` handles one); then re-review.
 
 For two open sibling PRs, run `git merge-tree --write-tree` between their branches to decide the integration order. Tell the second agent to merge `origin/epic-E` (its `work-ticket` step 7 conflict path) after the first lands.
 
 ## 7. Integrate
 Only after the verdict approves, `gh pr checks` is green and `gh pr view --json mergeable` is `MERGEABLE`. In the epic worktree:
-1. Run `${CLAUDE_PLUGIN_ROOT}/scripts/integrate-child.sh E N <slug> <PR>` (numbers literal). It fetches, merges `origin/issue-N-<slug>` with `--no-ff` and the standard message, pushes `epic-E` with a plain push, and closes the child issue with a comment naming the PR. GitHub marks the child PR merged when its head lands in the base; `Closes #N` fires only on the default branch, and closing by hand still triggers label cleanup. Exit 1 is a conflict (merge aborted, nothing pushed): send the child a round to merge `origin/epic-E` (its `work-ticket` step 7 conflict path), then re-review and run the script again. Exit 2 is a usage or state error: fix the call. Exit 3: merged, but the push or the issue close failed (stderr says which): fix the cause and run it again.
+1. Run `${CLAUDE_PLUGIN_ROOT}/scripts/integrate-child.sh E N <slug> <PR>` (numbers literal). It fetches, merges `origin/issue-N-<slug>` with `--no-ff` and the message `Merge issue-N-<slug> into epic-E (#N, PR #<PR>)`, pushes `epic-E` with a plain push, and closes the child issue with a comment naming the PR. GitHub marks the child PR merged when its head lands in the base; `Closes #N` fires only on the default branch, and closing by hand still triggers label cleanup. Exit 1 is a conflict (merge aborted, nothing pushed): send the child a round to merge `origin/epic-E` (its `work-ticket` step 7 conflict path), then re-review and run the script again. Exit 2 is a usage or state error: fix the call. Exit 3: merged, but the push or the issue close failed (stderr says which): fix the cause and run it again.
 2. If `origin/main` moved, `git merge origin/main` into `epic-E`, run `npm run check`, push. Resolve conflicts as `resolve-conflicts` step 3 does, including its stop conditions (`git merge --abort`, then `needs input:`).
 3. Release the next child; send "integrated" to a waiting plan-early agent.
 
