@@ -104,7 +104,7 @@ describe("integrate-child.sh", () => {
     expect(parents).toHaveLength(2);
     expect(parents[1]).toBe(childTip);
     expect(git(epic, "log", "-1", "--format=%s")).toBe(
-      `Merge PR #${PR} (${CHILD_BRANCH}) into ${EPIC_BRANCH}`,
+      `Merge ${CHILD_BRANCH} into ${EPIC_BRANCH} (#${ISSUE}, PR #${PR})`,
     );
   });
 
