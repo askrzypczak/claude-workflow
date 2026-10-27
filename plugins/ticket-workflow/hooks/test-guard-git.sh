@@ -82,5 +82,18 @@ check deny "$F" 'FOO=1 git push origin HEAD:ma{,}in'
 check deny "$F" 'gh pr -R o/r merge 7'
 check deny "$F" "gh api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:1}){clientMutationId}}'"
 
+# backticked push in prose ends at the closing backtick
+check allow "$F" $'cat > f.md <<\'EOF\'\nStep 7 runs `git push origin epic-E`. Then stop.\nEOF'
+check allow "$F" 'printf %s '"'"'Step 7 runs `git push origin epic-E`. Then stop.'"'"
+check deny "$F" 'echo `git push origin HEAD:ma'"''"'in`'
+check deny "$F" 'echo `git push origin issue-7-feature` `git push origin HEAD:ma'"''"'in`'
+check deny "$F" '`true`git push origin HEAD:ma'"''"'in'
+check deny "$F" 'echo `git push origin HEAD:\`echo main\``'
+check deny "$F" '`true`git push origin HEAD:ma`echo i`n'
+check deny "$F" '`true`git push `echo -f`'
+check deny "$F" '`true;`git push origin `:;`main'
+check deny "$F" $'`true\n`git push origin `:`main'
+check deny "$F" '`true\\`git push origin HEAD:ma`echo i`n'
+
 [ $fail -eq 0 ] && echo "guard-git: all cases pass"
 exit $fail
