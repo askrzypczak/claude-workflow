@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # PreToolUse hook (matcher: Bash). Enforces: agents may push their own branch, never main/master,
 # never force-push, and never merge PRs. Text matching only, so it is a guardrail, not a security boundary.
-# Known limits: `x=git; $x push ...` and `gh alias set` are not detected.
+# Known limits: `x=git; $x push ...` and `gh alias set` are not detected. Prose that names a forbidden
+# push (a backticked `git push --force` or `git push origin main`) is still denied, by the segment pass.
+# Prose in double quotes that puts a push in backticks is denied too: the backslash that escapes each
+# backtick fails the plain-literals rule. A backtick inside quotes earlier in the command (e.g. echo '`')
+# throws off the pairing, so a push after it can pass the raw check.
 # Input: hook JSON on stdin. Deny = exit 2 with the reason on stderr; allow = exit 0.
 set -uo pipefail
 
@@ -18,22 +22,46 @@ deny() {
 # Raw checks: the segmenter below turns quotes/backticks into separators, which would hide refspecs
 # like HEAD:ma''in or HEAD:$(echo main), quoted aliases and quoted API queries. Split only on command
 # separators here. `git` counts only in command position (segment start after VAR=val prefixes, after
-# `sh -c '`, `$(`, `(` or a backtick), so commit messages and PR titles that mention "git push" are fine.
+# `sh -c '`, `$(` or `(`), so commit messages and PR titles that mention "git push" are fine. Backticks
+# pair across the whole command. A push after an opening backtick ends at the next backtick, so inline-code
+# prose is read as that push alone. A push after a closing backtick runs to the end of its segment. A
+# backtick preceded by an odd run of backslashes is escaped and does not count.
 raw=$(printf '%s' "$cmd" | tr '\n' ';' | sed -E 's/&&|\|\||[|;&]/;/g' | tr ';' '\n')
 q="['\"]"
-cmdpos="(^|\$\(|\`|[(]|(sh|bash|zsh)[[:space:]]+-c[[:space:]]+$q)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:]]*/)?"
-push_re="${cmdpos}git([[:space:]][^'\"\`\$]*)?[[:space:]]push([[:space:]](.*))?\$"
+prefix="[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:]]*/)?"
+push_args="git([[:space:]][^'\"\`\$]*)?[[:space:]]push([[:space:]](.*))?\$"
+push_re="(^|\$\(|[(]|(sh|bash|zsh)[[:space:]]+-c[[:space:]]+$q)${prefix}${push_args}"
+bt_push_re="^${prefix}${push_args}"
 not_literal='[^[:alnum:][:space:]._/:@^~+=<>-]'
 alias_re="(^|[ /])git .*(-c ?|--config(-env)?[= ])${q}?alias\\."
 alias_env_re="GIT_CONFIG_KEY_[0-9]+=${q}?alias\\."
 gh_api_re='(^|[ /])gh( [^ ]*)* api .*merge'
-while IFS= read -r rseg; do
-  if [[ "$rseg" =~ $push_re ]]; then
-    tail="${BASH_REMATCH[${#BASH_REMATCH[@]} - 1]}"
+# Denies when a push matched by regex $1 in string $2 has arguments that are not plain literals.
+check_push_literals() {
+  if [[ "$2" =~ $1 ]]; then
+    local tail="${BASH_REMATCH[${#BASH_REMATCH[@]} - 1]}"
     if [[ "$tail" =~ $not_literal ]]; then
       deny "push arguments must be plain literals (found '${BASH_REMATCH[0]}' in: $tail)"
     fi
   fi
+}
+
+# Backticks pair across the whole command, so the count carries over from one raw segment to the next.
+bt_count=0
+while IFS= read -r rseg; do
+  check_push_literals "$push_re" "$rseg"
+  rest=$rseg
+  while [[ "$rest" == *'`'* ]]; do
+    before=${rest%%\`*}
+    trail=${before##*[!\\]}
+    ((${#trail} % 2)) || bt_count=$((bt_count + 1))
+    rest=${rest#*\`}
+    if ((bt_count % 2)); then
+      check_push_literals "$bt_push_re" "${rest%%\`*}"
+    else
+      check_push_literals "$bt_push_re" "$rest"
+    fi
+  done
   if [[ "$rseg" =~ $alias_re ]] || [[ "$rseg" =~ $alias_env_re ]]; then
     deny "git aliases via -c/--config/GIT_CONFIG_KEY are not allowed"
   fi

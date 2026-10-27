@@ -89,6 +89,11 @@ check deny "$F" 'echo `git push origin HEAD:ma'"''"'in`'
 check deny "$F" 'echo `git push origin issue-7-feature` `git push origin HEAD:ma'"''"'in`'
 check deny "$F" '`true`git push origin HEAD:ma'"''"'in'
 check deny "$F" 'echo `git push origin HEAD:\`echo main\``'
+check deny "$F" '`true`git push origin HEAD:ma`echo i`n'
+check deny "$F" '`true`git push `echo -f`'
+check deny "$F" '`true;`git push origin `:;`main'
+check deny "$F" $'`true\n`git push origin `:`main'
+check deny "$F" '`true\\`git push origin HEAD:ma`echo i`n'
 
 [ $fail -eq 0 ] && echo "guard-git: all cases pass"
 exit $fail
