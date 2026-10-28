@@ -10,3 +10,4 @@ Claude Code plugin marketplace (`askrzypczak-plugins`) holding the `ticket-workf
 - Maintainer: `askrzypczak`. Branch per change, PR to `main`; humans merge.
 - **Public repo**: tracked files must not contain home-directory paths, personal emails (GitHub noreply is fine), tokens, names of unpublished repos or projects, or role references to a named person (use "the human" / "the maintainer").
 - `.github/workflows/ticket-labels.yml` is a reusable workflow that checks out this repo and runs `plugins/ticket-workflow/scripts/ticket-labels.ts`; callers need no secrets.
+- **Agents' GitHub token cannot merge.** The machine's only GitHub API credential is a fine-grained token without Contents write, and the maintainer merges in the browser (README.md, Agent credentials). A new `gh` call that needs a permission outside the token's list updates the README's permission table and list in the same PR.

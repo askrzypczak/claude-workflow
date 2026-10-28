@@ -13,6 +13,8 @@ Polls every configured GitHub repo for agent-ready tickets and starts one intera
 
 `claude agents --json --all` is fetched once per run and shared. A failure in one repo is logged (`[prefix] poll failed ...`), the others still run, and the run exits non-zero at the end.
 
+The poller and the sessions it starts run `gh` with the machine's one login, the restricted fine-grained token described in [Agent credentials](../README.md#agent-credentials), so neither can merge a PR.
+
 ### Layout
 
 `agent-poller.sh` is a thin entrypoint (the path the LaunchAgent runs): it sets `PATH` and runs the TypeScript poller with Node 24 (type stripping, no build step). If `node` is not on `PATH` or older than 24, or the clone has no `node_modules` (dependencies not installed), it logs one line and exits 1.
