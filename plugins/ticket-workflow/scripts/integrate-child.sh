@@ -7,8 +7,9 @@
 #     exit 0 merged (a rerun after a merge is "Already up to date", also 0); 1 merge conflict (aborted,
 #     epic-<epic> and the working tree as before); 2 usage or precondition error, or any other merge failure
 #   close: closes issue <issue> once its merge commit is on origin/epic-<epic>.
-#     exit 0 closed; 2 usage or precondition error, or the merge not on origin/epic-<epic> yet (push it first);
-#     3 closing the issue failed (stderr says why)
+#     exit 0 closed (a rerun after a successful close is a gh no-op: gh reports "already closed" and exits 0,
+#     so it is also 0, with no second comment); 2 usage or precondition error, or the merge not on
+#     origin/epic-<epic> yet (push it first); 3 closing the issue failed (stderr says why)
 set -euo pipefail
 
 usage() { echo "Usage: $0 merge|close <epic> <issue> <slug> <pr>" >&2; exit 2; }
