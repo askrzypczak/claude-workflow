@@ -74,7 +74,7 @@ Agent sessions and the poller use the machine's `gh` login. Set it up so that it
 - A workflow's `GITHUB_TOKEN` is stopped by the ruleset rule "Restrict updates": "If selected, only users with bypass permissions can push to branches or tags whose name matches the pattern you specify." (GitHub Docs, *Available rules for rulesets*). Details in [The Actions token](#the-actions-token).
 - Agents get no route into the maintainer's logged-in browser on github.com ([Wiring](#wiring)).
 
-Together, only the maintainer can merge. Nothing in the workflow needs Contents write through the API: branches are pushed with git over SSH, which cannot merge a PR; `orchestrate-epic` folds children into `epic-E` with a local merge and a push (`plugins/ticket-workflow/scripts/integrate-child.sh`); auto-merge stays off.
+Together, only the maintainer can merge. Nothing in the workflow needs Contents write through the API: branches are pushed with git over SSH, which cannot merge a PR, and `protect-main` refuses direct pushes to `main`; `orchestrate-epic` folds children into `epic-E` with a local merge and a push (`plugins/ticket-workflow/scripts/integrate-child.sh`); auto-merge stays off.
 
 ### The token
 
@@ -88,7 +88,7 @@ Create a fine-grained personal access token:
 
 Actions stays read: write would let the token dispatch or re-run workflows (`POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches` and `POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun` are Actions write), and nothing uses that.
 
-Checks is not in the list. GitHub offers fine-grained tokens no Checks permission and lists "Using fine-grained personal access token to call the Checks API." among their limitations (GitHub Docs, *Managing your personal access tokens*). Check runs feed `gh pr checks` and `--json statusCheckRollup` (the poller's PR list in `dispatch/poller/io.ts`). On public repos they are expected to work through the token's read access to public repos ("Tokens always include read-only access to all public repositories on GitHub.", same page), but GitHub's docs do not confirm it, and on a private repo nothing grants them. Without check reads the poller's PR list fails every poll, so conflict and CI-fix sessions stop, and the skills' `gh pr checks` fails: the token cannot serve the workflow as documented. The pre-swap test in [Verify](#verify) settles this before the login changes.
+Checks is not in the list. GitHub offers fine-grained tokens no Checks permission and lists "Using fine-grained personal access token to call the Checks API." among their limitations (GitHub Docs, *Managing your personal access tokens*). Check runs feed `gh pr checks` and `--json statusCheckRollup` (the poller's PR list in `dispatch/poller/io.ts`). On public repos they are expected to work through the token's read access to public repos ("Tokens always include read-only access to all public repositories on GitHub.", same page), but GitHub's docs do not confirm it, and on a private repo nothing grants them. A failed check read, or an empty rollup, stops the poller's conflict and CI-fix sessions, and the token cannot serve the workflow as documented. The pre-swap test in [Verify](#verify) settles this before the login changes.
 
 What each `gh` command needs, from the skills, the agents, `plugins/ticket-workflow/scripts/` and `dispatch/poller/`:
 
@@ -133,17 +133,18 @@ Pre-swap test, before anything is logged out:
 
 1. `dispatch/install-launchd.sh pause`; `claude agents` shows no live sessions.
 2. In a fresh terminal, set the new token as a one-off environment variable without typing it on a command line: `read -rs GH_TOKEN` (paste, Enter), then `export GH_TOKEN`. `gh` then uses it in this terminal only, and its value goes in no file and no shell history.
-3. Against a served repo, with an open PR `<n>`, an issue `<i>` and a failed run `<id>` (from `gh run list --status failure --limit 1`), run one representative command per table row, for example:
+3. Against a served repo, with an open PR `<n>`, an issue `<i>` and a run `<id>` (from `gh run list --limit 1`; any run exercises Actions read, so a failed run need not exist), run one representative command per table row, for example:
    - `gh issue view <i> --json number,state`
    - `gh api repos/<owner>/<repo>/issues/<i> --jq .author_association`
    - `gh issue comment <i> --body "token test"`
    - `gh issue edit <i> --add-label <label>`, then `--remove-label <label>`
    - `gh pr view <n> --json mergeable`
+   - `gh api repos/<owner>/<repo>/pulls/<n> --jq .author_association`
    - `gh pr diff <n>`
    - `gh pr edit <n> --add-label <label>`, then `--remove-label <label>`
-   - `gh pr checks <n>`
-   - `gh pr view <n> --json statusCheckRollup`
-   - `gh run view <id> --log-failed`
+   - `gh pr checks <n>`: passes when it lists a `test` row. It exits 8 while a check is pending and 1 when one has failed, even when the read worked, so judge by the output, not the exit code.
+   - `gh pr view <n> --json statusCheckRollup`: passes when the output has an entry with `"__typename": "CheckRun"` and name `test`. An empty rollup exits 0 but fails.
+   - `gh run view <id> --log`
    - `gh api repos/<owner>/<repo>/commits/main --jq .sha`
    - `gh label list --limit 5`
    - `gh api repos/<owner>/<repo>/rulesets`
@@ -166,7 +167,7 @@ GitHub's plans page lists protected branches under GitHub Pro's "Advanced tools 
 
 The path: an agent can push a branch that edits `.github/workflows/` (SSH pushes carry no `workflow`-scope check). `ci.yml` runs on `pull_request`, and for a same-repo PR GitHub runs the workflow file from the PR branch. A workflow that asks for `permissions: contents: write` could then merge with `GITHUB_TOKEN`, since `protect-main` requires 0 approvals.
 
-The fix: add "Restrict updates" to each served repo's `protect-main`, with the Repository admin role as the only bypass actor, in "For pull requests only" mode. Workflows then cannot merge into or push to `main`, while the maintainer's browser merge still works.
+The fix: add "Restrict updates" to each served repo's `protect-main`, with the Repository admin role as the only bypass actor, in "For pull requests only" mode. Workflows should then be unable to merge into or push to `main`, while the maintainer's browser merge still works.
 
 GitHub Docs, *Creating rulesets for a repository*: eligible bypass actors include "Repository admins, organization owners, and enterprise owners". On the "For pull requests only" mode: "The selected actor is now required to open a pull request to make changes to a repository" and "The actor can then choose to bypass any branch protections and merge that pull request." The REST schema says "pull_request means that an actor can only bypass rules on pull requests."
 
