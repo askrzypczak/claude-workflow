@@ -14,7 +14,7 @@ Argument: a PR number or an issue number `N`. Always launched with an explicit n
 - Run `git fetch origin --quiet`, then enter a worktree on the PR's branch. If `git worktree list` shows a worktree already on `<headRefName>`, enter it with EnterWorktree (`path`). Otherwise create one: `git worktree add --no-track -b <headRefName> <path> origin/<headRefName>` when the clone has no local `<headRefName>`, or `git worktree add <path> <headRefName>` when it has one that no worktree holds, then `git merge --ff-only origin/<headRefName>` so the work lands on the PR's current head (if it refuses, the local branch has diverged: stop and report). A branch that tracks a remote one fails under the Bash sandbox, which protects the `.git/config` its upstream is written to; step 4's push sets the upstream. Only ever take the branch from `origin`: never `gh pr checkout`, and never fetch `pull/<n>/head`.
 
 ## 2. Merge main in
-`git merge origin/main`. **Never rebase, never force-push** (the git guard forbids force-push, and rebasing would rewrite the PR's history).
+`git merge origin/main`. **Never rebase, never force-push** (rebasing would rewrite the PR's history).
 - Clean merge: go to step 4.
 - Conflicts: list them with `git diff --name-only --diff-filter=U`.
 

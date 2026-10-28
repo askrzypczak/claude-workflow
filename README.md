@@ -17,7 +17,7 @@ Plugin `ticket-workflow`:
   - `file-ticket`: files a ticket in the house format (type-prefixed title, Problem, Proposed change, checkable acceptance criteria, labels per [Ticket conventions](#ticket-conventions)) after verifying its claims and searching for duplicates. Never sets `ready` or `skip-plan`. After filing an epic with children it links them as sub-issues, runs the `spec-auditor` over the set, applies the findings it verifies to the tickets it just filed, and asks the human only about the unclear ones (the auditor itself writes nothing to GitHub).
   - `orchestrate-epic`: runs an epic's children as `work-ticket` sub-agents into an `epic-E` branch, stands in at the plan gates (escalating only product questions), reviews and integrates each child PR, then opens one epic PR to `main` for the human to merge. See [Orchestrating an epic](#orchestrating-an-epic).
 - Subagents: `contract-writer` (opus, medium) writes stubs and failing tests first; `implementer` (haiku, xhigh; opus medium or opus xhigh per the approved plan) builds the code that makes them pass; `reviewer` (opus, xhigh, read-only) reviews complex diffs; `spec-auditor` (opus, medium, read-only; sonnet, medium for a `simple` ticket plan) audits epics, and each ticket's plan, for necessity; `first-reviewer` (fable, xhigh, read-only) reviews each orchestrate-epic child PR for the maintainer. Dispatched sessions run on opus at xhigh; orchestrate-epic children on opus at xhigh, or sonnet at medium for docs-only or single-adapter children; the orchestrate-epic session and its per-PR `first-reviewer` on fable at xhigh, because they stand in for the human reviewer (plan gates, gate questions, first PR review). Effort rule for any retune: never `high`; opus at `medium` or `xhigh`; sonnet only at `medium`, with opus `medium` wherever more than that is wanted.
-- Hooks: a git guard and a comment guard (see [Requirements](#requirements) and [Trust rule](#trust-rule-for-public-repos)).
+- Hooks: a comment guard (see [Trust rule](#trust-rule-for-public-repos)).
 
 Outside the plugin, `dispatch/` holds `agent-poller.sh`, a multi-repo poller that starts background sessions for `ready` + `agent-ok` tickets. It runs from this clone. See [Dispatch](#dispatch-automatic-ticket-pickup) and `dispatch/README.md`.
 
@@ -49,15 +49,34 @@ A consuming project needs:
 - Ticket labels, created with `plugins/ticket-workflow/scripts/setup-labels.sh [owner/repo]` (idempotent: existing labels are left untouched; `--update` overwrites their colour and description). See [Ticket conventions](#ticket-conventions).
 - `gh` authenticated (SSH remote, `gh auth login`) and `jq` on PATH.
 - The plugin enabled in `.claude/settings.json`: `enabledPlugins` with `ticket-workflow@askrzypczak-plugins`, plus an `extraKnownMarketplaces` entry for `askrzypczak/claude-workflow`.
-- Deny rules in `.claude/settings.json`. The guards ship with the plugin (`hooks/hooks.json`): the git guard blocks pushes to `main`/`master`, force pushes and `gh pr merge`; the comment guard enforces the [trust rule](#trust-rule-for-public-repos). The project only adds the deny rules:
+- Deny rules in `.claude/settings.json`. The agents' token enforces "humans merge": it cannot merge ([Agent credentials](#agent-credentials)). The deny rules are the backstop for pushes to `main`/`master` and for force, delete and mirror pushes. The plugin ships the comment guard (`hooks/hooks.json`), which enforces the [trust rule](#trust-rule-for-public-repos). The project adds the deny rules:
 
         "permissions": {
           "deny": [
             "Bash(gh pr merge *)",
             "Bash(git push --force*)",
-            "Bash(git push -f*)"
+            "Bash(git push -f*)",
+            "Bash(git push * --force*)",
+            "Bash(git push * -f*)",
+            "Bash(git push * +*)",
+            "Bash(git push * main)",
+            "Bash(git push *:main)",
+            "Bash(git push * master)",
+            "Bash(git push *:master)",
+            "Bash(git push --delete*)",
+            "Bash(git push * --delete*)",
+            "Bash(git push -d *)",
+            "Bash(git push * -d *)",
+            "Bash(git push * :issue-*)",
+            "Bash(git push * :epic-*)",
+            "Bash(git push --mirror*)",
+            "Bash(git push * --mirror*)",
+            "Bash(git push --prune*)",
+            "Bash(git push * --prune*)"
           ]
         }
+
+  A `*` can sit anywhere in a rule, and deny rules apply "when any subcommand matches them" (Claude Code docs, *Configure permissions*), so they hold inside chained and piped commands too. They match the command as written, so a push spelled another way gets past them: `git -C . push`, a quoted or `refs/heads/` refspec, arguments after a `main` or `master` refspec, an abbreviated option such as `--del`, combined short flags such as `-ud`, a force or prune flag written in a form these strings miss, such as `-uf`, or a bare `git push` with `main` checked out. A delete by `:<branch>` refspec is caught only for `issue-*` and `epic-*` branches and for `main`/`master`: a rule ending in `:*` cannot express it, since "The `:*` suffix is an equivalent way to write a trailing wildcard" (same page). These project rules sit beside the user-settings deny list in [Settings](#settings), and both apply: "deny rules from any scope are evaluated before allow rules" (same page). The strings are derived from *Configure permissions* and were not exercised by an agent. To check them, ask a Claude Code session in the project to run `git push --dry-run origin main`: the rules must deny it before it runs (`--dry-run` pushes nothing if a rule fails to match, and `protect-main`, where GitHub enforces it, refuses the real push anyway).
 - Optional, for [dispatch](#dispatch-automatic-ticket-pickup): an entry in the poller config and a directory trusted by Claude Code.
 - Optional: an unused-export / dead-file check inside `npm run check` (for example knip in production mode, excluding test suites; default knip treats test files as entry points).
 - Optional, for [label cleanup](#label-cleanup-on-close): a caller workflow.
@@ -162,7 +181,7 @@ After the swap:
 
 ### The limit
 
-GitHub's plans page lists protected branches under GitHub Pro's "Advanced tools and insights in private repositories", and GitHub Free covers private repos "with a limited feature set" (GitHub Docs, *GitHub's plans*). So private repos on GitHub Free don't enforce `protect-main`. There, a direct push to `main` over SSH and a workflow-token merge are stopped only by the deny rules (#136 adds them) and the skills.
+GitHub's plans page lists protected branches under GitHub Pro's "Advanced tools and insights in private repositories", and GitHub Free covers private repos "with a limited feature set" (GitHub Docs, *GitHub's plans*). So private repos on GitHub Free don't enforce `protect-main`. There, a direct push to `main` over SSH and a workflow-token merge are stopped only by the deny rules ([Requirements](#requirements)) and the skills.
 
 ### The Actions token
 
@@ -297,7 +316,6 @@ With `gh` inside the sandbox, `gh extension` and `gh alias` need no deny rules: 
 - Creating a branch that tracks a remote one (`git switch -c X origin/Y`, `git checkout -b X origin/Y`, `git worktree add -b X <path> origin/Y`, and `git switch Y` or `git worktree add <path> Y` when only `origin/Y` exists) fails in the clone and in a worktree, because the upstream is written to git's `config`. The sandbox protects "`hooks` and `config` inside `.git`" in the working directory, and for a worktree the main repository's: "Writes to `hooks/` and `config` inside that directory remain denied." (*Configure the sandboxed Bash tool*). Create the branch with `--no-track`, then let `git push -u origin <branch>` (an excluded command) set the upstream. The skills do this: `work-ticket`, `orchestrate-epic`, `fix-ci`, `resolve-conflicts` and `address-feedback` create their branches with `--no-track` and set the upstream with `git push -u origin <branch>` on the first push.
 - Bare `mktemp -d` creates its directory under the system temp folder (`/var/folders/...`) even with `TMPDIR` set (macOS `mktemp(1)` prefers `_CS_DARWIN_USER_TEMP_DIR`), and the sandbox denies it. Pass a template: `mktemp -d "$TMPDIR/name.XXXXXX"`.
 - A call with a `cd` or `git -C` stays sandboxed (*All settings*, `sandbox.excludedCommands`: "A `cd`, `pushd`, or `popd`, wherever it appears in the call"; *Configure the sandboxed Bash tool*: "A call that adds a `cd`, uses `git -C`, or contains a command substitution stays sandboxed."); in a test, `git -C . fetch` failed at the proxy with `github.com:22: 403 host is not on the allow list`. Run git's network commands as plain commands from the working directory. The skills name each push as its own call for this reason; run fetches the same way.
-- `plugins/ticket-workflow/hooks/test-guard-git.sh` fails on its bare `mktemp -d` until #136 removes it. Run it outside the sandbox, in a terminal.
 
 ### Deploy keys
 
