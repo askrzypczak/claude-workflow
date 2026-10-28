@@ -15,6 +15,8 @@ Polls every configured GitHub repo for agent-ready tickets and starts one intera
 
 The poller and the sessions it starts run `gh` with the machine's one login, the restricted fine-grained token described in [Agent credentials](../README.md#agent-credentials), so neither can merge a PR.
 
+The sessions it starts read user settings like any `claude` session started in `dir` ("A background session reads its settings from the directory it runs in", Claude Code docs, *Manage multiple agents with agent view*), so their Bash commands run in the sandbox described in [Sandboxing agent sessions](../README.md#sandboxing-agent-sessions).
+
 ### Layout
 
 `agent-poller.sh` is a thin entrypoint (the path the LaunchAgent runs): it sets `PATH` and runs the TypeScript poller with Node 24 (type stripping, no build step). If `node` is not on `PATH` or older than 24, or the clone has no `node_modules` (dependencies not installed), it logs one line and exits 1.
