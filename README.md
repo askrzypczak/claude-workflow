@@ -117,7 +117,7 @@ Metadata read comes with every fine-grained token. `plugins/ticket-workflow/scri
 2. `gh auth logout`, then `gh auth login --with-token` with the token pasted on standard input (end with Ctrl-D), so it is never on a command line.
 3. Remove every other GitHub API token on the machine: `GH_TOKEN`/`GITHUB_TOKEN` exports (`gh` prefers them over the stored login), stored git credentials for github.com (remotes are SSH), and any GitHub MCP server or connector token in Claude Code's configuration.
 4. Keep git over SSH.
-5. Browser automation that acts in the maintainer's browser (Claude in Chrome) must not be allowed on github.com: leave github.com out of the extension's site permissions. The Claude desktop app's built-in browser pane keeps its own sign-ins: do not sign in to github.com there (same route as Claude in Chrome).
+5. Browser automation that acts in the maintainer's browser (Claude in Chrome) must not be allowed on github.com: leave github.com out of the extension's site permissions, which is not a boundary in auto mode; see [Claude in Chrome on demand](#claude-in-chrome-on-demand). The Claude desktop app's built-in browser pane keeps its own sign-ins: do not sign in to github.com there (same route as Claude in Chrome).
 6. Run the after-swap checks in [Verify](#verify). The last one resumes dispatch.
 
 ### Admin work
@@ -216,7 +216,6 @@ Merge these keys into `~/.claude/settings.json`, adding to any `env` and `permis
         { "path": "~/.ssh/id_ed25519", "mode": "deny" },
         { "path": "~/.ssh/deploy-claude-workflow", "mode": "deny" },
         { "path": "~/.ssh/deploy-example-app", "mode": "deny" },
-        { "path": "~/Library/Keychains", "mode": "deny" },
         { "path": "~/.claude/.credentials.json", "mode": "deny" },
         { "path": "~/Library/Application Support/Google/Chrome", "mode": "deny" },
         { "path": "~/Library/Application Support/BraveSoftware", "mode": "deny" },
@@ -236,8 +235,6 @@ Merge these keys into `~/.claude/settings.json`, adding to any `env` and `permis
       "Edit(~/.ssh/deploy-claude-workflow)",
       "Read(~/.ssh/deploy-example-app)",
       "Edit(~/.ssh/deploy-example-app)",
-      "Read(~/Library/Keychains/**)",
-      "Edit(~/Library/Keychains/**)",
       "Read(~/.claude/.credentials.json)",
       "Edit(~/.claude/.credentials.json)",
       "Read(~/Library/Application Support/Google/Chrome/**)",
@@ -256,6 +253,8 @@ Merge these keys into `~/.claude/settings.json`, adding to any `env` and `permis
       "Edit(~/Library/Cookies/**)",
       "Edit(~/.gitconfig)",
       "Edit(~/.config/git/**)",
+      "Edit(//**/.git/hooks/**)",
+      "Edit(//**/.git/config)",
       "Bash(git fetch *--upl*)",
       "Bash(git pull *--upl*)",
       "Bash(git push *--rece*)",
@@ -268,10 +267,10 @@ Merge these keys into `~/.claude/settings.json`, adding to any `env` and `permis
 - `enabled` also turns on auto-allow mode: a sandboxed command is approved "automatically, with no prompt" whatever the permission mode, with a few exceptions such as plan mode, while excluded commands still go through the regular permission flow (*Configure the sandboxed Bash tool*). To keep prompts for Bash, also set `autoAllowBashIfSandboxed` to `false`.
 - `failIfUnavailable` makes Claude Code exit at startup when the sandbox can't start, instead of running commands unsandboxed. `allowUnsandboxedCommands: false` takes away Claude's retry outside the sandbox: "With the retry disabled, Claude Code ignores the `dangerouslyDisableSandbox` parameter." (same page).
 - `allowedDomains`: `api.github.com` for `gh`, `results-receiver.actions.githubusercontent.com` for `gh run view --log`, `registry.npmjs.org` for `npm ci`; not `github.com` as a whole. `strictAllowlist` refuses every other host. Without it, auto mode lets a command name extra hosts for the classifier to approve, and `bypassPermissions` allows any host (Claude Code docs, *All settings*, `sandbox.network.strictAllowlist`).
-- `credentials.files`: by default sandboxed commands can read "Most of the machine, including credential files such as `~/.ssh` and `~/.aws/credentials`", and "There is no built-in credential deny list, so only the files and variables you list are restricted." (*Configure the sandboxed Bash tool*). The list: the private key files, `~/Library/Keychains`, Claude Code's credential store `~/.claude/.credentials.json`, the Chrome, Brave, Arc, Edge, Firefox and Safari profile directories, and `~/Library/Cookies`.
+- `credentials.files`: by default sandboxed commands can read "Most of the machine, including credential files such as `~/.ssh` and `~/.aws/credentials`", and "There is no built-in credential deny list, so only the files and variables you list are restricted." (*Configure the sandboxed Bash tool*). The list: the private key files, Claude Code's credential store `~/.claude/.credentials.json`, the Chrome, Brave, Arc, Edge, Firefox and Safari profile directories, and `~/Library/Cookies`.
   - The key files are listed by name, not `~/.ssh` as a whole, because sandboxed `gh` reads `~/.ssh/config` ([macOS exceptions](#macos-exceptions)). In a test, a `~/.ssh` deny with `~/.ssh/config` re-opened through `filesystem.allowRead` left the file unreadable.
-  - The keychain deny stopped a sandboxed `security find-generic-password` in a test, but sandboxed `gh` still authenticated with it in place. The `gh` token stays usable by sandboxed commands; it cannot merge ([Agent credentials](#agent-credentials)).
-  - `~/.config/gh` stays readable: it holds `gh`'s configuration and no token, as long as `gh auth status` shows the login stored in the `(keyring)`.
+  - `~/Library/Keychains` stays readable: sandboxed `gh` reads its token from the keychain through `security`, and with the keychain denied every authenticated `gh` call failed in a test (`HTTP 401: Requires authentication` from `gh issue view`), while `gh api` on a public repo still worked because it needs no token. [What stays outside](#what-stays-outside) has the cost.
+  - `~/.config/gh` stays readable: it holds `gh`'s configuration and no token while the login is stored in the keyring (`gh auth status` shows `(keyring)`).
 - `permissions.deny`: the file tools run outside the sandbox ("A `denyRead` entry doesn't stop the Read tool", same page), so each denied path also gets a `Read(...)` and an `Edit(...)` rule. `Edit` rules cover the Write tool too ("`Edit` rules apply to all built-in tools that edit files."), and `Write(...)` path rules never match (Claude Code docs, *Configure permissions*). The git rules are explained under [macOS exceptions](#macos-exceptions).
 - `env`: `CLAUDE_CODE_PLUGIN_PREFER_HTTPS` ([Deploy keys](#deploy-keys)) and `CLAUDE_CODE_ENABLE_CFC` ([Claude in Chrome on demand](#claude-in-chrome-on-demand)).
 
@@ -282,6 +281,7 @@ Merge these keys into `~/.claude/settings.json`, adding to any `env` and `permis
 - `Bash(git fetch *--upl*)`, `Bash(git pull *--upl*)`, `Bash(git push *--rece*)` and `Bash(git push *--e*)` deny `--upload-pack`, `--receive-pack` and `--exec`, which name a program for git to run. Git accepts any unambiguous prefix of a long option, so each rule matches the shortest one. In a test, `git fetch --upload-pack=<script> .` and `git push --dry-run --receive-pack=<script> . <ref>` ran the script inside the sandbox even though both matched the exclusions, but *All settings* lists the call shapes that stay sandboxed only "among others", so the rules keep this from resting on undocumented behaviour.
 - A variable prefix needs no rule: in a test, `GIT_SSH_COMMAND=<script> git fetch origin` and a `PATH=...` prefix ran the script inside the sandbox, so there are no `GIT_SSH*` or `GIT_CONFIG*` rules. `git -c core.sshCommand=... fetch` doesn't start with `git fetch`, and a pattern matches "everything before the first `*` as written" (*Configure permissions*), so that call stays sandboxed too.
 - `Edit(~/.gitconfig)` and `Edit(~/.config/git/**)`: a `core.sshCommand`, or another setting that names a program, written there by the Edit or Write tool, which run outside the sandbox, would run with full access under an excluded git command. Sandboxed commands can't write there.
+- `Edit(//**/.git/hooks/**)` and `Edit(//**/.git/config)`: excluded git commands also run the repository's `.git/hooks` and read its `.git/config`. Sandboxed commands can't write them (protected paths), and these rules close the Edit and Write tools' path. A relative pattern would match only under the current directory and miss the main repository's `.git` in a worktree session, so the rules anchor at the filesystem root, the closest documented form for "any repository" (*Configure permissions*: "To write a rule in user settings that applies inside every project, use a `//` absolute path or a `~/` home-relative path", and `Read(//**/.env)` blocks "any `.env` anywhere on the filesystem").
 
 **`gh`** runs sandboxed. Without `enableWeakerNetworkIsolation` it failed TLS verification in a test (`x509: OSStatus -26276`); with it, `gh api`, `gh pr checks`, a redirected `gh` call and the trust-rule pipe (`gh issue view ... | node .../trusted-comments.ts`) worked. The cost: "This reduces security by opening a potential data exfiltration path through the trust service." (*All settings*, `sandbox.enableWeakerNetworkIsolation`). The docs' other fix, excluding `gh *`, is worse here:
 
@@ -296,12 +296,12 @@ With `gh` inside the sandbox, `gh extension` and `gh alias` need no deny rules: 
 
 - Creating a branch that tracks a remote one (`git switch -c X origin/Y`, `git checkout -b X origin/Y`, `git worktree add -b X <path> origin/Y`) fails in the clone and in a worktree, because the upstream is written to git's `config`. The sandbox protects "`hooks` and `config` inside `.git`" in the working directory, and for a worktree the main repository's: "Writes to `hooks/` and `config` inside that directory remain denied." (*Configure the sandboxed Bash tool*). Create the branch with `--no-track`, then let `git push -u` (an excluded command) set the upstream. #142 changes the skills to do this.
 - Bare `mktemp -d` creates its directory under the system temp folder (`/var/folders/...`) even with `TMPDIR` set (macOS `mktemp(1)` prefers `_CS_DARWIN_USER_TEMP_DIR`), and the sandbox denies it. Pass a template: `mktemp -d "$TMPDIR/name.XXXXXX"`.
-- A call with a `cd` or `git -C` stays sandboxed (*All settings*, `sandbox.excludedCommands`: "A `cd`, `pushd`, or `popd`, wherever it appears in the call"; *Configure the sandboxed Bash tool*: "A call that adds a `cd`, uses `git -C`, or contains a command substitution stays sandboxed."). Run git's network commands as plain commands from the working directory.
+- A call with a `cd` or `git -C` stays sandboxed (*All settings*, `sandbox.excludedCommands`: "A `cd`, `pushd`, or `popd`, wherever it appears in the call"; *Configure the sandboxed Bash tool*: "A call that adds a `cd`, uses `git -C`, or contains a command substitution stays sandboxed."); in a test, `git -C . fetch` failed at the proxy with `github.com:22: 403 host is not on the allow list`. Run git's network commands as plain commands from the working directory.
 - `plugins/ticket-workflow/hooks/test-guard-git.sh` fails on its bare `mktemp -d` until #136 removes it. Run it outside the sandbox, in a terminal.
 
 ### Deploy keys
 
-An excluded git command uses whatever key ssh offers it. With the account key, that is every repo the account can push to; with a deploy key, one: "If you use multiple repositories on one server, you will need to generate a dedicated key pair for each one. You can't reuse a deploy key for multiple repositories." (GitHub Docs, *Managing deploy keys*). Within its repo a write key is broad: "Deploy keys with write access can perform the same actions as an organization member with admin access, or a collaborator on a personal repository." (same page). Rulesets still bind deploy-key pushes, so keep deploy keys off every ruleset's bypass list.
+An excluded git command uses whatever key ssh offers it. With the account key, that is every repo the account can push to; with a deploy key, one: "If you use multiple repositories on one server, you will need to generate a dedicated key pair for each one. You can't reuse a deploy key for multiple repositories." (GitHub Docs, *Managing deploy keys*). Within its repo a write key is broad: "Deploy keys with write access can perform the same actions as an organization member with admin access, or a collaborator on a personal repository." (same page). Deploy keys are a bypass actor a ruleset can name (the bypass `actor_type` "Can be one of: `Integration`, `OrganizationAdmin`, `RepositoryRole`, `Team`, `DeployKey`, `User`", GitHub Docs, *REST API endpoints for rules*), so a ruleset binds their pushes unless its bypass list names them: keep deploy keys off every ruleset's bypass list.
 
 For each served repo, and for this one:
 
@@ -329,11 +329,11 @@ The maintainer pushes through the same alias remotes. For a repo without a deplo
 
 ### Claude in Chrome on demand
 
-Claude in Chrome acts in the maintainer's own browser, with its sign-ins, and in auto mode, "when the auto mode classifier itself approves a browser call to a site, the extension skips its own per-site check for that call, unless your permission rules deny any site to Claude in Chrome" (Claude Code docs, *Use Claude Code with Chrome*). So sessions start without it:
+Claude in Chrome acts in the maintainer's own browser, with its sign-ins, and in auto mode, "when the auto mode classifier itself approves a browser call to a site, the extension skips its own per-site check for that call, unless your permission rules deny any site to Claude in Chrome" (Claude Code docs, *Use Claude Code with Chrome*). So keeping github.com out of the extension's site permissions is not a boundary in auto mode, and the docs give no rule syntax for denying a site to Claude in Chrome. The control is when it runs: off by default, never in a background session, and on only in an interactive session the maintainer is watching:
 
 - Run `/chrome` and turn off **Enabled by default** (the `claudeInChromeDefaultEnabled` key in `~/.claude.json`).
 - `CLAUDE_CODE_ENABLE_CFC=0` in the JSON's `env` keeps it off; the variable "Takes precedence over the `claudeInChromeDefaultEnabled` setting. The `--chrome` and `--no-chrome` flags take precedence over both." (Claude Code docs, *Environment variables*).
-- Start `claude --chrome` for a session that needs the browser. github.com stays out of the extension's site permissions either way ([Wiring](#wiring)).
+- Start `claude --chrome` only for an interactive session you are watching. Keep github.com out of the extension's site permissions as well ([Wiring](#wiring)).
 
 In a test, `-p` sessions loaded no Chrome tools even with Enabled by default on. Background sessions are interactive, so [Checks](#checks) covers them.
 
@@ -342,8 +342,11 @@ In a test, `-p` sessions loaded no Chrome tools even with Enabled by default on.
 - Hooks, local MCP servers and the other processes Claude Code starts "run with your full access" (*Configure the sandboxed Bash tool*). Connectors act on their services with their own credentials.
 - The Read, Edit, Write and web tools follow permission rules, not the sandbox; beyond the deny rules above, they reach what the permission mode allows. A file the Edit tool writes, such as a shell startup file, can change what an unsandboxed process does.
 - Exfiltration through GitHub: the allowed hosts are enough to put data in an issue, a comment or a pushed branch. The proxy also checks only hostnames: "code running inside the sandbox can potentially use domain fronting or similar techniques to reach hosts outside the allowlist" (*Configure the sandboxed Bash tool*).
-- The excluded git commands, within the limits under [macOS exceptions](#macos-exceptions). They also run the repository's git hooks and read its `.git/config`. Sandboxed commands can't write either, and Edit-tool writes under `.git` go to the classifier in auto mode (`.git` is a protected path, Claude Code docs, *Choose a permission mode*).
-- The `gh` token, usable by sandboxed commands and unable to merge ([Agent credentials](#agent-credentials)), and the trust-service path that `enableWeakerNetworkIsolation` opens.
+- The excluded git commands, within the limits under [macOS exceptions](#macos-exceptions). The repository hooks they run and the `.git/config` they read are closed to sandboxed commands (protected paths) and to the file tools (the `.git` deny rules).
+- The keychain. Sandboxed commands can read the `gh` token through `security`: with no keychain deny, `security find-generic-password -s gh:github.com -w` exited 0 from a sandboxed command in a test. They can also read any other keychain item that `security` reads without a prompt, which means items created through the `security` CLI itself, as `gh` stores its token; items created by other apps prompt, and a prompt fails in a background session.
+- The `gh` token cannot merge ([Agent credentials](#agent-credentials)) and, from a sandboxed session, reaches only the allowed hosts. But it could be posted to GitHub and used elsewhere until rotated, which is why the expiry note in [The token](#the-token) matters.
+- An untested alternative: deny `~/Library/Keychains` (in `credentials.files` and as `Read(...)` and `Edit(...)` rules) and store the `gh` token in `~/.config/gh/hosts.yml` with `gh auth login --with-token --insecure-storage`. That exposes only that token to sandboxed commands and leaves other keychain items closed, at the cost of a plaintext token file. The `gh` check in [Checks](#checks) covers it if the maintainer chooses it.
+- The trust-service path that `enableWeakerNetworkIsolation` opens.
 - Repository settings: "A `false` in your user settings doesn't make the sandbox admin-required, so a project's other sandbox settings still apply." (*Configure the sandboxed Bash tool*). A repo's `.claude/settings.json` or `.claude/settings.local.json` can set `enabled: false`, add `excludedCommands` or turn on weaker options. Sandboxed commands can't write those files, and Edit-tool writes to them go to the classifier in auto mode (`.claude` is a protected path, *Choose a permission mode*). `strictAllowlist` in user settings already makes Claude Code ignore a repo's `allowedDomains` (*Configure the sandboxed Bash tool*, "Locks that apply without an admin-required sandbox"). The same JSON in `/Library/Application Support/ClaudeCode/managed-settings.json` closes the rest: `allowUnsandboxedCommands: false` there makes the sandbox admin-required, and Claude Code then ignores "the settings in a repository's files that loosen the sandbox, `excludedCommands` entries included" (same page); a managed `enabled` "overrides anything a developer sets" (*All settings*).
 - A separate macOS user or a container would put all of the above behind one boundary. Left for later.
 
@@ -355,7 +358,7 @@ Ask Claude to run these in a session started in a served `dir`: "What you type a
 2. `curl -sS https://example.com`: refused, naming the host as not on the allow list.
 3. For each private key file, `test -r ~/.ssh/<key> && echo READABLE || echo DENIED`: `DENIED`. The same for `~/.ssh/config`: `READABLE`, since sandboxed `gh` needs it.
 4. The Read tool on a non-secret file inside a denied directory, such as Chrome's empty `~/Library/Application Support/Google/Chrome/First Run`: refused. Don't point the Read tool at a real key: if the deny were wrong, the key would land in the transcript.
-5. `gh repo view --json nameWithOwner` in a `dir` whose remote uses an alias: prints the repo.
+5. `gh repo view --json nameWithOwner` in a `dir` whose remote uses an alias: prints the repo. Then `gh issue view <i> --json number,title`: prints the issue. That call needs the token: it failed with `HTTP 401` in the test where sandboxed `gh` couldn't read it.
 6. `git fetch origin` and `git push --dry-run origin <branch>` there: both succeed, through the deploy key.
 7. `claude --bg --name sandbox-check "list your tools"` in a served `dir`, then `claude attach sandbox-check`: `/sandbox` shows the same settings on its Config tab, and the session has no browser tools.
 
