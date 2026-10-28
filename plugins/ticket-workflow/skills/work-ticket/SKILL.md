@@ -89,5 +89,5 @@ In place of steps 3 to 8, for a plan that says `Spike`. Make no worktree, branch
 5. Hand off: `gh issue edit N --add-label needs-review --remove-label in-progress`, then tell the human the findings are ready, with the comment's link and the follow-up tickets. The human closes the ticket when they accept the findings; do not close it yourself. If you cannot finish, take step 8's blocked path.
 
 ## Hard rules
-- Push only your own `issue-N-*` branch. Never push to `main`/`master`, force-push, or merge: the plugin's PreToolUse git guard hook (plus the project's deny rules) enforces this, and a denial means stop, not work around.
+- Push only your own `issue-N-*` branch. Never push to `main`/`master`, force-push, or merge. The agents' GitHub token cannot merge, the default-branch ruleset (where the repo has one) refuses direct and force pushes to `main`, and the project's deny rules refuse `gh pr merge` and the plain forms of these pushes; a denial means stop, not work around.
 - Humans merge.
