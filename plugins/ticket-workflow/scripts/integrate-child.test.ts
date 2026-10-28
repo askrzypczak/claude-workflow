@@ -39,6 +39,8 @@ const commitFile = (cwd: string, file: string, content: string, msg: string) => 
 
 const originRefs = () => git(origin, "for-each-ref", "--format=%(refname) %(objectname)");
 
+const epicRefs = () => git(epic, "for-each-ref", "--format=%(refname) %(objectname)");
+
 const ghLog = (): string[] => {
   try {
     return readFileSync(join(dir, "gh.log"), "utf8").split("\n").filter(Boolean);
@@ -47,10 +49,19 @@ const ghLog = (): string[] => {
   }
 };
 
+const closeCalls = () => ghLog().filter((l) => l.startsWith("issue close"));
+
 const run = (...args: string[]) =>
   spawnSync("bash", [script, ...args], { cwd: epic, env, encoding: "utf8" });
 
-const runStandard = () => run(EPIC, ISSUE, SLUG, PR);
+const runMerge = () => run("merge", EPIC, ISSUE, SLUG, PR);
+const runClose = () => run("close", EPIC, ISSUE, SLUG, PR);
+
+// Stands in for the orchestrator's own push of epic-E after a merge.
+const pushEpic = () => git(epic, "push", "-q", "origin", EPIC_BRANCH);
+
+const parentsOfHead = () =>
+  git(epic, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").slice(1);
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "integrate-child-"));
@@ -94,13 +105,13 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-describe("integrate-child.sh", () => {
+describe("integrate-child.sh merge", () => {
   it("merges origin/issue-N-slug into epic-E as a two-parent merge commit with the standard message", () => {
     const childTip = git(child, "rev-parse", "HEAD");
-    const r = runStandard();
+    const r = runMerge();
     expect(r.status).toBe(0);
     expect(git(epic, "rev-parse", "--abbrev-ref", "HEAD")).toBe(EPIC_BRANCH);
-    const parents = git(epic, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").slice(1);
+    const parents = parentsOfHead();
     expect(parents).toHaveLength(2);
     expect(parents[1]).toBe(childTip);
     expect(git(epic, "log", "-1", "--format=%s")).toBe(
@@ -108,29 +119,68 @@ describe("integrate-child.sh", () => {
     );
   });
 
-  it("fetches origin first, so a child commit pushed after the epic clone is merged", () => {
+  it("runs no fetch: a child commit pushed to origin after the last fetch is not merged", () => {
+    const knownTip = git(child, "rev-parse", "HEAD");
+    const trackingBefore = git(epic, "rev-parse", `refs/remotes/origin/${CHILD_BRANCH}`);
     commitFile(child, "later.txt", "later\n", "later child commit");
     git(child, "push", "-q", "origin", CHILD_BRANCH);
     const lateTip = git(child, "rev-parse", "HEAD");
-    const r = runStandard();
+    expect(lateTip).not.toBe(knownTip);
+
+    const r = runMerge();
     expect(r.status).toBe(0);
-    const parents = git(epic, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").slice(1);
-    expect(parents[1]).toBe(lateTip);
+    const parents = parentsOfHead();
+    expect(parents).toHaveLength(2);
+    expect(parents[1]).toBe(knownTip);
+    expect(git(epic, "rev-parse", `refs/remotes/origin/${CHILD_BRANCH}`)).toBe(trackingBefore);
   });
 
-  it("pushes epic-E so origin's epic-E matches the local merge commit", () => {
-    const r = runStandard();
-    expect(r.status).toBe(0);
-    const local = git(epic, "rev-parse", "HEAD");
-    expect(git(origin, "rev-parse", `refs/heads/${EPIC_BRANCH}`)).toBe(local);
-    expect(git(origin, "rev-parse", "refs/heads/main")).not.toBe(local);
+  it("on a conflict aborts the merge, lists the conflicting files, exits 1 and leaves epic-E and the issue as they were", () => {
+    commitFile(child, "shared.txt", "child side\n", "child edits shared");
+    git(child, "push", "-q", "origin", CHILD_BRANCH);
+    commitFile(epic, "shared.txt", "epic side\n", "epic edits shared");
+    pushEpic();
+    git(epic, "fetch", "-q", "origin");
+    const epicTip = git(epic, "rev-parse", "HEAD");
+    const refsBefore = epicRefs();
+
+    const r = runMerge();
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("shared.txt");
+    expect(git(epic, "rev-parse", "--abbrev-ref", "HEAD")).toBe(EPIC_BRANCH);
+    expect(git(epic, "rev-parse", "HEAD")).toBe(epicTip);
+    expect(epicRefs()).toBe(refsBefore);
+    expect(git(epic, "status", "--porcelain")).toBe("");
+    const mergeHead = spawnSync("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], {
+      cwd: epic,
+      env,
+    });
+    expect(mergeHead.status).not.toBe(0);
+    expect(closeCalls()).toEqual([]);
   });
 
-  it("closes the child issue with a comment naming the PR and the merge commit", () => {
-    const r = runStandard();
-    expect(r.status).toBe(0);
+  it("refuses with exit 2 when origin has no issue-N-slug branch, leaving epic-E and the issue as they were", () => {
+    const head = git(epic, "rev-parse", "HEAD");
+    const refsBefore = epicRefs();
+    const r = run("merge", EPIC, ISSUE, "no-such-branch", PR);
+    expect(r.status).toBe(2);
+    expect(git(epic, "rev-parse", "--abbrev-ref", "HEAD")).toBe(EPIC_BRANCH);
+    expect(git(epic, "rev-parse", "HEAD")).toBe(head);
+    expect(epicRefs()).toBe(refsBefore);
+    expect(git(epic, "status", "--porcelain")).toBe("");
+    expect(closeCalls()).toEqual([]);
+  });
+});
+
+describe("integrate-child.sh close", () => {
+  it("after epic-E is pushed, closes the child issue with a comment naming the PR and the merge commit", () => {
+    expect(runMerge().status).toBe(0);
     const merge = git(epic, "rev-parse", "HEAD");
-    const closes = ghLog().filter((l) => l.startsWith("issue close"));
+    pushEpic();
+
+    const r = runClose();
+    expect(r.status).toBe(0);
+    const closes = closeCalls();
     expect(closes).toHaveLength(1);
     const m = closes[0].match(
       new RegExp(
@@ -143,87 +193,97 @@ describe("integrate-child.sh", () => {
     expect(merge.startsWith(short)).toBe(true);
   });
 
-  it("on a conflict aborts the merge, lists the conflicting files, exits 1, pushes nothing and leaves the issue open", () => {
-    commitFile(child, "shared.txt", "child side\n", "child edits shared");
-    git(child, "push", "-q", "origin", CHILD_BRANCH);
-    commitFile(epic, "shared.txt", "epic side\n", "epic edits shared");
-    git(epic, "push", "-q", "origin", EPIC_BRANCH);
-    const epicTip = git(epic, "rev-parse", "HEAD");
-    const before = originRefs();
-
-    const r = runStandard();
-    expect(r.status).toBe(1);
-    expect(r.stderr).toContain("shared.txt");
-    expect(git(epic, "rev-parse", "HEAD")).toBe(epicTip);
-    expect(git(epic, "status", "--porcelain")).toBe("");
-    const mergeHead = spawnSync("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], {
-      cwd: epic,
-      env,
-    });
-    expect(mergeHead.status).not.toBe(0);
-    expect(originRefs()).toBe(before);
-    expect(ghLog().some((l) => l.startsWith("issue close"))).toBe(false);
+  it("before epic-E is pushed, refuses with exit 2 and leaves the issue open", () => {
+    expect(runMerge().status).toBe(0);
+    const r = runClose();
+    expect(r.status).toBe(2);
+    expect(closeCalls()).toEqual([]);
   });
 
-  it("refuses with exit 2 unless HEAD is epic-E, so a run from main or master pushes nothing", () => {
+  it("exits 3 when closing the issue fails", () => {
+    expect(runMerge().status).toBe(0);
+    pushEpic();
+    writeFileSync(join(bin, "gh"), "#!/usr/bin/env bash\nexit 1\n");
+    const r = runClose();
+    expect(r.status).toBe(3);
+  });
+});
+
+describe("integrate-child.sh merge and close", () => {
+  it("neither merge nor close pushes: origin's refs are unchanged by either", () => {
+    const beforeMerge = originRefs();
+    expect(runMerge().status).toBe(0);
+    expect(originRefs()).toBe(beforeMerge);
+
+    pushEpic();
+    const beforeClose = originRefs();
+    expect(runClose().status).toBe(0);
+    expect(originRefs()).toBe(beforeClose);
+  });
+
+  it("merge and close refuse with exit 2 unless HEAD is epic-E, changing no ref and closing nothing", () => {
+    expect(runMerge().status).toBe(0);
+    pushEpic();
     git(epic, "branch", "-q", "master", "origin/main");
     for (const branch of ["main", "master"]) {
       git(epic, "checkout", "-q", branch);
-      const head = git(epic, "rev-parse", "HEAD");
-      const before = originRefs();
-      const r = runStandard();
-      expect(r.status).toBe(2);
-      expect(git(epic, "rev-parse", "HEAD")).toBe(head);
-      expect(originRefs()).toBe(before);
+      for (const sub of ["merge", "close"]) {
+        const head = git(epic, "rev-parse", "HEAD");
+        const refsBefore = epicRefs();
+        const originBefore = originRefs();
+        const r = run(sub, EPIC, ISSUE, SLUG, PR);
+        expect(r.status, `${sub} on ${branch}`).toBe(2);
+        expect(git(epic, "rev-parse", "--abbrev-ref", "HEAD")).toBe(branch);
+        expect(git(epic, "rev-parse", "HEAD")).toBe(head);
+        expect(epicRefs()).toBe(refsBefore);
+        expect(originRefs()).toBe(originBefore);
+      }
     }
-    expect(ghLog().some((l) => l.startsWith("issue close"))).toBe(false);
+    expect(closeCalls()).toEqual([]);
   });
 
-  it("refuses with exit 2 when origin has no issue-N-slug branch, pushing nothing and leaving the issue open", () => {
-    const head = git(epic, "rev-parse", "HEAD");
-    const before = originRefs();
-    const r = run(EPIC, ISSUE, "no-such-branch", PR);
-    expect(r.status).toBe(2);
-    expect(git(epic, "rev-parse", "HEAD")).toBe(head);
-    expect(originRefs()).toBe(before);
-    expect(ghLog().some((l) => l.startsWith("issue close"))).toBe(false);
-  });
-
-  it("rejects a wrong argument count, a non-numeric epic, issue or PR number, or a slug outside [a-z0-9-] with exit 2", () => {
+  it("rejects a missing or unknown subcommand, a wrong argument count, a non-numeric epic, issue or PR number, or a slug outside [a-z0-9-] with exit 2", () => {
     const before = originRefs();
     const head = git(epic, "rev-parse", "HEAD");
+    const refsBefore = epicRefs();
     const cases: string[][] = [
       [],
-      [EPIC, ISSUE, SLUG],
-      [EPIC, ISSUE, SLUG, PR, "extra"],
-      ["x", ISSUE, SLUG, PR],
-      ["0", ISSUE, SLUG, PR],
-      [EPIC, "12a", SLUG, PR],
-      [EPIC, "-12", SLUG, PR],
-      [EPIC, ISSUE, SLUG, "pr"],
-      [EPIC, ISSUE, "Add-Widget", PR],
-      [EPIC, ISSUE, "add_widget", PR],
-      [EPIC, ISSUE, "-add-widget", PR],
-      [EPIC, ISSUE, "add widget", PR],
-      [EPIC, ISSUE, "", PR],
+      ["merge"],
+      ["close"],
+      ["integrate", EPIC, ISSUE, SLUG, PR],
+      [EPIC, ISSUE, SLUG, PR],
     ];
+    for (const sub of ["merge", "close"]) {
+      cases.push(
+        [sub, EPIC, ISSUE, SLUG],
+        [sub, EPIC, ISSUE, SLUG, PR, "extra"],
+        [sub, "x", ISSUE, SLUG, PR],
+        [sub, "0", ISSUE, SLUG, PR],
+        [sub, "12a", ISSUE, SLUG, PR],
+        [sub, "-12", ISSUE, SLUG, PR],
+        [sub, EPIC, "x", SLUG, PR],
+        [sub, EPIC, "0", SLUG, PR],
+        [sub, EPIC, "12a", SLUG, PR],
+        [sub, EPIC, "-12", SLUG, PR],
+        [sub, EPIC, ISSUE, SLUG, "pr"],
+        [sub, EPIC, ISSUE, SLUG, "0"],
+        [sub, EPIC, ISSUE, SLUG, "12a"],
+        [sub, EPIC, ISSUE, SLUG, "-12"],
+        [sub, EPIC, ISSUE, "Add-Widget", PR],
+        [sub, EPIC, ISSUE, "add_widget", PR],
+        [sub, EPIC, ISSUE, "-add-widget", PR],
+        [sub, EPIC, ISSUE, "add widget", PR],
+        [sub, EPIC, ISSUE, "", PR],
+      );
+    }
     for (const args of cases) {
       const r = run(...args);
       expect(r.status, JSON.stringify(args)).toBe(2);
     }
+    expect(git(epic, "rev-parse", "--abbrev-ref", "HEAD")).toBe(EPIC_BRANCH);
     expect(git(epic, "rev-parse", "HEAD")).toBe(head);
+    expect(epicRefs()).toBe(refsBefore);
     expect(originRefs()).toBe(before);
     expect(ghLog()).toEqual([]);
-  });
-});
-
-describe("integrate-child.sh after the merge", () => {
-  it("exits 3 when closing the issue fails after the push, with origin's epic-E at the merge commit", () => {
-    writeFileSync(join(bin, "gh"), "#!/usr/bin/env bash\nexit 1\n");
-    const r = runStandard();
-    expect(r.status).toBe(3);
-    expect(git(origin, "rev-parse", `refs/heads/${EPIC_BRANCH}`)).toBe(
-      git(epic, "rev-parse", "HEAD"),
-    );
   });
 });
