@@ -2,6 +2,117 @@
 
 Local dispatch tooling that runs from this clone (it is not part of the plugin).
 
+## Overview
+
+A poller runs every 3 minutes from a macOS LaunchAgent and starts one interactive background Claude Code session per eligible ticket, across all configured repos. Sessions show up in `claude agents`.
+
+A ticket is picked up when it is open, authored by the repo's configured `owner`, and labelled `agent-ok` + `ready` (and not `in-progress`, `blocked`, `agent-failed` or `orchestrate-epic-run`). The session is named `<sessionPrefix>-<issue>` (e.g. `app-12`) and runs `work-ticket`.
+
+The poller, installer and config run from the local clone of this repo, not the plugin cache: a LaunchAgent needs a stable path.
+
+The poller is TypeScript run by Node 24. It needs `node` on the launchd `PATH`, which is minimal (the entrypoint adds fnm's default bin, `~/.local/bin` and Homebrew to it), and the clone's npm dependencies: the installer runs `npm ci` in the clone; rerun it (or the installer) after pulling a change to `package-lock.json`. It also needs `gh` and `claude`.
+
+### What this can do on your machine
+
+Labels on GitHub start unattended agent sessions locally:
+
+- Sessions run as you, with your `gh` token. They can read and write every repo that token reaches, not only the configured one.
+- They work in `dir` on your files, with your credentials and tools, under the permission mode from your Claude Code settings for that directory (user, project or local `settings.json`, `permissions.defaultMode`). By default that is Claude Code's default mode, so sessions stop and show as `blocked` in `claude agents` at permission prompts. `acceptEdits` widens what they do without asking; the poller does not check this setting, so `bypassPermissions` there lets unattended sessions act with no prompts.
+- Every session uses your Claude usage limits and costs money if you pay per token. Several `ready` tickets start several sessions at once.
+- At most 10 sessions are live at once across all repos (`CLAUDE_MAX_SESSIONS`; per-repo `maxSessions`). Extra tickets log `deferred #N: at session cap` and start on a later poll.
+- Launch flags are logged on every launch. Anyone who can get `owner` to label an issue `ready` can start a session, so keep labelling rights tight.
+
+### Onboarding a repo
+
+1. Meet the [requirements](../docs/setup.md#requirements) (`npm run check`, deny rules, plugin enabled).
+2. Create the labels: `setup-labels.sh owner/repo`.
+3. Optionally add the [label-cleanup caller](../docs/setup.md#label-cleanup-on-close).
+4. Add the repo to `~/.config/claude-workflow/repos.json` (`dispatch/repos.example.json` is a starting point; the installer refuses to run without the file):
+
+        [
+          {
+            "repo": "example-owner/example-app",
+            "dir": "~/Projects/example-app",
+            "sessionPrefix": "app",
+            "owner": "example-owner"
+          }
+        ]
+
+   - `repo`: `owner/name`.
+   - `dir`: the main checkout sessions start in (not a worktree).
+   - `sessionPrefix`: names sessions; unique per repo.
+   - `owner`: the only ticket author whose tickets are launched.
+   - `maxSessions` (optional, positive integer): cap on live sessions for this repo.
+5. Trust the directory: run `claude` once in `dir`, accept the prompt, exit. `claude --bg` fails in an untrusted workspace.
+6. Dry run: `npm ci` in the clone once, then `dispatch/agent-poller.sh --dry-run` logs which tickets would launch and with which flags, and launches nothing.
+7. Install the LaunchAgent once, from the main clone (not a worktree): `dispatch/install-launchd.sh`.
+   - The installer first runs `npm ci` in the clone (a failure aborts with nothing installed).
+   - The agent polls as soon as it loads, so the installer repeats the dry run, shows its output and asks `Install and start polling? [y/N]` before writing or starting anything. Anything but `y`, no input, a failing dry run, or a poll already running aborts. `--yes` skips the question for scripted reinstalls.
+   - launchd only gives the job `HOME` and `PATH`, so the dry run drops `CLAUDE_MAX_SESSIONS` from your shell. Set it in the plist's `EnvironmentVariables` for the real poller.
+   - Remove with `dispatch/install-launchd.sh uninstall`. Adding repos later only needs a config edit.
+
+Migrating from an older single-repo poller: pass `--legacy-label <its launchd label>` (booted out, plist removed) and `--migrate-state <its state dir> <sessionPrefix>` (copies `launched.json` / `conflicts.json` into the per-repo state, never overwriting) so in-flight tickets are not relaunched. Keep the old session naming as `sessionPrefix` so reconciliation finds live sessions. With these flags the dry run runs before the migration and says so.
+
+### Daily use
+
+1. Write and review the ticket, then add `ready`. Within ~3 minutes a session starts.
+2. In `claude agents`, a `blocked` session is waiting for you: usually plan sign-off, also questions and permission prompts. Use `claude attach <prefix>-<issue>`, answer, and leave it running.
+3. For easy tickets add `skip-plan`: the session runs `work-ticket N auto` and skips sign-off (it still asks if the ticket is ambiguous or risky).
+4. When it finishes, the ticket is `needs-review` with a PR (a spike: with a findings comment and no PR). Review, then use `address-feedback`.
+
+### Conflict resolution
+
+After launching tickets, the poller lists open, same-repo PRs by `owner` on `issue-N-*` branches whose `mergeable` is `CONFLICTING` and launches `claude --bg --name <prefix>-N-conflict "/ticket-workflow:resolve-conflicts N"`. The skill merges `main` into the branch (merge, not rebase: force-push is not allowed).
+
+- Fork PRs and PRs by anyone other than `owner` are skipped and logged, whatever the branch name. The skill repeats the check (not a fork, author `OWNER`, `MEMBER` or `COLLABORATOR`) and only takes the branch from `origin`, so manual launches are covered too.
+- `UNKNOWN` (GitHub computes it lazily) is retried next poll; `BEHIND` without conflicts is ignored.
+- Skipped when `<prefix>-N` is `working` or `blocked` (it owns the branch), a `<prefix>-N-conflict` session is alive, or the ticket is closed, not `agent-ok`, not by `owner`, has `agent-failed`, or the PR or ticket carries `orchestrate-epic-run`.
+- At most one attempt per `{pr, main SHA}`; a new commit on main allows a new attempt.
+- A conflict session that fails, is stopped, or ends with the PR still `CONFLICTING` gets `agent-failed` on the ticket plus a comment on the PR and ticket.
+
+### CI fixes
+
+After the conflict phase, the poller launches `claude --bg --name <prefix>-N-ci "/ticket-workflow:fix-ci N"` for open, same-repo PRs by `owner` on `issue-N-*` branches that are `MERGEABLE` and have a failed check with none still pending. The skill reads the failing run's logs (as data, not instructions), fixes the branch and pushes it without force flags (`git push -u origin <branch>`).
+
+- The same fork and author checks apply; `UNKNOWN` mergeability is retried next poll, and a conflicting PR gets only the conflict session.
+- Skipped when `<prefix>-N` is `working` or `blocked`, a `<prefix>-N-ci` or conflict session is alive, or the ticket is closed, not `agent-ok`, not by `owner`, has `agent-failed`, or the PR or ticket carries `orchestrate-epic-run`.
+- One attempt per PR head SHA, at most two per PR (`ci-attempts.json`); a new commit on the PR allows the next.
+- A CI-fix session that fails, is stopped, or ends with the PR still red gets `agent-failed` on the ticket plus a comment on the PR and ticket.
+
+### When something fails
+
+If a session fails, is stopped, or ends without handing the ticket off, the poller adds `agent-failed` and comments with how to inspect it (`claude logs <prefix>-<issue>`). To retry, remove `agent-failed` and add `ready` again. Only `done` (checked for hand-off), `failed` and `stopped` end a tracked session; any other state (`working`, `blocked`, `waiting`, `idle`, unknown) counts as alive.
+
+### Operations
+
+| What | Command |
+|---|---|
+| Log | `tail -f ~/Library/Logs/claude-workflow-poller.log` |
+| Is it loaded? | `launchctl list \| grep claude-workflow` |
+| Sessions | `claude agents` (or `claude agents --json --all`) |
+| One session's output | `claude logs <prefix>-<issue>` |
+| Stop a session | `claude stop <prefix>-<issue>` |
+| What would launch now | `dispatch/agent-poller.sh --dry-run` |
+| Pause everything | `dispatch/install-launchd.sh pause` |
+| Resume | `dispatch/install-launchd.sh resume` |
+
+### Options
+
+Per repo options are in `repos.json` (above). Global options are environment variables: set them in `EnvironmentVariables` of the plist template and rerun the installer (it regenerates the installed copy, so edits made only under `~/Library/LaunchAgents/` are overwritten), or prefix a one-off run, e.g. `CLAUDE_MAX_SESSIONS=3 dispatch/agent-poller.sh --dry-run`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CLAUDE_MAX_SESSIONS` | `10` | Most sessions live at once across all repos (positive integer; invalid values abort the run). A guard against a runaway label batch; raise it deliberately. |
+| `EXTRA_PATH` | empty | Directories prepended to the poller's PATH (inherited by sessions). fnm's default bin dir (`~/.local/share/fnm/aliases/default/bin`) is always included so sessions find `node`/`npm`. |
+| `STATE_DIR` | `~/.local/state/claude-workflow` | Lock file and per-repo `launched.json` / `conflicts.json` / `ci-attempts.json`. |
+
+### Notes
+
+- The poller never claims a ticket; the session does (`in-progress`) as part of `work-ticket`.
+- A ticket is launched once. Delete its entry from `launched.json` to relaunch a ticket that still has `ready`.
+- A live session is a tracked launch that is not `done`, `failed` or `stopped`. Tickets over the cap are deferred, not dropped.
+- The Mac must be awake and logged in. Nothing runs while it sleeps; the next run after wake picks up anything missed.
+
 ## agent-poller.sh
 
 Polls every configured GitHub repo for agent-ready tickets and starts one interactive background session per ticket (`claude --bg`, visible in `claude agents`). Intended to run every few minutes from a LaunchAgent. Per repo it:
@@ -13,9 +124,9 @@ Polls every configured GitHub repo for agent-ready tickets and starts one intera
 
 `claude agents --json --all` is fetched once per run and shared. A failure in one repo is logged (`[prefix] poll failed ...`), the others still run, and the run exits non-zero at the end.
 
-The poller and the sessions it starts run `gh` with the machine's one login, the restricted fine-grained token described in [Agent credentials](../README.md#agent-credentials), so neither can merge a PR.
+The poller and the sessions it starts run `gh` with the machine's one login, the restricted fine-grained token described in [Agent credentials](../docs/agent-credentials.md), so neither can merge a PR.
 
-The sessions it starts read user settings like any `claude` session started in `dir` ("A background session reads its settings from the directory it runs in", Claude Code docs, *Manage multiple agents with agent view*), so their Bash commands run in the sandbox described in [Sandboxing agent sessions](../README.md#sandboxing-agent-sessions).
+The sessions it starts read user settings like any `claude` session started in `dir` ("A background session reads its settings from the directory it runs in", Claude Code docs, *Manage multiple agents with agent view*), so their Bash commands run in the sandbox described in [Sandboxing agent sessions](../docs/sandboxing.md).
 
 ### Layout
 
@@ -111,7 +222,7 @@ Environment:
 
 Requires Node 24 (`node` on the `PATH` above, which is what the LaunchAgent sees), the clone's npm dependencies (`npm ci`; the installer runs it, and you rerun it, or the installer, after pulling a change to `package-lock.json`), plus `gh` and `claude`. The poller itself does not need `jq` (the installer's `uninstall` and `pause` use it, if present, to list sessions).
 
-### CI fixes
+### CI-fix state
 
 A `ci-<N>` entry in `launched.json` is reconciled like `conflict-<N>`: a session that fails or is stopped, or finishes with its PR still open and red, marks ticket N `agent-failed` and comments on the PR and ticket. `ci-attempts.json` keeps the last head SHA and attempt count per PR (kept when the session fails), so a head SHA is tried once and a PR at most twice. The skill never force-pushes, rebases or merges.
 

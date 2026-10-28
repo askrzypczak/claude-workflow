@@ -79,7 +79,7 @@ Read the report. Check it against the post-gate instructions and the focus list,
 For two open sibling PRs, run `git merge-tree --write-tree` between their branches to decide the integration order. Tell the second agent to merge `origin/epic-E` (its `work-ticket` step 7 conflict path) after the first lands.
 
 ## 7. Integrate
-Only after the verdict approves, `gh pr checks` is green and `gh pr view --json mergeable` is `MERGEABLE`. In the epic worktree, run each git command below on its own from the worktree (no `cd`, no `git -C`, nothing chained), so the sandbox's `git fetch *` and `git push *` exclusions match it (README, Sandboxing agent sessions):
+Only after the verdict approves, `gh pr checks` is green and `gh pr view --json mergeable` is `MERGEABLE`. In the epic worktree, run each git command below on its own from the worktree (no `cd`, no `git -C`, nothing chained), so the sandbox's `git fetch *` and `git push *` exclusions match it (`docs/sandboxing.md`):
 1. `git fetch origin --quiet`.
 2. `${CLAUDE_PLUGIN_ROOT}/scripts/integrate-child.sh merge E N <slug> <PR>` (numbers literal). It merges `origin/issue-N-<slug>` into `epic-E` with `--no-ff` and the message `Merge issue-N-<slug> into epic-E (#N, PR #<PR>)`, and fetches and pushes nothing. Exit 1 is a conflict (merge aborted): send the child a round to merge `origin/epic-E` (its `work-ticket` step 7 conflict path), then re-review and start again at 1. Exit 2 is a usage or state error: fix the call or the state (stderr says which).
 3. `git push origin epic-E`. If it fails, the merge is local only and the child stays open: fix the cause and push again.
