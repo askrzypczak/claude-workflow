@@ -159,6 +159,14 @@ describe("integrate-child.sh merge", () => {
     expect(closeCalls()).toEqual([]);
   });
 
+  it("a second merge after a merge is already up to date and exits 0 without a new commit", () => {
+    expect(runMerge().status).toBe(0);
+    const merged = git(epic, "rev-parse", "HEAD");
+    const r = runMerge();
+    expect(r.status).toBe(0);
+    expect(git(epic, "rev-parse", "HEAD")).toBe(merged);
+  });
+
   it("refuses with exit 2 when origin has no issue-N-slug branch, leaving epic-E and the issue as they were", () => {
     const head = git(epic, "rev-parse", "HEAD");
     const refsBefore = epicRefs();
@@ -198,6 +206,48 @@ describe("integrate-child.sh close", () => {
     const r = runClose();
     expect(r.status).toBe(2);
     expect(closeCalls()).toEqual([]);
+  });
+
+  it("finds the child's merge after epic-E has moved past it and names that merge, not the tip", () => {
+    expect(runMerge().status).toBe(0);
+    const merge = git(epic, "rev-parse", "HEAD");
+    const seed = join(dir, "seed");
+    commitFile(seed, "main.txt", "main moved\n", "main moves on");
+    git(seed, "push", "-q", "origin", "main");
+    git(epic, "fetch", "-q", "origin");
+    git(epic, "merge", "-q", "--no-ff", "-m", `Merge origin/main into ${EPIC_BRANCH}`, "origin/main");
+    pushEpic();
+    const tip = git(epic, "rev-parse", "HEAD");
+    expect(tip).not.toBe(merge);
+
+    const r = runClose();
+    expect(r.status).toBe(0);
+    const closes = closeCalls();
+    expect(closes).toHaveLength(1);
+    const m = closes[0].match(/\(merge ([0-9a-f]+)\)\.$/);
+    expect(m).not.toBeNull();
+    const short = m![1];
+    expect(merge.startsWith(short)).toBe(true);
+    expect(tip.startsWith(short)).toBe(false);
+  });
+
+  it("closes the issue after origin's issue-N-slug branch is deleted", () => {
+    expect(runMerge().status).toBe(0);
+    pushEpic();
+    git(child, "push", "-q", "origin", "--delete", CHILD_BRANCH);
+    git(epic, "fetch", "-q", "--prune", "origin");
+
+    const r = runClose();
+    expect(r.status).toBe(0);
+    expect(closeCalls()).toHaveLength(1);
+  });
+
+  it("close succeeds with origin unreachable, so it runs no fetch or push", () => {
+    expect(runMerge().status).toBe(0);
+    pushEpic();
+    git(epic, "remote", "set-url", "origin", join(dir, "missing.git"));
+    expect(runClose().status).toBe(0);
+    expect(closeCalls()).toHaveLength(1);
   });
 
   it("exits 3 when closing the issue fails", () => {

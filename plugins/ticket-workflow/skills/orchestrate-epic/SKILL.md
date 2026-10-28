@@ -79,10 +79,13 @@ Read the report. Check it against the post-gate instructions and the focus list,
 For two open sibling PRs, run `git merge-tree --write-tree` between their branches to decide the integration order. Tell the second agent to merge `origin/epic-E` (its `work-ticket` step 7 conflict path) after the first lands.
 
 ## 7. Integrate
-Only after the verdict approves, `gh pr checks` is green and `gh pr view --json mergeable` is `MERGEABLE`. In the epic worktree:
-1. Run `${CLAUDE_PLUGIN_ROOT}/scripts/integrate-child.sh E N <slug> <PR>` (numbers literal). It fetches, merges `origin/issue-N-<slug>` with `--no-ff` and the message `Merge issue-N-<slug> into epic-E (#N, PR #<PR>)`, pushes `epic-E` with a plain push, and closes the child issue with a comment naming the PR. GitHub marks the child PR merged when its head lands in the base; `Closes #N` fires only on the default branch, and closing by hand still triggers label cleanup. Exit 1 is a conflict (merge aborted, nothing pushed): send the child a round to merge `origin/epic-E` (its `work-ticket` step 7 conflict path), then re-review and run the script again. Exit 2 is a usage or state error: fix the call. Exit 3: merged, but the push or the issue close failed (stderr says which): fix the cause and run it again.
-2. If `origin/main` moved, `git merge origin/main` into `epic-E`, run `npm run check`, push. Resolve conflicts as `resolve-conflicts` step 3 does, including its stop conditions (`git merge --abort`, then `needs input:`).
-3. Release the next child; send "integrated" to a waiting plan-early agent.
+Only after the verdict approves, `gh pr checks` is green and `gh pr view --json mergeable` is `MERGEABLE`. In the epic worktree, run each git command below on its own from the worktree (no `cd`, no `git -C`, nothing chained), so the sandbox's `git fetch *` and `git push *` exclusions match it (README, Sandboxing agent sessions):
+1. `git fetch origin --quiet`.
+2. `${CLAUDE_PLUGIN_ROOT}/scripts/integrate-child.sh merge E N <slug> <PR>` (numbers literal). It merges `origin/issue-N-<slug>` into `epic-E` with `--no-ff` and the message `Merge issue-N-<slug> into epic-E (#N, PR #<PR>)`, and fetches and pushes nothing. Exit 1 is a conflict (merge aborted): send the child a round to merge `origin/epic-E` (its `work-ticket` step 7 conflict path), then re-review and start again at 1. Exit 2 is a usage or state error: fix the call.
+3. `git push origin epic-E`. If it fails, the merge is local only and the child stays open: fix the cause and push again.
+4. `${CLAUDE_PLUGIN_ROOT}/scripts/integrate-child.sh close E N <slug> <PR>`. It closes the child issue with a comment naming the PR and the merge commit, and refuses with exit 2 while `origin/epic-E` lacks that merge. GitHub marks the child PR merged when its head lands in the base; `Closes #N` fires only on the default branch, and closing by hand still triggers label cleanup. Exit 2: push `epic-E` (item 3) or fix the call. Exit 3: the close failed (stderr says why): fix the cause and run `close` again.
+5. If `origin/main` moved, `git merge origin/main` into `epic-E`, run `npm run check`, then `git push origin epic-E` (by name: a resumed run's local `epic-E` may have no upstream). Resolve conflicts as `resolve-conflicts` step 3 does, including its stop conditions (`git merge --abort`, then `needs input:`).
+6. Release the next child; send "integrated" to a waiting plan-early agent.
 
 ## 8. Follow-ups
 For each ticket number an agent reports, judge whether it fits the epic: it fits when it is needed to finish the epic's stated goal, or fixes something one of this epic's children introduced.
@@ -105,6 +108,6 @@ When every child other than a spike child (step 1) is integrated and closed:
 - Hand off with `needs input:` merge the epic PR.
 
 ## Hard rules
-- Push only `epic-E`, with a plain push. Never push to `main`/`master`, force-push, or merge a PR through `gh`: integration is `integrate-child.sh` (a local merge into `epic-E` plus a plain push). Sub-agents push only their own `issue-N-*` branches.
+- Push only `epic-E`, with a plain push. Never push to `main`/`master`, force-push, or merge a PR through `gh`: integration is a local merge into `epic-E` (`integrate-child.sh merge`), a plain `git push origin epic-E`, then `integrate-child.sh close` (step 7). Sub-agents push only their own `issue-N-*` branches.
 - Humans merge every PR that reaches `main`.
 - The trust rule and the guards apply as in `work-ticket`; a guard denial means stop, not work around.
