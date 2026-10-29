@@ -1,7 +1,17 @@
 // The setup script's side effects, behind one interface shared by every phase.
 // Phases only see SetupIo, so tests can drive them with the fake in fake-io.ts.
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  constants,
+  copyFileSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from "node:fs";
 import { listSessions } from "../poller/io.ts";
 import type { Session } from "../poller/schemas.ts";
 
@@ -42,6 +52,19 @@ export interface SetupIo {
   /** This process's environment. */
   env(name: string): string | undefined;
   report(status: StepStatus, text: string): void;
+  /** The names of a directory's entries; undefined when it does not exist. */
+  listDir(path: string): string[] | undefined;
+  /**
+   * A regular file's first line without its newline, reading no byte past it (at most 256
+   * bytes); undefined when the path is missing or not a regular file.
+   */
+  readFirstLine(path: string): string | undefined;
+  /** Appends; creates the file with mode 0600 when missing. */
+  appendFile(path: string, text: string): void;
+  /** Copies; throws when `to` exists. */
+  copyFile(from: string, to: string): void;
+  /** Waits for Enter at the terminal; throws without a terminal, as `confirm` does. */
+  waitForEnter(prompt: string): void;
 }
 
 const LABELS: Record<StepStatus, string> = {
@@ -86,6 +109,16 @@ function readLine(script: string, prompt: string): string {
   return result.status === 0 ? result.stdout : "";
 }
 
+/** The most `readFirstLine` reads when no newline comes first. */
+const FIRST_LINE_MAX = 256;
+const NEWLINE = 0x0a;
+
+/** A missing path, or a path through something that is not a directory. */
+function isMissing(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
 /** The real SetupIo: commands run with their output captured; reports go to stdout. */
 export function createIo(): SetupIo {
   return {
@@ -117,6 +150,46 @@ export function createIo(): SetupIo {
     env: (name) => process.env[name],
     report(status, text) {
       console.log(`${LABELS[status]}: ${text}`);
+    },
+    listDir(path) {
+      try {
+        return readdirSync(path);
+      } catch (err) {
+        if (isMissing(err)) return undefined;
+        throw err;
+      }
+    },
+    readFirstLine(path) {
+      let stat;
+      try {
+        stat = statSync(path);
+      } catch (err) {
+        if (isMissing(err)) return undefined;
+        throw err;
+      }
+      // Only a regular file is opened, so a socket or a FIFO never blocks the read.
+      if (!stat.isFile()) return undefined;
+      const fd = openSync(path, "r");
+      try {
+        // One byte at a time, so nothing past the newline is ever read.
+        const line: number[] = [];
+        const byte = Buffer.alloc(1);
+        while (line.length < FIRST_LINE_MAX && readSync(fd, byte, 0, 1, null) === 1 && byte[0] !== NEWLINE) {
+          line.push(byte[0]!);
+        }
+        return Buffer.from(line).toString("utf8");
+      } finally {
+        closeSync(fd);
+      }
+    },
+    appendFile(path, text) {
+      appendFileSync(path, text, { mode: 0o600 });
+    },
+    copyFile(from, to) {
+      copyFileSync(from, to, constants.COPYFILE_EXCL);
+    },
+    waitForEnter(prompt) {
+      readLine(READ_LINE, `${prompt} `);
     },
   };
 }

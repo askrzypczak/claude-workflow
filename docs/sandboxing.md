@@ -115,12 +115,20 @@ With `gh` inside the sandbox, `gh extension` and `gh alias` need no deny rules: 
 
 ## Deploy keys
 
+**Steps:**
+
+1. In a terminal, never from an agent session, in the main clone: `dispatch/setup-agents.sh ssh`, or a full `dispatch/setup-agents.sh`. `--dry-run` first shows what each step would do and changes nothing.
+2. For each repo whose key is not on GitHub yet, the script copies the public key and opens the repo's new-deploy-key page: paste the key (any title), tick "Allow write access", click "Add key", then press Enter in the terminal.
+3. If it stops on an alias's effective config, apply the fix it names. If it stops on the account key, add a passphrase with `ssh-keygen -p -f <key>`, or delete the key. Then rerun.
+
+The key goes in through the browser, never `gh repo deploy-key add`: "Note that any key added by gh will be associated with the current authentication token. If you de-authorize the GitHub CLI app or authentication token from your account, any deploy keys added by GitHub CLI will be removed as well." (`gh repo deploy-key add --help`). Logging out leaves the old login's token valid ("This command does not revoke authentication tokens.", `gh auth logout --help`), so after the token swap in [Agent credentials](agent-credentials.md) the natural cleanup is to revoke the old "GitHub CLI" authorization on github.com. That would delete every deploy key gh had added, and agent pushes would start failing.
+
 An excluded git command uses whatever key ssh offers it. With the account key, that is every repo the account can push to; with a deploy key, one: "If you use multiple repositories on one server, you will need to generate a dedicated key pair for each one. You can't reuse a deploy key for multiple repositories." (GitHub Docs, *Managing deploy keys*). Within its repo a write key is broad: "Deploy keys with write access can perform the same actions as an organization member with admin access, or a collaborator on a personal repository." (same page). Deploy keys are a bypass actor a ruleset can name (the bypass `actor_type` "Can be one of: `Integration`, `OrganizationAdmin`, `RepositoryRole`, `Team`, `DeployKey`, `User`", GitHub Docs, *REST API endpoints for rules*), so a ruleset binds their pushes unless its bypass list names them: keep deploy keys off every ruleset's bypass list.
 
-For each served repo, and for this one:
+For each served repo, and for this one, the script does the following, where `<repo>` is the name part of `<owner>/<repo>`. Two served repos with the same name stop it before any change, since the key file and the alias are named after it. Each step checks first and does nothing when its work is already done, so a rerun is safe.
 
-1. `ssh-keygen -t ed25519 -N "" -f ~/.ssh/deploy-<repo>`. No passphrase, since sessions push unattended; the file is denied to sandboxed commands and opens one repo. Add `~/.ssh/deploy-<repo>.pub` in the repo's Settings, Deploy keys, with "Allow write access".
-2. Add a host alias to `~/.ssh/config`. `IdentitiesOnly yes` makes ssh offer only that key, "even if ssh-agent(1) or a PKCS11Provider or SecurityKeyProvider offers more identities" (`ssh_config(5)`):
+1. Key: `ssh-keygen -t ed25519 -N "" -f ~/.ssh/deploy-<repo>` when that file is missing. No passphrase, since sessions push unattended; the file is denied to sandboxed commands and opens one repo.
+2. Alias: when no `Host` line in `~/.ssh/config` names `github.com-<repo>`, it backs the file up once per run (`~/.ssh/config.bak-<YYYYMMDD-HHMMSS>`) and appends the block below. It never rewrites an existing line. `IdentitiesOnly yes` makes ssh offer only that key, "even if ssh-agent(1) or a PKCS11Provider or SecurityKeyProvider offers more identities" (`ssh_config(5)`):
 
         Host github.com-<repo>
           HostName github.com
@@ -128,16 +136,19 @@ For each served repo, and for this one:
           IdentityFile ~/.ssh/deploy-<repo>
           IdentitiesOnly yes
 
-3. In the repo's clone (a served repo's `dir`; for this repo, the clone the poller runs from): `git remote set-url origin git@github.com-<repo>:<owner>/<repo>.git`. Worktrees share the clone's remotes.
-4. Add the key file to the [Settings](#settings) JSON.
+3. Effective config: `ssh -G github.com-<repo>` (local, no network) must list the deploy key as the only `identityfile`, with `identitiesonly yes`. An earlier block that also matches the alias, such as `Host *`, can add keys: "Multiple IdentityFile directives will add to the list of identities tried" (`ssh_config(5)`). Otherwise the script stops before step 4, naming the keys ssh would offer and the fix.
+4. Reach: `git ls-remote git@github.com-<repo>:<owner>/<repo>.git`. When it fails, GitHub does not have the key yet: the script copies `~/.ssh/deploy-<repo>.pub` to the clipboard, opens the repo's new-deploy-key page (Settings, Deploy keys, Add deploy key), waits for Enter while the maintainer adds it with "Allow write access", and runs the check again. A second failure stops it. [Checks](#checks) tests the push.
+5. Remote, only after step 4 passed: in the repo's clone (a served repo's `dir`; for this repo, the clone the poller runs from), `git remote set-url origin git@github.com-<repo>:<owner>/<repo>.git`. Worktrees share the clone's remotes.
 
-The account key:
+Each key file must be denied in [Settings](#settings); the script does not edit the settings.
 
-- Out of `ssh-agent`: `ssh-add -D`, or `ssh-add -d --apple-use-keychain <key>`, which also removes its stored passphrase ("When removing identities with -d, each passphrase will be removed from it.", `ssh-add(1)` on macOS).
-- No `UseKeychain` or `AddKeysToAgent` lines for it in `~/.ssh/config`: they would load it again.
-- Off the disk, or kept passphrase-protected: an excluded git command can read the file, and ssh tries default key names such as `~/.ssh/id_ed25519` on its own.
+The account key is every private key in `~/.ssh` other than the `deploy-*` ones: the excluded git commands can use any key file. The script deals with it only after every served repo's remote works through its deploy key, so the maintainer is never left without a way to push:
 
-The marketplace clone moves to HTTPS; the repo is public, so it needs no credentials. For an `owner/repo` source Claude Code "probes `ssh -T git@github.com` and clones over SSH when the probe succeeds", and "Installs from `/plugin` inside a session and plugin updates don't fall back" (Claude Code docs, *Host and maintain a marketplace*). `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` in the JSON covers new clones. Switch the existing one: `git -C ~/.claude/plugins/marketplaces/askrzypczak-plugins remote set-url origin https://github.com/askrzypczak/claude-workflow.git`.
+- Out of `ssh-agent`: when the agent holds keys, the script runs `/usr/bin/ssh-add -d --apple-use-keychain <key>` for each account key, which also removes its stored passphrase ("When removing identities with -d, each passphrase will be removed from it.", `ssh-add(1)` on macOS), then `/usr/bin/ssh-add -D`.
+- No `UseKeychain` or `AddKeysToAgent` lines for it in `~/.ssh/config`: they would load it again. The script reports each such line, with its line number, and edits none, since a line may serve other hosts' keys.
+- Off the disk, or kept passphrase-protected: an excluded git command can read the file, and ssh tries default key names such as `~/.ssh/id_ed25519` on its own. The script stops on an account key with no passphrase and names both ways out: `ssh-keygen -p -f <key>`, or deleting the key once nothing needs it. It deletes no key.
+
+The marketplace clone moves to HTTPS; the repo is public, so it needs no credentials. For an `owner/repo` source Claude Code "probes `ssh -T git@github.com` and clones over SSH when the probe succeeds", and "Installs from `/plugin` inside a session and plugin updates don't fall back" (Claude Code docs, *Host and maintain a marketplace*). `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` in the JSON covers new clones. The script switches the existing one: `git -C ~/.claude/plugins/marketplaces/askrzypczak-plugins remote set-url origin https://github.com/askrzypczak/claude-workflow.git`.
 
 The maintainer pushes through the same alias remotes. For a repo without a deploy key, load the account key briefly with dispatch paused, as [Admin work](agent-credentials.md#admin-work) does, and `ssh-add -D` afterwards.
 

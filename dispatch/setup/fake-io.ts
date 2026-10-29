@@ -8,6 +8,13 @@
 // pasted token FAKE_TOKEN, a swap that leaves one fine-grained login, no stray tokens, and a
 // wrong-sha merge probe refused with HTTP 403.
 //
+// The ssh model lives under FAKE_HOME: `files` is a mutable in-memory file system (read by
+// readFile, readFirstLine and listDir; written by appendFile, copyFile and the fake ssh-keygen),
+// with scripted ssh-keygen, ssh-add, `ssh -G`, pbcopy, `git ls-remote` through a
+// `github.com-<name>` alias, and `git -C <dir> remote get-url|set-url origin` per directory.
+// By default GitHub holds no deploy key, the agent holds no key, and the maintainer pastes the
+// copied key while the phase waits for Enter.
+//
 // The fake ignores `--json` field lists and `--jq`: JSON reads print the whole object.
 // Commands it has no script for exit 127 with "unscripted" on stderr.
 import type { Session } from "../poller/schemas.ts";
@@ -17,6 +24,8 @@ export const FAKE_REPO = "example-owner/example-tools";
 export const FAKE_LOGIN = "example-owner";
 /** What `readSecret` returns unless the world says otherwise. */
 export const FAKE_TOKEN = "github_pat_FAKE_TOKEN_FOR_TESTS";
+/** The home the ssh model uses: keys and config live in `<FAKE_HOME>/.ssh`. */
+export const FAKE_HOME = "/home/example";
 
 export interface FakeCall {
   cmd: string;
@@ -31,8 +40,16 @@ export interface FakeReport {
 }
 
 export interface FakePrompt {
-  kind: "secret" | "confirm";
+  kind: "secret" | "confirm" | "enter";
   text: string;
+}
+
+/** A file-system call on the fake: `path` is the file read or written (for copyFile, `from`). */
+export interface FakeFileOp {
+  op: "readFile" | "readFirstLine" | "listDir" | "appendFile" | "copyFile";
+  path: string;
+  to?: string;
+  text?: string;
 }
 
 /** A ruleset as `gh api repos/<repo>/rulesets/<id>` returns it to an admin. */
@@ -65,8 +82,18 @@ export interface FakeWorld {
   confirm?: boolean;
   /** This process's environment for `io.env`. Default empty. */
   env?: Record<string, string>;
-  /** Files by absolute path for `io.readFile`. Default none. */
+  /** Files by absolute path: the start of the fake's mutable file system. Default none. */
   files?: Record<string, string>;
+  /** Repos (owner/name) whose deploy key GitHub already has. Default none. */
+  deployKeys?: string[];
+  /** The maintainer adds the copied key while the phase waits for Enter. Default true. */
+  pastes?: boolean;
+  /** `git -C <dir> remote get-url origin` by directory. Default `origin` for every directory. */
+  remotes?: Record<string, string>;
+  /** Key paths loaded in ssh-agent. Default none. */
+  agentKeys?: string[];
+  /** Key paths that have a passphrase. Default none. */
+  passphrase?: string[];
   /** `security find-internet-password -s github.com` finds an entry. Default false. */
   keychainHasGithub?: boolean;
   /** Calls for which this returns true exit 1 with "HTTP 500" on stderr. */
@@ -144,12 +171,19 @@ export function isMergeProbe(call: FakeCall): boolean {
  * Whether a call changes state. This is the definition of "write command" the setup tests
  * use: `install-launchd.sh` pause or resume; `gh api` with a POST, PUT, PATCH or DELETE
  * (explicit, or implied by a body) except the wrong-sha merge probe; `gh issue comment`;
- * `gh issue edit`; `gh pr edit`; `gh auth logout`; `gh auth login`; and `open`.
+ * `gh issue edit`; `gh pr edit`; `gh auth logout`; `gh auth login`; `open`; `ssh-keygen -t`
+ * (generating a key); `pbcopy`; `ssh-add -d` or `-D`; and `git ... remote set-url`.
  */
 export function isWrite(call: FakeCall): boolean {
   const [a0, a1] = call.args;
   if (call.cmd.endsWith("install-launchd.sh")) return a0 === "pause" || a0 === "resume";
-  if (call.cmd === "open") return true;
+  if (call.cmd === "open" || call.cmd === "pbcopy") return true;
+  if (call.cmd === "ssh-keygen") return call.args.includes("-t");
+  if (call.cmd.endsWith("ssh-add")) return call.args.includes("-d") || call.args.includes("-D");
+  if (call.cmd === "git") {
+    const i = call.args.indexOf("remote");
+    return i >= 0 && call.args[i + 1] === "set-url";
+  }
   if (call.cmd !== "gh") return false;
   const api = parseGhApi(call);
   if (api) return api.method !== "GET" && !isMergeProbe(call);
@@ -163,6 +197,11 @@ export function isWrite(call: FakeCall): boolean {
 /** The write commands among `calls` (see isWrite). */
 export function writeCalls(calls: readonly FakeCall[]): FakeCall[] {
   return calls.filter(isWrite);
+}
+
+/** The file writes among `ops`: appendFile and copyFile. */
+export function fileWrites(ops: readonly FakeFileOp[]): FakeFileOp[] {
+  return ops.filter((o) => o.op === "appendFile" || o.op === "copyFile");
 }
 
 const ok = (stdout = ""): RunResult => ({ status: 0, stdout, stderr: "" });
@@ -198,6 +237,14 @@ export function fakeIo(world: FakeWorld = {}) {
   let rulesets: FakeRuleset[] = structuredClone(world.rulesets ?? [protectMain(), restrictUpdates()]);
   let allowAutoMerge = world.allowAutoMerge ?? false;
   let nextRulesetId = 200;
+
+  const fileOps: FakeFileOp[] = [];
+  const files: Record<string, string> = { ...world.files };
+  const remotes: Record<string, string> = { ...world.remotes };
+  const githubKeys = new Set(world.deployKeys ?? []);
+  let agentKeys = [...(world.agentKeys ?? [])];
+  let clipboard: string | undefined;
+  let lastOpen: string | undefined;
 
   /** Whether the call authenticates as a fine-grained token (GH_TOKEN first, as gh does). */
   const fineGrained = (call: FakeCall) =>
@@ -361,6 +408,102 @@ export function fakeIo(world: FakeWorld = {}) {
     return failed(`unscripted: gh ${call.args.join(" ")}`, 127);
   };
 
+  const sshDir = `${FAKE_HOME}/.ssh`;
+  const sshConfig = `${sshDir}/config`;
+  const baseName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+  const publicLine = (path: string) => `ssh-ed25519 AAAAFAKE${baseName(path)} ${baseName(path)}\n`;
+
+  /** Whether ~/.ssh/config has a `Host` line naming `host`. */
+  const hasHost = (host: string) =>
+    (files[sshConfig] ?? "").split("\n").some((line) => {
+      const words = line.trim().split(/\s+/);
+      return words[0]?.toLowerCase() === "host" && words.slice(1).includes(host);
+    });
+
+  const sshKeygen = (call: FakeCall): RunResult => {
+    const path = flagValue(call.args, "-f");
+    if (path === undefined) return failed(`unscripted: ssh-keygen ${call.args.join(" ")}`, 127);
+    if (call.args.includes("-t")) {
+      if (files[path] !== undefined) return failed(`${path} already exists.`);
+      files[path] =
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n" +
+        `FAKE-KEY-BODY-FOR-TESTS-${baseName(path)}\n` +
+        "-----END OPENSSH PRIVATE KEY-----\n";
+      files[`${path}.pub`] = publicLine(path);
+      return ok(`Your identification has been saved in ${path}\n`);
+    }
+    if (call.args.includes("-y")) {
+      if (files[path] === undefined) return failed(`Load key "${path}": No such file or directory`, 255);
+      if (world.passphrase?.includes(path)) {
+        return failed(`Load key "${path}": incorrect passphrase supplied to decrypt private key`, 255);
+      }
+      return ok(files[`${path}.pub`] ?? publicLine(path));
+    }
+    return failed(`unscripted: ssh-keygen ${call.args.join(" ")}`, 127);
+  };
+
+  const sshAdd = (call: FakeCall): RunResult => {
+    if (call.args.includes("-l")) {
+      if (agentKeys.length === 0) return { status: 1, stdout: "The agent has no identities.\n", stderr: "" };
+      return ok(agentKeys.map((k) => `256 SHA256:FAKE${baseName(k)} ${k} (ED25519)\n`).join(""));
+    }
+    if (call.args.includes("-D")) {
+      agentKeys = [];
+      return ok("All identities removed.\n");
+    }
+    if (call.args.includes("-d")) {
+      const key = call.args[call.args.length - 1]!;
+      if (!agentKeys.includes(key)) return failed(`Could not remove identity "${key}": agent refused operation`);
+      agentKeys = agentKeys.filter((k) => k !== key);
+      return ok(`Identity removed: ${key}\n`);
+    }
+    return failed(`unscripted: ssh-add ${call.args.join(" ")}`, 127);
+  };
+
+  const sshG = (call: FakeCall): RunResult => {
+    const host = call.args[call.args.indexOf("-G") + 1] ?? "";
+    const name = /^github\.com-(.+)$/.exec(host)?.[1];
+    if (name !== undefined && hasHost(host)) {
+      return ok(`hostname github.com\nuser git\nidentitiesonly yes\nidentityfile ~/.ssh/deploy-${name}\n`);
+    }
+    return ok(
+      `hostname ${host}\nuser example\nidentitiesonly no\n` +
+        "identityfile ~/.ssh/id_rsa\nidentityfile ~/.ssh/id_ecdsa\nidentityfile ~/.ssh/id_ed25519\n",
+    );
+  };
+
+  const lsRemote = (call: FakeCall): RunResult => {
+    const m = /^git@github\.com-([^:]+):([^/]+)\/(.+?)(?:\.git)?$/.exec(call.args[1] ?? "");
+    const denied = failed(
+      "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.",
+      128,
+    );
+    if (!m) return denied;
+    const [, alias, owner, name] = m;
+    const reaches =
+      files[`${sshDir}/deploy-${alias}`] !== undefined &&
+      hasHost(`github.com-${alias}`) &&
+      githubKeys.has(`${owner}/${name}`);
+    return reaches ? ok("0123456789abcdef0123456789abcdef01234567\tHEAD\n") : denied;
+  };
+
+  /** `git [-C <dir>] remote get-url|set-url origin [url]`, or undefined for other git calls. */
+  const gitRemote = (call: FakeCall): RunResult | undefined => {
+    const args = call.args;
+    const dir = args[0] === "-C" ? args[1] : undefined;
+    const i = args.indexOf("remote");
+    if (i < 0) return undefined;
+    const fallback = world.origin ?? `git@github.com:${FAKE_REPO}.git`;
+    if (args[i + 1] === "get-url") {
+      return ok(`${(dir !== undefined ? remotes[dir] : undefined) ?? fallback}\n`);
+    }
+    if (args[i + 1] === "set-url" && args[i + 2] === "origin" && args[i + 3] !== undefined) {
+      if (dir !== undefined) remotes[dir] = args[i + 3]!;
+      return ok();
+    }
+    return undefined;
+  };
+
   const scripted = (call: FakeCall): RunResult => {
     const [a0] = call.args;
     if (call.cmd.endsWith("install-launchd.sh")) {
@@ -380,10 +523,22 @@ export function fakeIo(world: FakeWorld = {}) {
         return ok("Resumed.\n");
       }
     }
-    if (call.cmd === "git" && call.args.includes("get-url")) {
-      return ok(`${world.origin ?? `git@github.com:${FAKE_REPO}.git`}\n`);
+    if (call.cmd === "git") {
+      if (a0 === "ls-remote") return lsRemote(call);
+      const remote = gitRemote(call);
+      if (remote) return remote;
     }
-    if (call.cmd === "open") return ok();
+    if (call.cmd === "open") {
+      lastOpen = a0;
+      return ok();
+    }
+    if (call.cmd === "pbcopy") {
+      clipboard = call.input ?? "";
+      return ok();
+    }
+    if (call.cmd === "ssh-keygen") return sshKeygen(call);
+    if (call.cmd.endsWith("ssh-add")) return sshAdd(call);
+    if (call.cmd === "ssh" && call.args.includes("-G")) return sshG(call);
     if (call.cmd === "security" && a0 === "find-internet-password") {
       return world.keychainHasGithub
         ? ok('keychain: "/home/example/Library/Keychains/login.keychain-db"\n    "srvr"<blob>="github.com"\n')
@@ -411,12 +566,49 @@ export function fakeIo(world: FakeWorld = {}) {
       prompts.push({ kind: "confirm", text: question });
       return world.confirm ?? false;
     },
-    readFile: (path: string) => world.files?.[path],
+    readFile(path: string): string | undefined {
+      fileOps.push({ op: "readFile", path });
+      return files[path];
+    },
     env: (name: string) => world.env?.[name],
     report(status: StepStatus, text: string): void {
       reports.push({ status, text });
     },
+    listDir(path: string): string[] | undefined {
+      fileOps.push({ op: "listDir", path });
+      const prefix = `${path.replace(/\/+$/, "")}/`;
+      const names = Object.keys(files)
+        .filter((p) => p.startsWith(prefix) && p.length > prefix.length)
+        .map((p) => p.slice(prefix.length).split("/")[0]!);
+      return names.length === 0 ? undefined : [...new Set(names)];
+    },
+    readFirstLine(path: string): string | undefined {
+      fileOps.push({ op: "readFirstLine", path });
+      const text = files[path];
+      if (text === undefined) return undefined;
+      const end = text.indexOf("\n");
+      return end < 0 ? text : text.slice(0, end);
+    },
+    appendFile(path: string, text: string): void {
+      fileOps.push({ op: "appendFile", path, text });
+      files[path] = (files[path] ?? "") + text;
+    },
+    copyFile(from: string, to: string): void {
+      fileOps.push({ op: "copyFile", path: from, to });
+      if (files[from] === undefined) throw new Error(`ENOENT: no such file or directory, copyfile '${from}'`);
+      if (files[to] !== undefined) throw new Error(`EEXIST: file already exists, copyfile '${from}' -> '${to}'`);
+      files[to] = files[from]!;
+    },
+    waitForEnter(prompt: string): void {
+      prompts.push({ kind: "enter", text: prompt });
+      if (world.pastes === false || lastOpen === undefined) return;
+      const m = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/settings\/keys\/new$/.exec(lastOpen);
+      if (!m) return;
+      const [, owner, name] = m;
+      const pub = files[`${sshDir}/deploy-${name}.pub`];
+      if (pub !== undefined && clipboard === pub) githubKeys.add(`${owner}/${name}`);
+    },
   };
 
-  return { io, calls, reports, prompts };
+  return { io, calls, reports, prompts, fileOps, files };
 }

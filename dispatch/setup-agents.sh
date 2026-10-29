@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Set this machine up for agent sessions: the agents' GitHub token and the repo settings it
-# relies on (credentials). See docs/agent-credentials.md.
-# Usage: dispatch/setup-agents.sh [credentials] [--dry-run]
+# relies on (credentials), then a deploy key and SSH host alias per served repo in place of the
+# account key (ssh). See docs/agent-credentials.md and docs/sandboxing.md.
+# Usage: dispatch/setup-agents.sh [credentials|ssh] [--dry-run]
 #   With no phase, runs every phase in order and stops at the first step that needs the maintainer.
 #   --dry-run  run the reads and print what each step would do; change nothing.
 # The maintainer runs this in a terminal, never an agent: it reads the token and changes the

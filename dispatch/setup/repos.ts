@@ -17,7 +17,7 @@ const REMOTES = [
 ];
 
 /** owner/name from a github.com remote URL, or undefined for any other remote. */
-function parseRemote(url: string): string | undefined {
+export function parseRemote(url: string): string | undefined {
   for (const pattern of REMOTES) {
     const m = pattern.exec(url);
     if (m) return `${m[1]}/${m[2]}`;
