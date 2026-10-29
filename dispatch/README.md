@@ -48,10 +48,10 @@ Labels on GitHub start unattended agent sessions locally:
    - `credentials`: the agents' token, each repo's `restrict-updates` ruleset and auto-merge; see [Agent credentials](../docs/agent-credentials.md).
    - `ssh`: a deploy key and an SSH host alias per repo in place of the account key; see [Deploy keys](../docs/sandboxing.md#deploy-keys).
    - `sandbox`: the sandbox settings in user settings and the managed copy; see [Sandboxing](../docs/sandboxing.md#settings).
-   - `check`: the settings checks and a probe session in the first repo's `dir`; see [Checks](../docs/sandboxing.md#checks).
+   - `check`: the settings checks and a probe session started in this clone, the way the poller starts one (run `claude` once in the clone and accept the prompt, as in step 5, or `check` stops with "a directory claude has not been run in once must be trusted first"); see [Checks](../docs/sandboxing.md#checks).
 
-   `credentials` pauses dispatch. A full run resumes it at the end, only when every phase passes. A run of a single phase leaves it paused and says so.
-7. Dry run: `npm ci` in the clone once, then `dispatch/agent-poller.sh --dry-run` logs which tickets would launch and with which flags, and launches nothing. It stops at the [sandbox preflight](#sandbox-preflight) if the `sandbox` phase has not run.
+   `credentials` pauses dispatch. A full run resumes it at the end, only when every phase passes. A run of `credentials` or `check` alone leaves it paused and says so; the way out without a full run is `dispatch/install-launchd.sh resume`. On a first setup, before step 8, there is nothing to resume: the LaunchAgent is not installed yet, and step 8's install starts polling.
+7. Dry run: `dispatch/agent-poller.sh --dry-run` logs which tickets would launch and with which flags, and launches nothing. It stops at the [sandbox preflight](#sandbox-preflight) if the `sandbox` phase has not run.
 8. Install the LaunchAgent once, from the main clone (not a worktree): `dispatch/install-launchd.sh`.
    - The installer first runs `npm ci` in the clone (a failure aborts with nothing installed).
    - The agent polls as soon as it loads, so the installer repeats the dry run, shows its output and asks `Install and start polling? [y/N]` before writing or starting anything. Anything but `y`, no input, a failing dry run, or a poll already running aborts. `--yes` skips the question for scripted reinstalls.
@@ -62,7 +62,7 @@ A repo added later needs no reinstall. It does need:
 
 - adding to the config and to the token's repository access (edit the token in the browser);
 - its `restrict-updates` ruleset, created in the browser as [The Actions token](../docs/agent-credentials.md#the-actions-token) describes (the fine-grained login cannot create it);
-- then a full rerun of `dispatch/setup-agents.sh`, or its phases in order: `credentials` (checks the ruleset and the token's access), `ssh` (the new repo's deploy key and alias remote), `sandbox` (so the new key is denied; otherwise the poller's [sandbox preflight](#sandbox-preflight) stops dispatch). Only a full run resumes dispatch; after single phases, finish with `check`.
+- then a full rerun of `dispatch/setup-agents.sh`, or its phases in order: `credentials` (checks the ruleset and the token's access), `ssh` (the new repo's deploy key and alias remote), `sandbox` (so the new key is denied; otherwise the poller's [sandbox preflight](#sandbox-preflight) stops dispatch). Only a full run resumes dispatch; after single phases, finish with `check`, which does not resume it either: run `dispatch/install-launchd.sh resume`.
 
 Migrating from an older single-repo poller: pass `--legacy-label <its launchd label>` (booted out, plist removed) and `--migrate-state <its state dir> <sessionPrefix>` (copies `launched.json` / `conflicts.json` into the per-repo state, never overwriting) so in-flight tickets are not relaunched. Keep the old session naming as `sessionPrefix` so reconciliation finds live sessions. With these flags the dry run runs before the migration and says so.
 
