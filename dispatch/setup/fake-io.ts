@@ -20,6 +20,11 @@
 // moves the named install to `pluginUpdate` (or leaves it as it is), and `sudo mkdir -p` and
 // `sudo tee <path>` (which writes its stdin to `files`) succeed. `run` records `opts.cwd`.
 //
+// The check model: `launch` records each probe session in `launches` and starts nothing;
+// `waitForFile` returns what `probe` gives for the latest launch (undefined by default: the
+// session never wrote a result); `removeFile` deletes from `files`; `claude stop <name>`
+// succeeds.
+//
 // The fake ignores `--json` field lists and `--jq`: JSON reads print the whole object.
 // Commands it has no script for exit 127 with "unscripted" on stderr.
 import type { Session } from "../poller/schemas.ts";
@@ -53,10 +58,19 @@ export interface FakePrompt {
 
 /** A file-system call on the fake: `path` is the file read or written (for copyFile, `from`). */
 export interface FakeFileOp {
-  op: "readFile" | "readFirstLine" | "listDir" | "appendFile" | "copyFile" | "writeFile";
+  op: "readFile" | "readFirstLine" | "listDir" | "appendFile" | "copyFile" | "writeFile" | "waitForFile" | "removeFile";
   path: string;
   to?: string;
   text?: string;
+}
+
+/** A session started with `launch`. */
+export interface FakeLaunch {
+  dir: string;
+  name: string;
+  flags: readonly string[];
+  prompt: string;
+  env: Readonly<Record<string, string>>;
 }
 
 /** A ruleset as `gh api repos/<repo>/rulesets/<id>` returns it to an admin. */
@@ -119,6 +133,11 @@ export interface FakeWorld {
    * and local scope, the one whose projectPath is the call's cwd). Default: left unchanged.
    */
   pluginUpdate?: { installPath: string; version: string };
+  /**
+   * What `waitForFile` returns for the latest launch: the probe session's result text, or
+   * undefined when the session never wrote one. Default undefined.
+   */
+  probe?: (launch: FakeLaunch) => string | undefined;
   /** Calls for which this returns true exit 1 with "HTTP 500" on stderr. */
   fail?: (call: FakeCall) => boolean;
   /** First say on every call; undefined falls through to the scripted world. */
@@ -196,7 +215,7 @@ export function isMergeProbe(call: FakeCall): boolean {
  * (explicit, or implied by a body) except the wrong-sha merge probe; `gh issue comment`;
  * `gh issue edit`; `gh pr edit`; `gh auth logout`; `gh auth login`; `open`; `ssh-keygen -t`
  * (generating a key); `pbcopy`; `ssh-add -d` or `-D`; `git ... remote set-url`; every `sudo`
- * call; `claude plugin marketplace update`; and `claude plugin update`.
+ * call; `claude plugin marketplace update`; `claude plugin update`; and `claude stop`.
  */
 export function isWrite(call: FakeCall): boolean {
   const [a0, a1] = call.args;
@@ -204,6 +223,7 @@ export function isWrite(call: FakeCall): boolean {
   if (call.cmd === "open" || call.cmd === "pbcopy" || call.cmd === "sudo") return true;
   if (call.cmd === "claude") {
     const [, b1, b2] = call.args;
+    if (a0 === "stop") return true;
     return a0 === "plugin" && (b1 === "update" || (b1 === "marketplace" && b2 === "update"));
   }
   if (call.cmd === "ssh-keygen") return call.args.includes("-t");
@@ -227,9 +247,11 @@ export function writeCalls(calls: readonly FakeCall[]): FakeCall[] {
   return calls.filter(isWrite);
 }
 
-/** The file writes among `ops`: appendFile, copyFile and writeFile. */
+/** The file writes among `ops`: appendFile, copyFile, writeFile and removeFile. */
 export function fileWrites(ops: readonly FakeFileOp[]): FakeFileOp[] {
-  return ops.filter((o) => o.op === "appendFile" || o.op === "copyFile" || o.op === "writeFile");
+  return ops.filter(
+    (o) => o.op === "appendFile" || o.op === "copyFile" || o.op === "writeFile" || o.op === "removeFile",
+  );
 }
 
 const ok = (stdout = ""): RunResult => ({ status: 0, stdout, stderr: "" });
@@ -274,6 +296,7 @@ export function fakeIo(world: FakeWorld = {}) {
   let clipboard: string | undefined;
   let lastOpen: string | undefined;
   const plugins: FakePlugin[] = structuredClone(world.plugins ?? []);
+  const launches: FakeLaunch[] = [];
 
   /** Whether the call authenticates as a fine-grained token (GH_TOKEN first, as gh does). */
   const fineGrained = (call: FakeCall) =>
@@ -535,6 +558,7 @@ export function fakeIo(world: FakeWorld = {}) {
 
   const claude = (call: FakeCall): RunResult => {
     const [a0, a1, a2, a3] = call.args;
+    if (a0 === "stop" && a1 !== undefined) return ok(`Stopped ${a1}\n`);
     if (a0 !== "plugin") return failed(`unscripted: claude ${call.args.join(" ")}`, 127);
     if (a1 === "list" && call.args.includes("--json")) return json(plugins);
     if (a1 === "marketplace" && a2 === "update" && a3 !== undefined) {
@@ -676,7 +700,19 @@ export function fakeIo(world: FakeWorld = {}) {
       const pub = files[`${sshDir}/deploy-${name}.pub`];
       if (pub !== undefined && clipboard === pub) githubKeys.add(`${owner}/${name}`);
     },
+    launch(dir, name, flags, prompt, env): void {
+      launches.push({ dir, name, flags: [...flags], prompt, env: { ...env } });
+    },
+    waitForFile(path: string): string | undefined {
+      fileOps.push({ op: "waitForFile", path });
+      const last = launches[launches.length - 1];
+      return last === undefined ? undefined : world.probe?.(last);
+    },
+    removeFile(path: string): void {
+      fileOps.push({ op: "removeFile", path });
+      delete files[path];
+    },
   };
 
-  return { io, calls, reports, prompts, fileOps, files };
+  return { io, calls, reports, prompts, fileOps, files, launches };
 }

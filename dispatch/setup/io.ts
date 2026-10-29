@@ -10,10 +10,13 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { listSessions } from "../poller/io.ts";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { createIo as createPollerIo, listSessions } from "../poller/io.ts";
 import type { Session } from "../poller/schemas.ts";
 
 /**
@@ -70,6 +73,18 @@ export interface SetupIo {
   waitForEnter(prompt: string): void;
   /** Replaces a file's text; creates it with mode 0600 when missing. */
   writeFile(path: string, text: string): void;
+  /**
+   * Starts `claude --bg --name <name> <flags> <prompt>` in `dir`, as the poller does, with
+   * exactly `env` as the child's environment.
+   */
+  launch(dir: string, name: string, flags: readonly string[], prompt: string, env: Readonly<Record<string, string>>): void;
+  /**
+   * Polls a file until `done` holds for its text and returns that text; at the timeout, the
+   * last text read, or undefined when the file never appeared.
+   */
+  waitForFile(path: string, done: (text: string) => boolean, timeoutMs: number): string | undefined;
+  /** Removes a file; no error when it is missing. */
+  removeFile(path: string): void;
 }
 
 const LABELS: Record<StepStatus, string> = {
@@ -122,6 +137,24 @@ const NEWLINE = 0x0a;
 function isMissing(err: unknown): boolean {
   const code = (err as NodeJS.ErrnoException).code;
   return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/** A file's text, or undefined when it does not exist. */
+function readIfPresent(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (err) {
+    if (isMissing(err)) return undefined;
+    throw err;
+  }
+}
+
+/** How often `waitForFile` reads the file. */
+const WAIT_POLL_MS = 5000;
+
+/** Blocks this thread for `ms` milliseconds. */
+function sleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /** The real SetupIo: commands run with their output captured; reports go to stdout. */
@@ -200,6 +233,29 @@ export function createIo(): SetupIo {
     writeFile(path, text) {
       // The mode applies only when the file is created; an existing file keeps its own.
       writeFileSync(path, text, { mode: 0o600 });
+    },
+    launch(dir, name, flags, prompt, env) {
+      // The poller's own launch, so the probe starts the way ticket sessions do. launch never
+      // reads or writes the state dir; the poller's default under the home directory is given.
+      const poller = createPollerIo(join(homedir(), ".local", "state", "claude-workflow"), false);
+      poller.launch(dir, name, [...flags], prompt, env);
+    },
+    waitForFile(path, done, timeoutMs) {
+      const deadline = Date.now() + timeoutMs;
+      let last: string | undefined;
+      for (;;) {
+        const text = readIfPresent(path);
+        if (text !== undefined) {
+          if (done(text)) return text;
+          last = text;
+        }
+        const left = deadline - Date.now();
+        if (left <= 0) return last;
+        sleep(Math.min(WAIT_POLL_MS, left));
+      }
+    },
+    removeFile(path) {
+      rmSync(path, { force: true });
     },
   };
 }

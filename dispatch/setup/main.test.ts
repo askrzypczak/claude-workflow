@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fakeIo } from "./fake-io.ts";
+import { probeItems } from "./check.ts";
+import { FAKE_HOME, fakeIo } from "./fake-io.ts";
 import type { SetupIo } from "./io.ts";
 import { runSetup } from "./main.ts";
+import { sandboxSettings } from "./sandbox.ts";
 
 const base = (io: SetupIo) => ({ io, clone: "/clone", home: "/home/example", configPath: "/nonexistent/repos.json" });
 
@@ -43,6 +45,19 @@ describe("runSetup", () => {
     const skipped = fakeIo(world());
     expect(runSetup(["sandbox", "--no-managed"], base(skipped.io))).toBe(0);
     expect(skipped.calls.some((c) => c.cmd === "sudo")).toBe(false);
+  });
+
+  it("the check phase run on its own exits 0 without resuming dispatch and says it stays paused", () => {
+    const probe = () =>
+      [...probeItems([]).map((i) => `SANDBOX-PROBE PASS ${i}: ok`), "SANDBOX-PROBE END", ""].join("\n");
+    const { io, calls, reports } = fakeIo({
+      files: { [`${FAKE_HOME}/.claude/settings.json`]: JSON.stringify(sandboxSettings([], FAKE_HOME)) },
+      probe,
+    });
+
+    expect(runSetup(["check"], base(io))).toBe(0);
+    expect(calls.some((c) => c.cmd.endsWith("install-launchd.sh") && c.args[0] === "resume")).toBe(false);
+    expect(reports.some((r) => r.status === "note" && /paused/i.test(r.text))).toBe(true);
   });
 
   it("exits 1 with a single error line when a read fails", () => {

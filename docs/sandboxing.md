@@ -8,6 +8,7 @@ Agent sessions run their Bash commands in Claude Code's sandbox, set in the main
 2. The phase first updates the marketplace and then any stale install (`claude plugin update`, including a served repo's own project-scope install): a marketplace update alone does not update the installed plugin. It writes no settings until the installed `work-ticket` skill creates branches with `--no-track` ([What breaks under the sandbox](#macos-exceptions)). If it still refuses after the update, the skills are not on `main` yet: merge them first, then rerun.
 3. It merges the settings into `~/.claude/settings.json` after a backup and prints each change. Then it writes the managed copy with `sudo`, which asks for the password. `--no-managed` skips the managed copy.
 4. Rerun the phase after adding a key to `~/.ssh`, such as a new served repo's deploy key, so that key is denied too.
+5. `dispatch/setup-agents.sh check`, the last phase of a full run, checks the settings and runs a probe session started the way the poller starts one ([Checks](#checks)); a full run resumes dispatch when every phase passes.
 
 ## Settings
 
@@ -114,12 +115,31 @@ In a test, `-p` sessions loaded no Chrome tools even with Enabled by default on.
 
 ## Checks
 
-Ask Claude to run these in a session started in a served `dir`: "What you type at the `!` prompt usually runs outside the sandbox, so typing a line yourself doesn't test it." (*Configure the sandboxed Bash tool*). Credential checks test readability only; never print a key.
+`dispatch/setup-agents.sh check` runs these checks, as the last phase of a full run or on its own, in a terminal and never from an agent session. Credential checks test readability only; nothing reads or prints a key.
 
-1. `touch ~/sandbox-probe`: fails with `Operation not permitted`. If it succeeds, delete `~/sandbox-probe` and check `/sandbox`.
-2. `curl -sS https://example.com`: refused, naming the host as not on the allow list.
-3. For each private key file, `test -r ~/.ssh/<key> && echo READABLE || echo DENIED`: `DENIED`. The same for `~/.ssh/config`: `READABLE`, since sandboxed `gh` needs it.
-4. The Read tool on a non-secret file inside a denied directory, such as Chrome's empty `~/Library/Application Support/Google/Chrome/First Run`: refused. Don't point the Read tool at a real key: if the deny were wrong, the key would land in the transcript.
-5. `gh repo view --json nameWithOwner` in a `dir` whose remote uses an alias: prints the repo. Then `gh issue view <i> --json number,title`: prints the issue. That call needs the token: it failed with `HTTP 401` in the test where sandboxed `gh` couldn't read it.
-6. `git fetch origin` and `git push --dry-run origin <branch>` there: both succeed, through the deploy key.
-7. `claude --bg --name sandbox-check "list your tools"` in a served `dir`, then `claude attach sandbox-check`: `/sandbox` shows the same settings on its Config tab, and the session has no browser tools.
+**Static checks.** The settings are judged as the poller's preflight judges them before every run ([Sandbox preflight](../dispatch/README.md#sandbox-preflight)): the managed copy when it exists, else `~/.claude/settings.json`, must hold every entry the `sandbox` phase generates ([Settings](#settings)); extra entries are fine. Each missing entry is a `fail` line, and the phase stops before it starts the probe session: rerun `dispatch/setup-agents.sh sandbox`.
+
+**The probe session.** "What you type at the `!` prompt usually runs outside the sandbox, so typing a line yourself doesn't test it." (*Configure the sandboxed Bash tool*). So the phase starts a session the way the poller does: `claude --bg --name sandbox-probe-<YYYYMMDD-HHMMSS>` with the poller's `LAUNCH_FLAGS`, in the first served repo's `dir`, with only `HOME` and `PATH` in its environment, as `dispatch/agent-poller.sh` builds them under launchd (its own `PATH` prefix, then the plist's `PATH`). The served repos are this clone's repo first, then the dispatch config's repos in their order, so that `dir` is the clone the script runs from; the prompt names the probe script by the clone's absolute path either way. Its prompt has it do the following, in order, appending one line per item to the result file `<dir>/.sandbox-probe-<YYYYMMDD-HHMMSS>.txt`, `SANDBOX-PROBE PASS <item>: <detail>` or `SANDBOX-PROBE FAIL <item>: <detail>`, each with a Bash `printf`, never the Write or Edit tool:
+
+1. Run [`dispatch/setup/sandbox-probe.sh`](../dispatch/setup/sandbox-probe.sh) as one Bash call. It tests, inside the sandbox:
+   - `home-write`: `touch ~/sandbox-probe` is refused (`Operation not permitted`). If it succeeds, the script removes the file and the item fails.
+   - `network`: `curl https://example.com` is refused, since the host is not on the allowlist.
+   - `key <path>`, for each private key in `~/.ssh`: `test -r` finds it unreadable.
+   - `ssh-config`: `~/.ssh/config` is readable, since sandboxed `gh` needs it.
+   - `gh`: `gh repo view --json nameWithOwner` in `dir`, whose remote uses an alias, prints the repo. It is a GraphQL call, so it needs the token: an authenticated call failed with `HTTP 401` in the test where sandboxed `gh` couldn't read it.
+2. `read-tool`: the Read tool on a non-secret file inside a denied directory, Chrome's empty `~/Library/Application Support/Google/Chrome/First Run`, is refused by a permission rule. The probe never points the Read tool at a real key: if the deny were wrong, the key would land in the transcript.
+3. `git-fetch` and `git-push`: `git fetch origin` and `git push --dry-run origin HEAD:refs/heads/sandbox-probe`, each as its own Bash call with nothing else in it, succeed through the deploy key. The session runs them, not the script: `excludedCommands` match a whole Bash call, so git inside a script runs sandboxed and fails over SSH ([macOS exceptions](#macos-exceptions)).
+4. `browser-tools`: the session has no browser tools ([Claude in Chrome on demand](#claude-in-chrome-on-demand)).
+5. The line `SANDBOX-PROBE END`.
+
+The prompt forbids commits, branches, tags, any file other than the result file, and any command besides those above.
+
+**The result.** The phase waits up to 15 minutes for the `END` line. Whatever the outcome, it then stops the session (`claude stop <name>`) and removes the result file. Each item gets a `pass` or `fail` line: a `FAIL` line, a missing line or a missing `END` line fails the check. On a failure, `claude logs <name>` prints the session's recent output and `claude attach <name>` reopens it; fix the cause with the sections above, then rerun `dispatch/setup-agents.sh check`.
+
+**Resume.** A full run resumes dispatch (`dispatch/install-launchd.sh resume`) only when every phase and every check passes; it says so instead when the LaunchAgent is not installed or already running. A `check`-only run leaves dispatch paused and says so. `--dry-run` runs the static checks, starts nothing, and lists the probe and the resume.
+
+**Known limit.** The probe copies launchd's `HOME` and `PATH`, but launchd does not start it: launchd's other variables (`USER`, `LOGNAME`, `SHELL`, `TMPDIR`, and `SSH_AUTH_SOCK`, which a launchd user agent gets) and whatever else a LaunchAgent's context changes stay untested. Without `SSH_AUTH_SOCK` the probe cannot see a key loaded in `ssh-agent` that a session started under launchd could reach; the `ssh` phase's `ssh-add -D` ([Deploy keys](#deploy-keys)) covers that. The probe also relies on `claude --bg` starting the session in `dir` with the environment it was given, and on sandboxed commands being able to write there. The preflight still catches missing or incomplete settings on every launchd run.
+
+**To confirm on the first run.**
+
+- `claude stop <name>` matches the probe session by its name. The installed CLI documents `stop <id>`, while `logs` and `attach` document `<id|name>`; `claude stop` with an unknown name answers `No job matching '<name>'`, which suggests a name lookup. If it matches ids only, every run ends with the clean-up note and the probe session lingers in `claude agents`, where the next full run's `credentials` phase stops on it as a live session. The fix would be to stop it by id, which needs the id on the poller's `Session` type.

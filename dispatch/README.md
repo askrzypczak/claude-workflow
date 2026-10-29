@@ -45,7 +45,7 @@ Labels on GitHub start unattended agent sessions locally:
    - `maxSessions` (optional, positive integer): cap on live sessions for this repo.
 5. The maintainer, in a terminal and never from an agent session, runs `dispatch/setup-agents.sh credentials` (after `npm ci` in the clone once). It reads the repos from the config and sets up or checks each one's `restrict-updates` ruleset and auto-merge, then the agents' token; see [Agent credentials](../docs/agent-credentials.md).
 6. Trust the directory: run `claude` once in `dir`, accept the prompt, exit. `claude --bg` fails in an untrusted workspace.
-7. Dry run: `npm ci` in the clone once, then `dispatch/agent-poller.sh --dry-run` logs which tickets would launch and with which flags, and launches nothing.
+7. Dry run: `npm ci` in the clone once, then `dispatch/agent-poller.sh --dry-run` logs which tickets would launch and with which flags, and launches nothing. It stops at the [sandbox preflight](#sandbox-preflight) until `dispatch/setup-agents.sh sandbox` has run.
 8. Install the LaunchAgent once, from the main clone (not a worktree): `dispatch/install-launchd.sh`.
    - The installer first runs `npm ci` in the clone (a failure aborts with nothing installed).
    - The agent polls as soon as it loads, so the installer repeats the dry run, shows its output and asks `Install and start polling? [y/N]` before writing or starting anything. Anything but `y`, no input, a failing dry run, or a poll already running aborts. `--yes` skips the question for scripted reinstalls.
@@ -137,11 +137,11 @@ The sessions it starts read user settings like any `claude` session started in `
 
 ### Layout
 
-`agent-poller.sh` is a thin entrypoint (the path the LaunchAgent runs): it sets `PATH` and runs the TypeScript poller with Node 24 (type stripping, no build step). If `node` is not on `PATH` or older than 24, or the clone has no `node_modules` (dependencies not installed), it logs one line and exits 1.
+`agent-poller.sh` is a thin entrypoint (the path the LaunchAgent runs): it sets `PATH` and runs the TypeScript poller with Node 24 (type stripping, no build step). If `node` is not on `PATH` or older than 24, or the clone has no `node_modules` (dependencies not installed), it logs one line and exits 1. `poller/main.ts` runs the [sandbox preflight](#sandbox-preflight) before it takes the lock.
 
 ```
 agent-poller.sh        entrypoint: PATH setup, then exec node poller/main.ts
-poller/main.ts         startup checks, lock, session list, repo loop, exit code
+poller/main.ts         startup checks, sandbox preflight, lock, session list, repo loop, exit code
 poller/poll.ts         one repo's poll: reconcile, launch tickets, resolve conflicts, fix CI
 poller/decide.ts       pure decisions: session state, caps, reconcile, eligibility
 poller/config.ts       the repos config (zod schema), CLAUDE_MAX_SESSIONS and launch flags
@@ -196,6 +196,14 @@ repos/<sessionPrefix>/ci-attempts.json  {"<pr>": {headSha, count}}  CI-fix attem
 
 Migrating from a single-repo poller: copy its `launched.json` and `conflicts.json` into `repos/<sessionPrefix>/` (entry shapes are unchanged), or let the installer do it (below).
 
+### Sandbox preflight
+
+Every run, `--dry-run` included, checks the sandbox settings after the config loads and before it takes the run lock; a config with no repos skips it, since nothing can launch. It judges the managed file `/Library/Application Support/ClaudeCode/managed-settings.json` when that exists, else `~/.claude/settings.json`. The file must hold every entry the `sandbox` phase of `dispatch/setup-agents.sh` generates ([Settings](../docs/sandboxing.md#settings)): those of the template `dispatch/setup/sandbox-settings.json`, plus a `sandbox.credentials.files` deny entry and `Read(...)` and `Edit(...)` rules for each private key in `~/.ssh`, detected by its first line. Objects are compared key by key, lists item by item, and other values must be equal. Extra entries are fine.
+
+When an entry is missing, the run logs one line naming the judged file and each missing entry, such as `sandbox preflight failed (<file>): sandbox.enabled is missing (want true); run dispatch/setup-agents.sh sandbox; aborting`, exits 1 and launches nothing. A `~/.ssh` entry or a settings file it cannot read, a missing settings file, or one that is not a JSON object fails it the same way. A passing `--dry-run` logs `sandbox preflight passed (<file>)`; a normal run logs nothing then.
+
+The fix is `dispatch/setup-agents.sh sandbox`. A template change pulled into the clone, a new key in `~/.ssh`, or a hand edit that drops an entry stops dispatch until that phase is rerun. `install-launchd.sh install` runs the poller's dry run first, so it fails the same way until the sandbox phase has run.
+
 ### install-launchd.sh
 
     dispatch/install-launchd.sh [install|uninstall|pause|resume|status] [--yes] [--purge] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]...
@@ -222,6 +230,7 @@ The plist is filled in with the clone path and `$HOME` XML-escaped, written to a
 Environment:
 
 - `CLAUDE_WORKFLOW_CONFIG`: config path (above).
+- `CLAUDE_WORKFLOW_MANAGED_SETTINGS`: the managed settings file the [sandbox preflight](#sandbox-preflight) judges when it exists, instead of `/Library/Application Support/ClaudeCode/managed-settings.json`. A test override; unset under launchd.
 - `STATE_DIR`: state root (above).
 - `CLAUDE_MAX_SESSIONS`: positive integer, default `10`. Live sessions are tracked entries in `launched.json` (tickets and conflict sessions) whose session is not `done`, `failed` or `stopped`; unlisted just-launched ones count. The global cap counts across all repos, a repo's `maxSessions` only that repo. At a cap the poller logs `deferred #N: at session cap` and leaves state untouched, so the launch is retried next poll. `--dry-run` applies the same caps. An invalid value aborts the run.
 - The launch flags are logged on every launch line (`flags: ...`).

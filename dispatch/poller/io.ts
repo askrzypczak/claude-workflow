@@ -30,8 +30,11 @@ export interface PollerIo {
   editLabels(repo: string, n: number, add: string[], remove: string[]): void;
   commentOnIssue(repo: string, n: number, body: string): void;
   commentOnPr(repo: string, pr: number, body: string): void;
-  /** Starts `claude --bg --name <name> <flags> <prompt>` in `dir`. */
-  launch(dir: string, name: string, flags: string[], prompt: string): void;
+  /**
+   * Starts `claude --bg --name <name> <flags> <prompt>` in `dir`. With `env`, the child's
+   * environment is exactly `env`; without it, this process's.
+   */
+  launch(dir: string, name: string, flags: string[], prompt: string, env?: Readonly<Record<string, string>>): void;
   saveState(prefix: string, state: RepoState): void;
   /** Epoch seconds. */
   now(): number;
@@ -134,11 +137,16 @@ export function createIo(stateDir: string, dryRun: boolean): PollerIo {
       ]),
     commentOnIssue: (repo, n, body) => gh(["issue", "comment", String(n), "--repo", repo, "--body", body]),
     commentOnPr: (repo, pr, body) => gh(["pr", "comment", String(pr), "--repo", repo, "--body", body]),
-    launch: (dir, name, flags, prompt) => {
+    launch: (dir, name, flags, prompt, env) => {
       if (dryRun) {
         log(`[dry-run] (cd ${dir} && claude --bg --name ${name} ${flags.join(" ")} "${prompt}")`);
       } else {
-        execFileSync("claude", ["--bg", "--name", name, ...flags, prompt], { cwd: dir, stdio: "inherit" });
+        // Given an env, the child gets exactly it (and claude is looked up on its PATH).
+        execFileSync("claude", ["--bg", "--name", name, ...flags, prompt], {
+          cwd: dir,
+          stdio: "inherit",
+          ...(env === undefined ? {} : { env: { ...env } }),
+        });
       }
     },
     saveState: (prefix, state) => {
