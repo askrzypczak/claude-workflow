@@ -480,8 +480,72 @@ export function judgeSandbox(
   home: string,
   managed: string = MANAGED_SETTINGS,
 ): SandboxJudgement {
-  void io;
-  void home;
-  void managed;
-  throw new Error("not implemented");
+  const missing: string[] = [];
+  const sshDir = join(home, ".ssh");
+  let keys: string[] = [];
+  try {
+    keys = findPrivateKeys(io, sshDir);
+  } catch (err) {
+    missing.push(`${sshDir} could not be searched for private keys (${message(err)})`);
+  }
+
+  const user = join(home, ".claude", "settings.json");
+  let file = managed;
+  let text: string | undefined;
+  try {
+    text = io.readFile(managed);
+    if (text === undefined) {
+      file = user;
+      text = io.readFile(user);
+    }
+  } catch (err) {
+    missing.push(`${file} could not be read (${message(err)})`);
+    return { file, keys, missing };
+  }
+  if (text === undefined) {
+    missing.push(`${file} does not exist`);
+    return { file, keys, missing };
+  }
+  const parsed = parseObject(text);
+  if ("problem" in parsed) {
+    missing.push(`${file} ${parsed.problem}`);
+    return { file, keys, missing };
+  }
+  lacking(parsed.value, sandboxSettings(keys, home), "", missing);
+  return { file, keys, missing };
+}
+
+const describeValue = (value: unknown) => (value === undefined ? "missing" : JSON.stringify(value));
+
+/**
+ * Adds to `out` one line per entry of `generated` that `current` lacks, named by its dotted
+ * path: object keys recursively, each array item by deep equality, any other value equal.
+ * Entries `generated` does not have are allowed.
+ */
+function lacking(current: unknown, generated: unknown, path: string, out: string[]): void {
+  if (isObject(generated)) {
+    if (!isObject(current)) {
+      out.push(`${path} is ${describeValue(current)}, not an object`);
+      return;
+    }
+    for (const [key, value] of Object.entries(generated)) {
+      const at = child(path, key);
+      if (!Object.hasOwn(current, key)) {
+        const scalar = !isObject(value) && !Array.isArray(value);
+        out.push(scalar ? `${at} is missing (want ${JSON.stringify(value)})` : `${at} is missing`);
+      } else {
+        lacking(current[key], value, at, out);
+      }
+    }
+  } else if (Array.isArray(generated)) {
+    if (!Array.isArray(current)) {
+      out.push(`${path} is ${describeValue(current)}, not a list`);
+      return;
+    }
+    for (const item of generated) {
+      if (!current.some((c) => isDeepStrictEqual(c, item))) out.push(`${path} lacks ${JSON.stringify(item)}`);
+    }
+  } else if (!isDeepStrictEqual(current, generated)) {
+    out.push(`${path} is ${describeValue(current)}, not ${JSON.stringify(generated)}`);
+  }
 }

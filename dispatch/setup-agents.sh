@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Set this machine up for agent sessions: the agents' GitHub token and the repo settings it
 # relies on (credentials), then a deploy key and SSH host alias per served repo in place of the
-# account key (ssh), then the sandbox settings in user settings and the managed copy (sandbox).
+# account key (ssh), then the sandbox settings in user settings and the managed copy (sandbox),
+# then the settings checks and a probe session started the way the poller starts one (check).
 # See docs/agent-credentials.md and docs/sandboxing.md.
-# Usage: dispatch/setup-agents.sh [credentials|ssh|sandbox] [--dry-run] [--no-managed]
+# Usage: dispatch/setup-agents.sh [credentials|ssh|sandbox|check] [--dry-run] [--no-managed]
 #   With no phase, runs every phase in order and stops at the first step that needs the maintainer.
 #   --dry-run  run the reads and print what each step would do; change nothing.
 #   --no-managed  sandbox: skip the managed settings copy, which is written with sudo.

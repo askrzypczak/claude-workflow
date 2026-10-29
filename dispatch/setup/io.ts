@@ -10,10 +10,13 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { listSessions } from "../poller/io.ts";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { createIo as createPollerIo, listSessions } from "../poller/io.ts";
 import type { Session } from "../poller/schemas.ts";
 
 /**
@@ -136,6 +139,24 @@ function isMissing(err: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
+/** A file's text, or undefined when it does not exist. */
+function readIfPresent(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (err) {
+    if (isMissing(err)) return undefined;
+    throw err;
+  }
+}
+
+/** How often `waitForFile` reads the file. */
+const WAIT_POLL_MS = 5000;
+
+/** Blocks this thread for `ms` milliseconds. */
+function sleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /** The real SetupIo: commands run with their output captured; reports go to stdout. */
 export function createIo(): SetupIo {
   return {
@@ -213,14 +234,28 @@ export function createIo(): SetupIo {
       // The mode applies only when the file is created; an existing file keeps its own.
       writeFileSync(path, text, { mode: 0o600 });
     },
-    launch() {
-      throw new Error("not implemented");
+    launch(dir, name, flags, prompt, env) {
+      // The poller's own launch, so the probe starts the way ticket sessions do. launch never
+      // reads or writes the state dir; the poller's default under the home directory is given.
+      const poller = createPollerIo(join(homedir(), ".local", "state", "claude-workflow"), false);
+      poller.launch(dir, name, [...flags], prompt, env);
     },
-    waitForFile() {
-      throw new Error("not implemented");
+    waitForFile(path, done, timeoutMs) {
+      const deadline = Date.now() + timeoutMs;
+      let last: string | undefined;
+      for (;;) {
+        const text = readIfPresent(path);
+        if (text !== undefined) {
+          if (done(text)) return text;
+          last = text;
+        }
+        const left = deadline - Date.now();
+        if (left <= 0) return last;
+        sleep(Math.min(WAIT_POLL_MS, left));
+      }
     },
-    removeFile() {
-      throw new Error("not implemented");
+    removeFile(path) {
+      rmSync(path, { force: true });
     },
   };
 }

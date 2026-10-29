@@ -37,14 +37,17 @@ export interface Phase {
 const PHASES: readonly Phase[] = [credentials, ssh, sandbox, check];
 
 const USAGE = `Usage: dispatch/setup-agents.sh [${PHASES.map((p) => p.name).join("|")}] [--dry-run] [--no-managed]
-  With no phase, runs every phase in order and stops at the first that needs the maintainer.
+  With no phase, runs every phase in order and stops at the first that needs the maintainer;
+  when every phase passes, the last one (check) resumes dispatch. A single phase never does.
   --dry-run  run the reads and print what each step would do; change nothing.
   --no-managed  sandbox: skip the managed settings copy (${MANAGED_SETTINGS}, written with sudo).`;
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 /** The phases argv selects and its flags, or undefined on a usage error. */
-function parse(argv: readonly string[]): { phases: readonly Phase[]; dryRun: boolean; noManaged: boolean } | undefined {
+function parse(
+  argv: readonly string[],
+): { phases: readonly Phase[]; full: boolean; dryRun: boolean; noManaged: boolean } | undefined {
   let parsed;
   try {
     parsed = parseArgs({
@@ -63,7 +66,8 @@ function parse(argv: readonly string[]): { phases: readonly Phase[]; dryRun: boo
   if (positionals.length > 1) return undefined;
   const name = positionals[0];
   const phases = name === undefined ? PHASES : PHASES.filter((p) => p.name === name);
-  return phases.length === 0 ? undefined : { phases, dryRun: values["dry-run"], noManaged: values["no-managed"] };
+  if (phases.length === 0) return undefined;
+  return { phases, full: name === undefined, dryRun: values["dry-run"], noManaged: values["no-managed"] };
 }
 
 /** 0 when every phase passed, 1 when one stopped or failed, 2 on a usage error. */
@@ -82,6 +86,7 @@ export function runSetup(
       io: base.io,
       dryRun: args.dryRun,
       noManaged: args.noManaged,
+      fullRun: args.full,
       clone: base.clone,
       home: base.home,
       repos,

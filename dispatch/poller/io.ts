@@ -137,11 +137,16 @@ export function createIo(stateDir: string, dryRun: boolean): PollerIo {
       ]),
     commentOnIssue: (repo, n, body) => gh(["issue", "comment", String(n), "--repo", repo, "--body", body]),
     commentOnPr: (repo, pr, body) => gh(["pr", "comment", String(pr), "--repo", repo, "--body", body]),
-    launch: (dir, name, flags, prompt) => {
+    launch: (dir, name, flags, prompt, env) => {
       if (dryRun) {
         log(`[dry-run] (cd ${dir} && claude --bg --name ${name} ${flags.join(" ")} "${prompt}")`);
       } else {
-        execFileSync("claude", ["--bg", "--name", name, ...flags, prompt], { cwd: dir, stdio: "inherit" });
+        // Given an env, the child gets exactly it (and claude is looked up on its PATH).
+        execFileSync("claude", ["--bg", "--name", name, ...flags, prompt], {
+          cwd: dir,
+          stdio: "inherit",
+          ...(env === undefined ? {} : { env: { ...env } }),
+        });
       }
     },
     saveState: (prefix, state) => {
