@@ -70,6 +70,18 @@ export interface SetupIo {
   waitForEnter(prompt: string): void;
   /** Replaces a file's text; creates it with mode 0600 when missing. */
   writeFile(path: string, text: string): void;
+  /**
+   * Starts `claude --bg --name <name> <flags> <prompt>` in `dir`, as the poller does, with
+   * exactly `env` as the child's environment.
+   */
+  launch(dir: string, name: string, flags: readonly string[], prompt: string, env: Readonly<Record<string, string>>): void;
+  /**
+   * Polls a file until `done` holds for its text and returns that text; at the timeout, the
+   * last text read, or undefined when the file never appeared.
+   */
+  waitForFile(path: string, done: (text: string) => boolean, timeoutMs: number): string | undefined;
+  /** Removes a file; no error when it is missing. */
+  removeFile(path: string): void;
 }
 
 const LABELS: Record<StepStatus, string> = {
@@ -200,6 +212,15 @@ export function createIo(): SetupIo {
     writeFile(path, text) {
       // The mode applies only when the file is created; an existing file keeps its own.
       writeFileSync(path, text, { mode: 0o600 });
+    },
+    launch() {
+      throw new Error("not implemented");
+    },
+    waitForFile() {
+      throw new Error("not implemented");
+    },
+    removeFile() {
+      throw new Error("not implemented");
     },
   };
 }

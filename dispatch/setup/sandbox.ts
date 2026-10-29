@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { parseJson } from "../poller/schemas.ts";
-import type { RunOptions, RunResult } from "./io.ts";
+import type { RunOptions, RunResult, SetupIo } from "./io.ts";
 import type { Phase, SetupContext } from "./main.ts";
 import { backupStamp, findPrivateKeys } from "./ssh.ts";
 
@@ -460,3 +460,28 @@ export const sandbox: Phase = {
     return managedStep(ctx, generated, sshNames) ? "ok" : "stop";
   },
 };
+
+/** What judgeSandbox found: the file judged, the keys in ~/.ssh and what the file lacks. */
+export interface SandboxJudgement {
+  /** The settings file judged: the managed copy when it exists, else ~/.claude/settings.json. */
+  file: string;
+  /** The private keys in ~/.ssh, as findPrivateKeys returns them. */
+  keys: string[];
+  /** One line per generated entry the file lacks, or per problem reading it; empty when it passes. */
+  missing: string[];
+}
+
+/**
+ * Judges the settings a session would run under against sandboxSettings(keys, home): the
+ * managed copy when it exists, else ~/.claude/settings.json. Never throws.
+ */
+export function judgeSandbox(
+  io: Pick<SetupIo, "readFile" | "listDir" | "readFirstLine">,
+  home: string,
+  managed: string = MANAGED_SETTINGS,
+): SandboxJudgement {
+  void io;
+  void home;
+  void managed;
+  throw new Error("not implemented");
+}

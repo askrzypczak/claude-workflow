@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { check } from "./check.ts";
 import { credentials } from "./credentials.ts";
 import { createIo } from "./io.ts";
 import type { SetupIo } from "./io.ts";
@@ -23,6 +24,8 @@ export interface SetupContext {
   repos: readonly ServedRepo[];
   /** --no-managed: skip the managed settings copy. */
   noManaged?: boolean;
+  /** A full run (no phase argument): only then may the check phase resume dispatch. */
+  fullRun?: boolean;
 }
 
 export interface Phase {
@@ -31,7 +34,7 @@ export interface Phase {
 }
 
 /** The phases, in the order a full run takes them. */
-const PHASES: readonly Phase[] = [credentials, ssh, sandbox];
+const PHASES: readonly Phase[] = [credentials, ssh, sandbox, check];
 
 const USAGE = `Usage: dispatch/setup-agents.sh [${PHASES.map((p) => p.name).join("|")}] [--dry-run] [--no-managed]
   With no phase, runs every phase in order and stops at the first that needs the maintainer.

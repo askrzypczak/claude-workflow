@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { sandboxSettings } from "./setup/sandbox.ts";
 
 const SCRIPT = join(import.meta.dirname, "agent-poller.sh");
 const APP = {
@@ -42,6 +43,15 @@ const readJson = (f: string) => JSON.parse(readFileSync(f, "utf8"));
 // CI runner can have an older node there. EXTRA_PATH comes first: the fake gh/claude (and any
 // fake node) win, then the node running these tests.
 const extraPath = () => [join(dir, "bin"), dirname(process.execPath)].join(delimiter);
+// Every run gets a fake HOME whose user settings pass the sandbox preflight, and a managed
+// settings path that does not exist, so the user settings are the ones judged.
+const fakeHome = () => join(dir, "home");
+const userSettings = () => join(fakeHome(), ".claude", "settings.json");
+const managedSettings = () => join(dir, "managed-settings.json");
+const writeSettings = (path: string, value: unknown) => {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+};
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "poller-"));
@@ -79,6 +89,7 @@ fi
   for (const f of ["gh.log", "claude.log", "claude.cwd.log"])
     writeFileSync(join(dir, f), "");
   writeFileSync(join(dir, "sessions.json"), "[]");
+  writeSettings(userSettings(), sandboxSettings([], fakeHome()));
 });
 
 afterEach(() => {
@@ -107,6 +118,8 @@ function exec({ dry = false, env = {} }: ExecOpts = {}) {
     encoding: "utf8",
     env: {
       ...process.env,
+      HOME: fakeHome(),
+      CLAUDE_WORKFLOW_MANAGED_SETTINGS: managedSettings(),
       EXTRA_PATH: extraPath(),
       STATE_DIR: join(dir, "state"),
       CLAUDE_WORKFLOW_CONFIG: join(dir, "repos.json"),
@@ -1350,6 +1363,117 @@ describe("agent-poller config validation", () => {
     writeFileSync(join(dir, "repos.json"), "[]");
     const r = exec();
     expect(r.status).toBe(0);
+  });
+});
+
+describe("agent-poller sandbox preflight", () => {
+  const A = { repo: "org/alpha", sessionPrefix: "a", owner: "me" };
+  const PRIVATE_KEY = "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE-KEY-BODY-FOR-TESTS\n-----END OPENSSH PRIVATE KEY-----\n";
+  const keyPath = () => join(fakeHome(), ".ssh", "id_ed25519");
+
+  interface Settings {
+    sandbox: Record<string, unknown>;
+  }
+  /** The settings generated for `keys`, changed by `change`. */
+  const settings = (change: (s: Settings) => void = () => {}, keys: string[] = []) => {
+    const s = sandboxSettings(keys, fakeHome()) as unknown as Settings;
+    change(s);
+    return s;
+  };
+
+  /** One eligible ticket, so a run that gets past the preflight launches a session. */
+  function readyTicket() {
+    configure([A]);
+    writeFileSync(
+      join(rdir(A.repo), "issues.json"),
+      JSON.stringify([{ number: 1, author: { login: "me" }, labels: [{ name: "agent-ok" }, { name: "ready" }] }]),
+    );
+  }
+
+  function addKey() {
+    mkdirSync(dirname(keyPath()), { recursive: true });
+    writeFileSync(keyPath(), PRIVATE_KEY);
+  }
+
+  /** Exit 1, nothing launched, and one line naming the file, the reason and the fix. */
+  function expectRefused(r: ReturnType<typeof exec>, file: string, reason: string) {
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(readLines("claude.log")).toStrictEqual([]);
+    expect(r.stdout).not.toMatch(/\[dry-run\] \(cd/);
+    const line = r.stdout.split("\n").find((l) => l.includes(file) && l.includes(reason));
+    expect(line, r.stdout).toBeDefined();
+    expect(line).toContain("dispatch/setup-agents.sh sandbox");
+    expect(line?.trimEnd().endsWith("aborting")).toBe(true);
+  }
+
+  /** The --dry-run line saying the preflight passed, naming the judged file. */
+  const passLine = (stdout: string, file: string) =>
+    stdout.split("\n").find((l) => l.includes("sandbox preflight passed") && l.includes(file));
+
+  it("fails with no launch, exit code 1 and the reason logged when sandbox.enabled is missing", () => {
+    readyTicket();
+    writeSettings(userSettings(), settings((s) => delete s.sandbox.enabled));
+    expectRefused(exec(), userSettings(), "sandbox.enabled");
+  });
+
+  it("fails with no launch, exit code 1 and the reason logged when failIfUnavailable is not true", () => {
+    readyTicket();
+    writeSettings(userSettings(), settings((s) => (s.sandbox.failIfUnavailable = false)));
+    expectRefused(exec(), userSettings(), "sandbox.failIfUnavailable");
+  });
+
+  it("fails with no launch, exit code 1 and the reason logged when allowUnsandboxedCommands is not false", () => {
+    readyTicket();
+    writeSettings(userSettings(), settings((s) => (s.sandbox.allowUnsandboxedCommands = true)));
+    expectRefused(exec(), userSettings(), "sandbox.allowUnsandboxedCommands");
+  });
+
+  it("fails with no launch, exit code 1 and the reason logged when a private key in ~/.ssh lacks its deny entries", () => {
+    readyTicket();
+    addKey();
+    expectRefused(exec(), userSettings(), "~/.ssh/id_ed25519");
+  });
+
+  it("an incomplete managed file fails even when the user file passes", () => {
+    readyTicket();
+    writeSettings(managedSettings(), settings((s) => delete s.sandbox.enabled));
+    expectRefused(exec(), managedSettings(), "sandbox.enabled");
+  });
+
+  it("a complete managed file passes even when the user file is incomplete", () => {
+    readyTicket();
+    writeSettings(managedSettings(), settings());
+    writeSettings(userSettings(), settings((s) => delete s.sandbox.enabled));
+
+    const dry = exec({ dry: true });
+    expect(dry.status, dry.stdout + dry.stderr).toBe(0);
+    expect(passLine(dry.stdout, managedSettings()), dry.stdout).toBeDefined();
+
+    const r = exec();
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log")).toHaveLength(1);
+  });
+
+  it("passes and launches with the settings generated from the template for the keys in ~/.ssh", () => {
+    readyTicket();
+    addKey();
+    writeSettings(userSettings(), settings(() => {}, [keyPath()]));
+
+    const dry = exec({ dry: true });
+    expect(dry.status, dry.stdout + dry.stderr).toBe(0);
+    expect(passLine(dry.stdout, userSettings()), dry.stdout).toBeDefined();
+
+    const r = exec();
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log")).toHaveLength(1);
+    // A normal run logs nothing when the preflight passes.
+    expect(r.stdout).not.toMatch(/sandbox preflight passed/);
+  });
+
+  it("--dry-run runs the preflight: an incomplete settings file fails the dry run with the reason logged", () => {
+    readyTicket();
+    writeSettings(userSettings(), settings((s) => delete s.sandbox.enabled));
+    expectRefused(exec({ dry: true }), userSettings(), "sandbox.enabled");
   });
 });
 
