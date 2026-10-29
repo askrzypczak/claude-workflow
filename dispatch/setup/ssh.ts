@@ -5,11 +5,17 @@ import { basename, join } from "node:path";
 import { timestamp } from "../poller/io.ts";
 import type { RunResult, SetupIo } from "./io.ts";
 import type { Phase, SetupContext } from "./main.ts";
+import { parseRemote } from "./repos.ts";
 import type { ServedRepo } from "./repos.ts";
 
 /** The marketplace clone under the home directory, and the HTTPS remote it moves to. */
 const MARKETPLACE = ".claude/plugins/marketplaces/askrzypczak-plugins";
 const MARKETPLACE_URL = "https://github.com/askrzypczak/claude-workflow.git";
+
+// Only Apple's ssh-add accepts --apple-use-keychain; a Homebrew OpenSSH earlier on PATH rejects
+// it, and either binary talks to the same agent. The script is macOS-only already (pbcopy, open,
+// launchd).
+const SSH_ADD = "/usr/bin/ssh-add";
 
 /** A PEM private-key header: OpenSSH, RSA, EC, DSA, PKCS#8 and encrypted PKCS#8. */
 const PRIVATE_KEY_HEADER = /^-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----$/;
@@ -250,6 +256,13 @@ function remoteStep(p: Pass, t: Target): Step {
     p.io.report("already", `${t.repo}: origin in ${t.dir} uses alias ${t.host} (${current})`);
     return "ok";
   }
+  if (parseRemote(current)?.toLowerCase() !== t.repo.toLowerCase()) {
+    p.io.report(
+      "todo",
+      `${t.repo}: origin in ${t.dir} is ${current}, not ${t.repo}, so origin is left alone; ${t.dir} must be a clone of ${t.repo}: fix the dispatch config's dir or the clone's origin, then rerun`,
+    );
+    return p.dryRun ? "pending" : "stop";
+  }
   if (p.dryRun) {
     p.io.report("would", `${t.repo}: switch origin in ${t.dir} from ${current} to ${t.url}, once git ls-remote through it works`);
     return "pending";
@@ -323,7 +336,7 @@ function marketplaceStep(p: Pass): boolean {
 
 /** Unloads the account keys from ssh-agent, only when it holds keys, so a re-run writes nothing. */
 function unloadAgent(p: Pass, keys: readonly string[]): boolean {
-  const listed = p.io.run("ssh-add", ["-l"]);
+  const listed = p.io.run(SSH_ADD, ["-l"]);
   if (listed.status === 1) {
     p.io.report("already", "ssh-agent holds no key");
     return true;
@@ -338,17 +351,12 @@ function unloadAgent(p: Pass, keys: readonly string[]): boolean {
     return true;
   }
   for (const key of keys) {
-    const removed = p.io.run("ssh-add", ["-d", "--apple-use-keychain", key]);
+    const removed = p.io.run(SSH_ADD, ["-d", "--apple-use-keychain", key]);
     if (removed.status !== 0) {
-      // Either the key was not loaded, the state wanted, or this ssh-add rejected the option,
-      // as a non-macOS build earlier on PATH (Homebrew OpenSSH) does.
-      p.io.report(
-        "note",
-        `ssh-add -d --apple-use-keychain ${key} failed (${answer(removed)}): the key was not loaded, or, if the option was rejected, the ssh-add on PATH is not macOS's and a passphrase stored in the keychain may remain; to remove it, run /usr/bin/ssh-add -d --apple-use-keychain ${key}`,
-      );
+      p.io.report("note", `ssh-add -d --apple-use-keychain ${key}: the key was not loaded, or the agent refused (${answer(removed)})`);
     }
   }
-  const all = p.io.run("ssh-add", ["-D"]);
+  const all = p.io.run(SSH_ADD, ["-D"]);
   if (all.status !== 0) {
     p.io.report("todo", `unloading ssh-agent failed (${answer(all)}): run ssh-add -D, then rerun`);
     return false;

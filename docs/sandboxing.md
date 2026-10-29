@@ -144,7 +144,7 @@ Each key file must be denied in [Settings](#settings); the script does not edit 
 
 The account key is every private key in `~/.ssh` other than the `deploy-*` ones: the excluded git commands can use any key file. The script deals with it only after every served repo's remote works through its deploy key, so the maintainer is never left without a way to push:
 
-- Out of `ssh-agent`: when the agent holds keys, the script runs `ssh-add -d --apple-use-keychain <key>` for each account key, which also removes its stored passphrase ("When removing identities with -d, each passphrase will be removed from it.", `ssh-add(1)` on macOS), then `ssh-add -D`.
+- Out of `ssh-agent`: when the agent holds keys, the script runs `/usr/bin/ssh-add -d --apple-use-keychain <key>` for each account key, which also removes its stored passphrase ("When removing identities with -d, each passphrase will be removed from it.", `ssh-add(1)` on macOS), then `/usr/bin/ssh-add -D`.
 - No `UseKeychain` or `AddKeysToAgent` lines for it in `~/.ssh/config`: they would load it again. The script reports each such line, with its line number, and edits none, since a line may serve other hosts' keys.
 - Off the disk, or kept passphrase-protected: an excluded git command can read the file, and ssh tries default key names such as `~/.ssh/id_ed25519` on its own. The script stops on an account key with no passphrase and names both ways out: `ssh-keygen -p -f <key>`, or deleting the key once nothing needs it. It deletes no key.
 
