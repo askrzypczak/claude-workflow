@@ -42,6 +42,19 @@ export interface SetupIo {
   /** This process's environment. */
   env(name: string): string | undefined;
   report(status: StepStatus, text: string): void;
+  /** The names of a directory's entries; undefined when it does not exist. */
+  listDir(path: string): string[] | undefined;
+  /**
+   * A regular file's first line without its newline, reading no byte past it (at most 256
+   * bytes); undefined when the path is missing or not a regular file.
+   */
+  readFirstLine(path: string): string | undefined;
+  /** Appends; creates the file with mode 0600 when missing. */
+  appendFile(path: string, text: string): void;
+  /** Copies; throws when `to` exists. */
+  copyFile(from: string, to: string): void;
+  /** Waits for Enter at the terminal; throws without a terminal, as `confirm` does. */
+  waitForEnter(prompt: string): void;
 }
 
 const LABELS: Record<StepStatus, string> = {
@@ -117,6 +130,21 @@ export function createIo(): SetupIo {
     env: (name) => process.env[name],
     report(status, text) {
       console.log(`${LABELS[status]}: ${text}`);
+    },
+    listDir(_path) {
+      throw new Error("not implemented");
+    },
+    readFirstLine(_path) {
+      throw new Error("not implemented");
+    },
+    appendFile(_path, _text) {
+      throw new Error("not implemented");
+    },
+    copyFile(_from, _to) {
+      throw new Error("not implemented");
+    },
+    waitForEnter(_prompt) {
+      throw new Error("not implemented");
     },
   };
 }
