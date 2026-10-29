@@ -43,13 +43,20 @@ Labels on GitHub start unattended agent sessions locally:
    - `sessionPrefix`: names sessions; unique per repo.
    - `owner`: the only ticket author whose tickets are launched.
    - `maxSessions` (optional, positive integer): cap on live sessions for this repo.
-5. Trust the directory: run `claude` once in `dir`, accept the prompt, exit. `claude --bg` fails in an untrusted workspace.
-6. Dry run: `npm ci` in the clone once, then `dispatch/agent-poller.sh --dry-run` logs which tickets would launch and with which flags, and launches nothing.
-7. Install the LaunchAgent once, from the main clone (not a worktree): `dispatch/install-launchd.sh`.
+5. The maintainer, in a terminal and never from an agent session, runs `dispatch/setup-agents.sh credentials` (after `npm ci` in the clone once). It reads the repos from the config and sets up or checks each one's `restrict-updates` ruleset and auto-merge, then the agents' token; see [Agent credentials](../docs/agent-credentials.md).
+6. Trust the directory: run `claude` once in `dir`, accept the prompt, exit. `claude --bg` fails in an untrusted workspace.
+7. Dry run: `npm ci` in the clone once, then `dispatch/agent-poller.sh --dry-run` logs which tickets would launch and with which flags, and launches nothing.
+8. Install the LaunchAgent once, from the main clone (not a worktree): `dispatch/install-launchd.sh`.
    - The installer first runs `npm ci` in the clone (a failure aborts with nothing installed).
    - The agent polls as soon as it loads, so the installer repeats the dry run, shows its output and asks `Install and start polling? [y/N]` before writing or starting anything. Anything but `y`, no input, a failing dry run, or a poll already running aborts. `--yes` skips the question for scripted reinstalls.
    - launchd only gives the job `HOME` and `PATH`, so the dry run drops `CLAUDE_MAX_SESSIONS` from your shell. Set it in the plist's `EnvironmentVariables` for the real poller.
-   - Remove with `dispatch/install-launchd.sh uninstall`. Adding repos later only needs a config edit.
+   - Remove with `dispatch/install-launchd.sh uninstall`.
+
+A repo added later needs no reinstall. It does need:
+
+- adding to the config and to the token's repository access (edit the token in the browser);
+- its `restrict-updates` ruleset, created in the browser as [The Actions token](../docs/agent-credentials.md#the-actions-token) describes (the fine-grained login cannot create it);
+- then a rerun of `dispatch/setup-agents.sh credentials`, which checks it.
 
 Migrating from an older single-repo poller: pass `--legacy-label <its launchd label>` (booted out, plist removed) and `--migrate-state <its state dir> <sessionPrefix>` (copies `launched.json` / `conflicts.json` into the per-repo state, never overwriting) so in-flight tickets are not relaunched. Keep the old session naming as `sessionPrefix` so reconciliation finds live sessions. With these flags the dry run runs before the migration and says so.
 

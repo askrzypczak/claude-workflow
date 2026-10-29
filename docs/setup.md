@@ -61,7 +61,7 @@ A consuming project needs:
 - Optional, for [dispatch](../dispatch/README.md): an entry in the poller config and a directory trusted by Claude Code.
 - Optional: an unused-export / dead-file check inside `npm run check` (for example knip in production mode, excluding test suites; default knip treats test files as entry points).
 - Optional, for [label cleanup](#label-cleanup-on-close): a caller workflow.
-- The machine's only GitHub API credential is a fine-grained token that cannot merge, and the maintainer merges in the browser. See [Agent credentials](agent-credentials.md).
+- The machine's only GitHub API credential is a fine-grained token that cannot merge, and the maintainer merges in the browser. The maintainer sets it up with `dispatch/setup-agents.sh credentials`, run in a terminal, never by an agent. See [Agent credentials](agent-credentials.md).
 - Agent sessions run Bash in Claude Code's sandbox, set in user settings, and push with per-repo deploy keys. See [Sandboxing agent sessions](sandboxing.md).
 
 
