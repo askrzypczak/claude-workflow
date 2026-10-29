@@ -54,10 +54,12 @@ const AuthEntry = z.object({
   login: z.string(),
   active: z.boolean().optional(),
   state: z.string().optional(),
-  error: z.string().optional(),
+  /** gh's reason for an "error" state; kept only when it is a string. */
+  error: z.unknown().optional(),
   token: z.string().optional(),
 });
-const AuthStatus = z.object({ hosts: z.record(z.string(), z.array(AuthEntry)) });
+/** `hosts` may be null when no login is stored (a nil map in gh's JSON); it reads as no accounts. */
+const AuthStatus = z.object({ hosts: z.record(z.string(), z.array(AuthEntry)).nullish() });
 
 /** A stored github.com login as the phase keeps it: whether its token is fine-grained, never the token. */
 interface Account {
@@ -174,11 +176,11 @@ function accounts(p: Pass): Account[] {
   }
   const parsed = AuthStatus.safeParse(data);
   if (!parsed.success) throw new Error(`${what}: the output is not a list of accounts per host`);
-  return (parsed.data.hosts[HOST] ?? []).map((a) => ({
+  return ((parsed.data.hosts ?? {})[HOST] ?? []).map((a) => ({
     login: a.login,
     active: a.active ?? false,
     state: a.state,
-    error: a.error,
+    error: typeof a.error === "string" ? a.error : undefined,
     fineGrained: a.token?.startsWith(FINE_GRAINED) ?? false,
   }));
 }
@@ -387,7 +389,7 @@ function skipRulesetStep(p: Pass, active: Account): void {
   for (const { repo } of p.repos) {
     p.say(
       "note",
-      `${repo}: the ${RULESET} and auto-merge step is skipped because GitHub refuses the stored login's token${active.error ? ` (${active.error})` : ""}; ${RULESET} is read back after the swap`,
+      `${repo}: the ${RULESET} and auto-merge step is skipped because GitHub refuses the stored login's token${active.error ? ` (${active.error})` : ""}; ${RULESET} is read back after the swap; auto-merge is unchecked: check Settings > General in the browser`,
     );
   }
 }

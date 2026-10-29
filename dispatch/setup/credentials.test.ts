@@ -278,6 +278,37 @@ describe("credentials phase", () => {
     }
   });
 
+  it("with two stored accounts, the active one's token kind decides the path", () => {
+    const twoAccounts = (c: FakeCall): RunResult | undefined => {
+      if (!isGh(c, "auth", "status")) return undefined;
+      const account = (login: string, active: boolean, token: string) => ({
+        state: "success",
+        active,
+        host: "github.com",
+        login,
+        tokenSource: "keyring",
+        gitProtocol: "ssh",
+        ...(c.args.includes("--show-token") ? { token } : {}),
+      });
+      const hosts = {
+        "github.com": [account("example-classic", false, STORED_CLASSIC), account(FAKE_LOGIN, true, STORED_FINE)],
+      };
+      return { status: 0, stdout: `${JSON.stringify({ hosts })}\n`, stderr: "" };
+    };
+    const { calls, prompts, ctx } = setup({
+      rulesets: [protectMain(), restrictUpdates()],
+      allowAutoMerge: false,
+      confirm: false,
+      respond: twoAccounts,
+    });
+
+    credentials.run(ctx);
+
+    expect(prompts.some((p) => p.kind === "confirm" && /new token/i.test(p.text))).toBe(true);
+    expect(calls.filter((c) => c.cmd === "open")).toEqual([]);
+    expect(settingWrites(calls)).toEqual([]);
+  });
+
   it("the stored token read with --show-token appears in no report, console line or thrown error, even when gh's output does not parse", () => {
     const normal = setup({ login: "fine-grained", confirm: false, respond: realAuthStatus(STORED_FINE) });
     credentials.run(normal.ctx);
