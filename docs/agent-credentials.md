@@ -63,11 +63,16 @@ Metadata read comes with every fine-grained token. `plugins/ticket-workflow/scri
 What `dispatch/setup-agents.sh credentials` does, in order. Each step checks first and does nothing when its work is already done, so a rerun is safe. It stops at the first step that needs the maintainer and prints what to do. With `--dry-run` it runs the reads, prints what each write would do, and goes through every step without stopping.
 
 1. Pauses dispatch (`dispatch/install-launchd.sh pause`) and refuses to go on while `claude agents` shows a live session, naming each with `claude stop <name>`. Dispatch stays paused until a full setup run passes every phase and resumes it, or until `dispatch/install-launchd.sh resume`. A rerun pauses it again.
-2. On each served repo (this clone's, then those in the [dispatch config](../dispatch/README.md#onboarding-a-repo)), with the current login: creates the `restrict-updates` ruleset ([The Actions token](#the-actions-token)), or puts it back when it drifted, and turns auto-merge off ([Auto-merge](#auto-merge)). Other rulesets are left alone. Under a login without admin rights, such as the fine-grained one on a rerun, it changes nothing and checks what it can read: the ruleset as in [Verify](#verify), and auto-merge, which it reports as unchecked when GitHub does not return the setting.
-3. Opens the pre-filled token form ([The token](#the-token)), lists the repos to select, and reads the token at a prompt that does not echo it. Under the fine-grained login it first asks "Create a new token and swap it in? [y/N]"; No skips to step 6.
+2. On each served repo (this clone's, then those in the [dispatch config](../dispatch/README.md#onboarding-a-repo)), with the current login: creates the `restrict-updates` ruleset ([The Actions token](#the-actions-token)), or puts it back when it drifted, and turns auto-merge off ([Auto-merge](#auto-merge)). Other rulesets are left alone. Under a login without admin rights, such as the fine-grained one on a rerun, it changes nothing and checks what it can read: the ruleset as in [Verify](#verify), and auto-merge, which it reports as unchecked when GitHub does not return the setting. A repo the token cannot see (HTTP 404) is a to-do: select it under the token's Repository access, then rerun.
+3. Under the fine-grained login it first asks "Create a new token and swap it in? [y/N]"; No skips to step 6. It then picks what the pre-swap test will use ([Verify](#verify)), so a missing PR, issue or run is reported before a token is made. Last, it opens the pre-filled token form ([The token](#the-token)), lists the repos to select, and reads the token at a prompt that does not echo it.
 4. Runs the pre-swap test ([Verify](#verify)) with the token only in the commands' environment.
 5. Only when every check passed, swaps the login: `gh auth logout` for each github.com account, then `gh auth login --with-token` with the token on standard input. Logging out comes first because both tokens belong to the same GitHub user: a logout by user after the login would remove the new login too. The token is never on a command line, in a file or in the output.
-6. Looks for every other GitHub API token on the machine and reports each one to remove by hand; it removes nothing: `GH_TOKEN`/`GITHUB_TOKEN` in the environment and in the shell startup files (`gh` prefers them over the stored login), a github.com password in the macOS keychain and stored git credentials for github.com (remotes stay on SSH), and GitHub MCP servers in Claude Code's configuration (`~/.claude.json`, each served repo's `.mcp.json`). A finding stops the run after step 7.
+6. Looks for every other GitHub API token on the machine and reports each one to remove by hand, by place and never by value; it removes nothing:
+   - `GH_TOKEN`/`GITHUB_TOKEN` (`gh` prefers them over the stored login) in the environment, the shell startup files, the `env` block of `~/.claude/settings.json` and the poller's LaunchAgent plist;
+   - a github.com internet password in the macOS keychain (a token a git credential helper stored, or a password saved for the website) and stored git credentials for github.com (remotes stay on SSH);
+   - GitHub MCP servers in Claude Code's configuration (`~/.claude.json`, each served repo's `.mcp.json`).
+
+   A finding stops the run after step 7.
 7. Runs the after-swap checks ([Verify](#verify)).
 
 `gh auth logout` does not revoke the old login: "The authentication configuration is only removed locally. This command does not revoke authentication tokens." (`gh auth logout --help`). Revoking the old "GitHub CLI" authorization at github.com/settings/applications is optional; the script prints it as a last note.
@@ -89,7 +94,7 @@ Keep auto-merge off on every repo the workflow serves. With it on, enabling auto
 
 What the setup script checks. The maintainer reads its report; nothing here is run by hand.
 
-The pre-swap test, before anything is logged out. With the current login, the script picks the first served repo that has an open PR whose checks include a `test` check run, an open issue, a completed workflow run, and a label carried by neither (never one of the workflow's own labels). Then, with the new token only as `GH_TOKEN` in each command's environment, it runs one command per row of the [table](#the-token):
+The pre-swap test, before anything is logged out. With the current login, and before it opens the token form, the script picks the first served repo that has an open PR whose checks include a `test` check run, an open issue, a completed workflow run, and a label carried by neither (never one of the workflow's own labels). Then, with the new token only as `GH_TOKEN` in each command's environment, it runs one command per row of the [table](#the-token):
 
 - `gh issue view <i> --json number,state` and `gh api repos/<owner>/<repo>/issues/<i> --jq .author_association`
 - `gh issue comment <i>`, and the test comment deleted again (`gh api -X DELETE repos/<owner>/<repo>/issues/comments/<id>`)
@@ -105,8 +110,14 @@ The rest pass on exit 0. The test comment and the label are removed even when a 
 After the swap:
 
 1. `gh auth status` shows one github.com login, with a fine-grained token (it starts `github_pat_`).
-2. A merge with a deliberately wrong head `sha` against an open, mergeable PR: `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=0000000000000000000000000000000000000000`. 403 means correct. 409 means the token can merge. Anything else (405, 422), or no mergeable PR, is inconclusive. The wrong `sha` keeps the check from ever merging. A 409 and an inconclusive answer both stop the script with a to-do.
+2. A merge with a deliberately wrong head `sha` against an open, mergeable PR: `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=0000000000000000000000000000000000000000`. 403 means correct. 409 means the token can merge. Anything else (405, 422), or no mergeable PR, is inconclusive; when GitHub is still computing whether the open PRs can be merged (`mergeable` is `UNKNOWN`), a rerun in a moment is enough. The wrong `sha` keeps the check from ever merging. A 409 and an inconclusive answer both stop the script with a to-do.
 3. On each served repo, `restrict-updates` reads back with a rule of type `update`, `enforcement` `active`, and `current_user_can_bypass` `pull_requests_only`. GitHub returns the bypass list only to callers who can edit the ruleset ("the bypass_actors property is only returned if the user making the API request has write access to the ruleset", GitHub Docs, *REST API endpoints for rules*). When `bypass_actors` is returned, it must be the Repository admin role alone in `pull_request` mode; when it is missing, the script says to read the ruleset's Bypass list in the browser: the Repository admin role only, in "For pull requests only" mode, nothing in "Always allow".
+
+The maintainer's first run should confirm what the script assumes but no run has shown yet:
+
+- whether a draft PR is enough for the wrong-sha merge: that holds only if GitHub checks the token's permission (403) before it refuses a draft (405);
+- that the Repository admin role is the bypass actor `RepositoryRole` with actor id 5;
+- that `gh pr checks`, with its output not on a terminal, prints tab-separated rows with the check name first.
 
 ## The limit
 

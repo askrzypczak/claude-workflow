@@ -28,6 +28,14 @@ function run(world: FakeWorld, dryRun = false) {
 const isGh = (call: FakeCall, ...words: string[]) =>
   call.cmd === "gh" && words.every((w, i) => call.args[i] === w);
 
+/** The repo read answered with 404, as GitHub answers a token without access to the repo. */
+const repoNotFound = (c: FakeCall) => {
+  const a = parseGhApi(c);
+  return a?.method === "GET" && a.endpoint === `repos/${FAKE_REPO}`
+    ? { status: 1, stdout: '{"message":"Not Found"}', stderr: "gh: Not Found (HTTP 404)" }
+    : undefined;
+};
+
 /** `gh api` calls with this method on exactly this endpoint. */
 const apiCalls = (calls: readonly FakeCall[], method: string, endpoint: string) =>
   calls.filter((c) => {
@@ -89,6 +97,51 @@ describe("credentials phase stops", () => {
     expect(result).toBe("stop");
     expect(reports.some((r) => r.status === "todo" && r.text.includes("restrict-updates"))).toBe(true);
     expect(prompts.filter((p) => p.kind === "confirm")).toEqual([]);
+  });
+
+  it("a missing pre-swap test subject stops the phase before the token form opens", () => {
+    const { result, reports, calls, prompts } = run({
+      respond: (c) => (isGh(c, "pr", "list") ? { status: 0, stdout: "[]\n", stderr: "" } : undefined),
+    });
+
+    expect(result).toBe("stop");
+    expect(reports.some((r) => r.status === "todo")).toBe(true);
+    expect(calls.some((c) => c.cmd === "open")).toBe(false);
+    expect(prompts).toEqual([]);
+  });
+
+  it("under the fine-grained login a repo the token cannot see is a to-do naming the repo", () => {
+    const { result, reports, prompts } = run({ login: "fine-grained", respond: repoNotFound });
+
+    expect(result).toBe("stop");
+    expect(reports.some((r) => r.status === "todo" && r.text.includes(FAKE_REPO))).toBe(true);
+    expect(prompts).toEqual([]);
+  });
+
+  it("under a classic login a repo read that fails still throws", () => {
+    expect(() => run({ respond: repoNotFound })).toThrow(Error);
+  });
+
+  it("open PRs whose mergeability GitHub is still computing make the merge probe a to-do to rerun, not to open a PR", () => {
+    const { result, reports, calls } = run({
+      login: "fine-grained",
+      respond: (c) =>
+        isGh(c, "pr", "list")
+          ? { status: 0, stdout: JSON.stringify([{ number: 7, mergeable: "UNKNOWN" }]), stderr: "" }
+          : undefined,
+    });
+
+    expect(result).toBe("stop");
+    expect(calls.filter(isMergeProbe)).toEqual([]);
+    expect(reports.some((r) => r.status === "todo" && r.text.includes("UNKNOWN"))).toBe(true);
+  });
+
+  it("a short paste at the token prompt is not masked in the lines that follow", () => {
+    const empty = run({ secret: "" });
+    const short = run({ secret: "e" });
+
+    expect(short.result).toBe("stop");
+    expect(short.reports).toEqual(empty.reports);
   });
 
   it("an inconclusive wrong-sha merge stops the phase", () => {

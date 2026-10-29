@@ -45,6 +45,8 @@ const WORKFLOW_LABELS = new Set([
 
 const TOKEN_VARS = ["GH_TOKEN", "GITHUB_TOKEN"];
 const STARTUP_FILES = [".zshenv", ".zprofile", ".zshrc", ".zlogin", ".bash_profile", ".bashrc", ".profile"];
+/** The poller's LaunchAgent under the home directory, named by LABEL in dispatch/install-launchd.sh. */
+const POLLER_PLIST = "Library/LaunchAgents/com.askrzypczak.claude-workflow-poller.plist";
 const RELOGIN = "run gh auth login --hostname github.com --with-token, paste the token, press Enter and then Ctrl-D";
 
 const Account = z.object({ login: z.string(), active: z.boolean().optional(), token: z.string().optional() });
@@ -110,12 +112,16 @@ function apiAnswer(result: RunResult): string {
   return body === "" ? line : `${line}: ${body}`;
 }
 
-/** Runs a read-only gh command and parses its JSON; throws when it fails. */
-function ghJson<T extends z.ZodType>(p: Pass, schema: T, args: string[]): z.output<T> {
-  const result = p.io.run("gh", args);
+/** A read-only gh command's JSON; throws when the command failed. */
+function parseRead<T extends z.ZodType>(schema: T, args: string[], result: RunResult): z.output<T> {
   const what = `gh ${args.join(" ")}`;
   if (result.status !== 0) throw new Error(`${what} failed: ${answer(result)}`);
   return parseJson(schema, result.stdout, what);
+}
+
+/** Runs a read-only gh command and parses its JSON; throws when it fails. */
+function ghJson<T extends z.ZodType>(p: Pass, schema: T, args: string[]): z.output<T> {
+  return parseRead(schema, args, p.io.run("gh", args));
 }
 
 /** The github.com accounts gh has stored. */
@@ -129,6 +135,8 @@ function accounts(p: Pass): Account[] {
   }
 }
 
+// `gh auth status` masks the token unless asked for `--show-token`, keeping its prefix up to the
+// last underscore (confirmed in gh 2.102.0's help), so a fine-grained token still reads `github_pat_`.
 const isFineGrained = (account: Account) => account.token?.startsWith(FINE_GRAINED) ?? false;
 const hasTestCheckRun = (rollup: readonly z.infer<typeof RollupEntry>[]) =>
   rollup.some((e) => e.__typename === "CheckRun" && e.name === "test");
@@ -294,7 +302,17 @@ function rulesetStep(p: Pass, active: Account | undefined): boolean {
   p.say("note", `gh login: ${active.login}, with a ${fineGrained ? "fine-grained" : "classic"} token`);
   let ok = true;
   for (const { repo } of p.repos) {
-    const info = ghJson(p, RepoInfo, ["api", `repos/${repo}`]);
+    const args = ["api", `repos/${repo}`];
+    const read = p.io.run("gh", args);
+    if (fineGrained && read.status !== 0 && /HTTP 404/.test(read.stderr)) {
+      p.say(
+        "todo",
+        `${repo}: the token cannot see this repo (HTTP 404): edit the token at https://${HOST}/settings/personal-access-tokens, select ${repo} under Repository access, then rerun`,
+      );
+      ok = false;
+      continue;
+    }
+    const info = parseRead(RepoInfo, args, read);
     const ruleset = readRuleset(p, repo);
     if (!fineGrained && info.permissions?.admin === true) {
       if (!ensureRuleset(p, repo, ruleset) || !ensureAutoMergeOff(p, repo, info.allow_auto_merge)) return false;
@@ -343,7 +361,9 @@ function readToken(p: Pass, active: Account | undefined): string | undefined {
   else p.say("note", `token: could not open the browser (${answer(opened)}): open ${url}`);
   p.say("note", `token: in the form, under Repository access choose Only select repositories and select ${select}; choose an expiry; then Generate token and copy it`);
   const token = p.io.readSecret("Paste the new token (input hidden), then press Enter: ").trim();
-  if (token !== "") p.secret = token;
+  // Masked in later lines when it could be a token, that is 12 characters or more. A shorter
+  // paste (a stray "y") is no secret, and masking it everywhere would garble the lines.
+  if (token.length >= 12) p.secret = token;
   if (!token.startsWith(FINE_GRAINED)) {
     p.say("todo", "token: no fine-grained token was pasted (one starts github_pat_): rerun and paste the token the form generated");
     return undefined;
@@ -360,8 +380,23 @@ interface Subject {
   label: string;
 }
 
-/** What the pre-swap test works on: the first served repo with all of it. */
+/** What the pre-swap test works on, reported; a to-do when no served repo has all of it. */
 function pickSubject(p: Pass): Subject | undefined {
+  const subject = findSubject(p);
+  if (subject === undefined) {
+    p.say(
+      "todo",
+      "pre-swap test: no served repo has an open PR with a test check run, an open issue, a completed workflow run and a label that is neither on them nor one of the workflow's: open what is missing, then rerun",
+    );
+  } else {
+    const { repo, pr, issue, run, label } = subject;
+    p.say("note", `pre-swap test: it will use ${repo} PR #${pr}, issue #${issue}, run ${run} and label ${label}`);
+  }
+  return subject;
+}
+
+/** The first served repo with an open PR with a `test` check run, an open issue, a run and a free label. */
+function findSubject(p: Pass): Subject | undefined {
   for (const { repo } of p.repos) {
     const prs = ghJson(p, PrList, [
       "pr", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", "number,labels,statusCheckRollup",
@@ -390,23 +425,15 @@ function pickSubject(p: Pass): Subject | undefined {
  * Step 4: one command per row of the permission table, with the token only as GH_TOKEN in the
  * child's environment, each judged by its output. The test comment and labels are removed.
  */
-function preSwapTest(p: Pass, token: string | undefined): boolean {
-  const subject = pickSubject(p);
-  if (subject === undefined) {
-    p.say(
-      "todo",
-      "pre-swap test: no served repo has an open PR with a test check run, an open issue, a completed workflow run and a label that is neither on them nor one of the workflow's: open what is missing (a draft PR is enough), then rerun",
-    );
-    return p.dryRun;
-  }
-  const { repo, pr, issue, run, label } = subject;
-  if (token === undefined) {
+function preSwapTest(p: Pass, subject: Subject | undefined, token: string | undefined): boolean {
+  if (subject === undefined || token === undefined) {
     p.say(
       "would",
-      `pre-swap test: with the new token only in the child environment, run one command per permission against ${repo} (PR #${pr}, issue #${issue}, run ${run}, label ${label}), then delete the test comment and remove the label`,
+      `pre-swap test: with the new token only in the child environment, run one command per permission against ${subject === undefined ? "a PR, issue and run (none found, above)" : "the PR, issue and run above"}, then delete the test comment and remove the label`,
     );
     return true;
   }
+  const { repo, pr, issue, run, label } = subject;
 
   const asToken: RunOptions = { env: { GH_TOKEN: token } };
   const R = ["--repo", repo];
@@ -519,17 +546,25 @@ function scanStrayTokens(p: Pass): number {
   for (const name of TOKEN_VARS) {
     if (p.io.env(name)) todo(`${name} is set in this shell (gh prefers it over the stored login): remove its export and open a new terminal`);
   }
-  for (const file of STARTUP_FILES) {
-    const lines = p.io.readFile(join(p.home, file))?.split("\n") ?? [];
-    lines.forEach((line, i) => {
+  /** Each line of a text file that names GH_TOKEN or GITHUB_TOKEN, by line number only. */
+  const lines = (shown: string, path: string, fix: string) => {
+    (p.io.readFile(path)?.split("\n") ?? []).forEach((line, i) => {
       const named = TOKEN_VARS.filter((v) => new RegExp(`(?<![A-Za-z0-9_])${v}(?![A-Za-z0-9_])`).test(line));
-      if (named.length > 0) todo(`~/${file}:${i + 1} names ${named.join(" and ")}: remove that line by hand`);
+      if (named.length > 0) todo(`${shown}:${i + 1} names ${named.join(" and ")}: ${fix}`);
     });
-  }
+  };
+  for (const file of STARTUP_FILES) lines(`~/${file}`, join(p.home, file), "remove that line by hand");
+  lines(
+    `~/${POLLER_PLIST}`,
+    join(p.home, POLLER_PLIST),
+    "remove that variable from the poller's EnvironmentVariables by hand (the poller's gh would use it over the stored login)",
+  );
 
   const keychain = p.io.run("security", ["find-internet-password", "-s", HOST]);
   if (keychain.status === 0) {
-    todo(`the macOS keychain holds a ${HOST} internet password (security find-internet-password -s ${HOST}): delete it in Keychain Access`);
+    todo(
+      `the macOS keychain holds a ${HOST} internet password (security find-internet-password -s ${HOST}): a token a git credential helper stored, or a password saved for the ${HOST} website; check which in Keychain Access, then delete it there`,
+    );
   } else if (keychain.status !== 44) {
     p.say("note", `stray token: could not search the keychain (${answer(keychain)}): look for ${HOST} in Keychain Access`);
   }
@@ -538,18 +573,32 @@ function scanStrayTokens(p: Pass): number {
     if (line.includes(HOST)) todo(`~/.git-credentials:${i + 1} stores a ${HOST} credential: remove that line by hand`);
   });
 
-  const mcp = (path: string, shown: string, scopes: (config: Record<string, unknown>) => [string, unknown][]) => {
+  /** A JSON file's top-level object, or undefined when it is missing (a note when it is not JSON). */
+  const jsonObject = (path: string, shown: string): Record<string, unknown> | undefined => {
     const text = p.io.readFile(path);
-    if (text === undefined) return;
-    let config: unknown;
+    if (text === undefined) return undefined;
+    let value: unknown;
     try {
-      config = JSON.parse(text);
+      value = JSON.parse(text);
     } catch {
-      p.say("note", `stray token: ${shown} is not valid JSON: check its MCP servers by hand`);
-      return;
+      p.say("note", `stray token: ${shown} is not valid JSON: check it for GitHub tokens by hand`);
+      return undefined;
     }
-    if (typeof config !== "object" || config === null) return;
-    for (const [scope, servers] of scopes(config as Record<string, unknown>)) {
+    return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+  };
+
+  const settings = jsonObject(join(p.home, ".claude/settings.json"), "~/.claude/settings.json");
+  const env = settings?.env;
+  if (typeof env === "object" && env !== null) {
+    for (const name of TOKEN_VARS.filter((v) => v in env)) {
+      todo(`~/.claude/settings.json sets ${name} in its env block, which every Claude Code session gets: remove it by hand`);
+    }
+  }
+
+  const mcp = (path: string, shown: string, scopes: (config: Record<string, unknown>) => [string, unknown][]) => {
+    const config = jsonObject(path, shown);
+    if (config === undefined) return;
+    for (const [scope, servers] of scopes(config)) {
       for (const name of githubServers(servers)) {
         todo(`${shown}${scope}: MCP server ${name} looks like a GitHub server, which carries its own token: remove it by hand`);
       }
@@ -575,10 +624,14 @@ function scanStrayTokens(p: Pass): number {
 
 /** Step 7: the wrong-sha merge on an open, mergeable PR must be refused with 403. */
 function mergeProbe(p: Pass): boolean {
+  let computing = false;
   for (const { repo } of p.repos) {
     const prs = ghJson(p, PrList, ["pr", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", "number,mergeable"]);
     const pr = prs.find((x) => x.mergeable === "MERGEABLE");
-    if (pr === undefined) continue;
+    if (pr === undefined) {
+      computing ||= prs.some((x) => x.mergeable === "UNKNOWN");
+      continue;
+    }
     // A head sha that never matches, so GitHub never merges, whatever the token can do.
     const result = p.io.run("gh", [
       "api", "-X", "PUT", `repos/${repo}/pulls/${pr.number}/merge`, "-f", `sha=${"0".repeat(40)}`,
@@ -599,7 +652,12 @@ function mergeProbe(p: Pass): boolean {
     p.say("todo", `after-swap: the wrong-sha merge of ${where} was inconclusive (${answer(result)}): rerun when an open PR is mergeable`);
     return false;
   }
-  p.say("todo", "after-swap: no served repo has an open, mergeable PR for the wrong-sha merge: open one (a draft is enough), then rerun");
+  p.say(
+    "todo",
+    computing
+      ? "after-swap: GitHub is still computing whether the open PRs can be merged (mergeable is UNKNOWN), so the wrong-sha merge has no PR yet: rerun in a minute"
+      : "after-swap: no served repo has an open, mergeable PR for the wrong-sha merge: open one, or resolve an open PR's conflicts, then rerun",
+  );
   return false;
 }
 
@@ -654,9 +712,12 @@ export const credentials: Phase = {
       p.say("already", "pre-swap test: not needed without a new token");
       p.say("already", "login swap: the fine-grained login stays");
     } else {
+      // Picked before the token form: a missing PR, issue or run must not cost a generated token.
+      const subject = pickSubject(p);
+      if (subject === undefined && !p.dryRun) return "stop";
       const token = readToken(p, active);
       if (token === undefined && !p.dryRun) return "stop";
-      if (!preSwapTest(p, token)) return "stop";
+      if (!preSwapTest(p, subject, token)) return "stop";
       if (!swapLogin(p, token)) return "stop";
     }
 
