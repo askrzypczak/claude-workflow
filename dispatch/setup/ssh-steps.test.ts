@@ -97,21 +97,48 @@ describe("ssh phase steps", () => {
     expect(files[CONFIG]!.startsWith(original)).toBe(true);
   });
 
-  it("when ssh-add rejects --apple-use-keychain, names /usr/bin/ssh-add for removing the stored passphrase", () => {
-    const { reports } = run(
+  it("ssh-agent is driven through /usr/bin/ssh-add for -l, -d and -D", () => {
+    const { calls } = run(firstRun());
+
+    const sshAdds = calls.filter((c) => c.cmd.endsWith("ssh-add"));
+    expect(sshAdds.map((c) => c.cmd).filter((cmd) => cmd !== "/usr/bin/ssh-add")).toEqual([]);
+    expect(sshAdds.some((c) => c.args.includes("-l"))).toBe(true);
+    expect(
+      sshAdds.some((c) => c.args[0] === "-d" && c.args[1] === "--apple-use-keychain" && c.args[2] === ACCOUNT_KEY),
+    ).toBe(true);
+    expect(sshAdds.some((c) => c.args.includes("-D"))).toBe(true);
+  });
+
+  it("a served repo whose origin names another repo stops the phase with a to-do naming the dir, the current URL and the expected repo, and origin is not switched", () => {
+    const appDir = "/work/example-app";
+    const app = "example-owner/example-app";
+    const otherUrl = "git@github.com:someone-else/other-repo.git";
+    const fake = fakeIo(
       firstRun({
-        respond: (call) =>
-          call.cmd === "ssh-add" && call.args.includes("--apple-use-keychain")
-            ? { status: 1, stdout: "", stderr: "ssh-add: illegal option -- -\n" }
-            : undefined,
+        remotes: { [CLONE]: `git@github.com:${FAKE_REPO}.git`, [appDir]: otherUrl, [MARKETPLACE]: MARKETPLACE_HTTPS },
+        deployKeys: [app],
       }),
     );
+    const ctx: SetupContext = {
+      io: fake.io,
+      dryRun: false,
+      clone: CLONE,
+      home: FAKE_HOME,
+      repos: [
+        { repo: FAKE_REPO, dir: CLONE },
+        { repo: app, dir: appDir },
+      ],
+    };
 
+    const result = ssh.run(ctx);
+
+    expect(result).toBe("stop");
+    const todos = fake.reports.filter((r) => r.status === "todo").map((r) => r.text);
     expect(
-      reports.some(
-        (r) => r.status === "note" && r.text.includes(`/usr/bin/ssh-add -d --apple-use-keychain ${ACCOUNT_KEY}`),
-      ),
+      todos.some((t) => t.includes(appDir) && t.includes(otherUrl) && t.includes(app)),
+      todos.join("\n"),
     ).toBe(true);
-    expect(reports.filter((r) => r.status === "done" && r.text.includes("ssh-add") && /passphrase/i.test(r.text))).toEqual([]);
+    expect(fake.calls.filter((c) => isSetUrl(c, appDir))).toEqual([]);
+    expect(fake.calls.filter((c) => isSetUrl(c, CLONE))).toHaveLength(1);
   });
 });

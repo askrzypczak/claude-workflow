@@ -179,7 +179,7 @@ export function isWrite(call: FakeCall): boolean {
   if (call.cmd.endsWith("install-launchd.sh")) return a0 === "pause" || a0 === "resume";
   if (call.cmd === "open" || call.cmd === "pbcopy") return true;
   if (call.cmd === "ssh-keygen") return call.args.includes("-t");
-  if (call.cmd === "ssh-add") return call.args.includes("-d") || call.args.includes("-D");
+  if (call.cmd.endsWith("ssh-add")) return call.args.includes("-d") || call.args.includes("-D");
   if (call.cmd === "git") {
     const i = call.args.indexOf("remote");
     return i >= 0 && call.args[i + 1] === "set-url";
@@ -537,7 +537,7 @@ export function fakeIo(world: FakeWorld = {}) {
       return ok();
     }
     if (call.cmd === "ssh-keygen") return sshKeygen(call);
-    if (call.cmd === "ssh-add") return sshAdd(call);
+    if (call.cmd.endsWith("ssh-add")) return sshAdd(call);
     if (call.cmd === "ssh" && call.args.includes("-G")) return sshG(call);
     if (call.cmd === "security" && a0 === "find-internet-password") {
       return world.keychainHasGithub

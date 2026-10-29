@@ -96,7 +96,7 @@ const isLsRemote = (call: FakeCall, repo: string) =>
 const isSetUrl = (call: FakeCall, dir: string) =>
   call.cmd === "git" && call.args[0] === "-C" && call.args[1] === dir && call.args.includes("set-url");
 const isUnload = (call: FakeCall) =>
-  call.cmd === "ssh-add" && (call.args.includes("-d") || call.args.includes("-D"));
+  call.cmd.endsWith("ssh-add") && (call.args.includes("-d") || call.args.includes("-D"));
 const isOpen = (call: FakeCall, url: string) => call.cmd === "open" && call.args.includes(url);
 
 describe("findPrivateKeys", () => {
@@ -229,8 +229,8 @@ describe("ssh phase", () => {
     const result = ssh.run(ctx);
 
     expect(result).toBe("ok");
-    const unloadDAt = calls.findIndex((c) => c.cmd === "ssh-add" && c.args.includes("-d") && c.args.includes(ACCOUNT_KEY));
-    const unloadAllAt = calls.findIndex((c) => c.cmd === "ssh-add" && c.args.includes("-D"));
+    const unloadDAt = calls.findIndex((c) => c.cmd.endsWith("ssh-add") && c.args.includes("-d") && c.args.includes(ACCOUNT_KEY));
+    const unloadAllAt = calls.findIndex((c) => c.cmd.endsWith("ssh-add") && c.args.includes("-D"));
     expect(unloadDAt).toBeGreaterThanOrEqual(0);
     expect(unloadAllAt).toBeGreaterThanOrEqual(0);
     const firstUnload = calls.findIndex(isUnload);
