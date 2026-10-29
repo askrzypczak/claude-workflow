@@ -1,7 +1,17 @@
 // The setup script's side effects, behind one interface shared by every phase.
 // Phases only see SetupIo, so tests can drive them with the fake in fake-io.ts.
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  constants,
+  copyFileSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from "node:fs";
 import { listSessions } from "../poller/io.ts";
 import type { Session } from "../poller/schemas.ts";
 
@@ -99,6 +109,16 @@ function readLine(script: string, prompt: string): string {
   return result.status === 0 ? result.stdout : "";
 }
 
+/** The most `readFirstLine` reads when no newline comes first. */
+const FIRST_LINE_MAX = 256;
+const NEWLINE = 0x0a;
+
+/** A missing path, or a path through something that is not a directory. */
+function isMissing(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
 /** The real SetupIo: commands run with their output captured; reports go to stdout. */
 export function createIo(): SetupIo {
   return {
@@ -131,20 +151,45 @@ export function createIo(): SetupIo {
     report(status, text) {
       console.log(`${LABELS[status]}: ${text}`);
     },
-    listDir(_path) {
-      throw new Error("not implemented");
+    listDir(path) {
+      try {
+        return readdirSync(path);
+      } catch (err) {
+        if (isMissing(err)) return undefined;
+        throw err;
+      }
     },
-    readFirstLine(_path) {
-      throw new Error("not implemented");
+    readFirstLine(path) {
+      let stat;
+      try {
+        stat = statSync(path);
+      } catch (err) {
+        if (isMissing(err)) return undefined;
+        throw err;
+      }
+      // Only a regular file is opened, so a socket or a FIFO never blocks the read.
+      if (!stat.isFile()) return undefined;
+      const fd = openSync(path, "r");
+      try {
+        // One byte at a time, so nothing past the newline is ever read.
+        const line: number[] = [];
+        const byte = Buffer.alloc(1);
+        while (line.length < FIRST_LINE_MAX && readSync(fd, byte, 0, 1, null) === 1 && byte[0] !== NEWLINE) {
+          line.push(byte[0]!);
+        }
+        return Buffer.from(line).toString("utf8");
+      } finally {
+        closeSync(fd);
+      }
     },
-    appendFile(_path, _text) {
-      throw new Error("not implemented");
+    appendFile(path, text) {
+      appendFileSync(path, text, { mode: 0o600 });
     },
-    copyFile(_from, _to) {
-      throw new Error("not implemented");
+    copyFile(from, to) {
+      copyFileSync(from, to, constants.COPYFILE_EXCL);
     },
-    waitForEnter(_prompt) {
-      throw new Error("not implemented");
+    waitForEnter(prompt) {
+      readLine(READ_LINE, `${prompt} `);
     },
   };
 }
