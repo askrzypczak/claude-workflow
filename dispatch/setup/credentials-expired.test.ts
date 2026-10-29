@@ -171,4 +171,22 @@ describe("credentials phase with the stored token expired", () => {
     expect(writeCalls(calls)).toEqual([]);
     expect(calls.filter((c) => c.cmd === "gh" && !isGh(c, "auth", "status"))).toEqual([]);
   });
+
+  it("an expired login whose gh error is not a string still reaches the skip note", () => {
+    const objectError = (call: FakeCall): RunResult | undefined => {
+      if (!isGh(call, "auth", "status")) return undefined;
+      const status = JSON.parse(expiredStatus(call).stdout) as {
+        hosts: Record<string, Record<string, unknown>[]>;
+      };
+      for (const account of status.hosts["github.com"]!) account.error = { message: "Bad credentials" };
+      return { status: 0, stdout: `${JSON.stringify(status)}\n`, stderr: "" };
+    };
+    const { io, reports } = fakeIo(expiredWorld(objectError));
+
+    expect(runSetup(["credentials", "--dry-run"], base(io))).toBe(0);
+
+    expect(console.error).not.toHaveBeenCalled();
+    expect(skippedReport(reports)).toBe(true);
+    for (const r of reports) expect(r.text).not.toContain("[object Object]");
+  });
 });

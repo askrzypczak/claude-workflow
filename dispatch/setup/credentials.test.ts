@@ -312,6 +312,22 @@ describe("credentials phase", () => {
   });
 });
 
+describe("credentials phase with gh reporting no hosts", () => {
+  it("gh auth status with hosts null is the no-login to-do, not an error", () => {
+    const { reports, ctx } = setup({
+      respond: (c) => (isGh(c, "auth", "status") ? { status: 0, stdout: '{"hosts":null}\n', stderr: "" } : undefined),
+    });
+
+    let result: unknown;
+    expect(() => {
+      result = credentials.run(ctx);
+    }).not.toThrow();
+
+    expect(result).toBe("stop");
+    expect(reports.some((r) => r.status === "todo" && r.text.includes("gh has no github.com login"))).toBe(true);
+  });
+});
+
 const STORED_FINE = "github_pat_STORED_FOR_TESTS_ONLY";
 const STORED_CLASSIC = "gho_STORED_FOR_TESTS_ONLY";
 
