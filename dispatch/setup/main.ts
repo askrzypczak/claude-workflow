@@ -10,6 +10,7 @@ import { createIo } from "./io.ts";
 import type { SetupIo } from "./io.ts";
 import { servedRepos } from "./repos.ts";
 import type { ServedRepo } from "./repos.ts";
+import { sandbox } from "./sandbox.ts";
 import { ssh } from "./ssh.ts";
 
 export type PhaseResult = "ok" | "stop";
@@ -20,6 +21,8 @@ export interface SetupContext {
   clone: string;
   home: string;
   repos: readonly ServedRepo[];
+  /** --no-managed: skip the managed settings copy. */
+  noManaged?: boolean;
 }
 
 export interface Phase {
@@ -28,7 +31,7 @@ export interface Phase {
 }
 
 /** The phases, in the order a full run takes them. */
-const PHASES: readonly Phase[] = [credentials, ssh];
+const PHASES: readonly Phase[] = [credentials, ssh, sandbox];
 
 const USAGE = `Usage: dispatch/setup-agents.sh [${PHASES.map((p) => p.name).join("|")}] [--dry-run]
   With no phase, runs every phase in order and stops at the first that needs the maintainer.

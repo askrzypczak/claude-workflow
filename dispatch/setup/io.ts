@@ -27,6 +27,8 @@ export interface RunOptions {
   env?: Readonly<Record<string, string>>;
   /** Written to the child's stdin. */
   input?: string;
+  /** The child's working directory. */
+  cwd?: string;
 }
 
 export interface RunResult {
@@ -65,6 +67,8 @@ export interface SetupIo {
   copyFile(from: string, to: string): void;
   /** Waits for Enter at the terminal; throws without a terminal, as `confirm` does. */
   waitForEnter(prompt: string): void;
+  /** Replaces a file's text; creates it with mode 0600 when missing. */
+  writeFile(path: string, text: string): void;
 }
 
 const LABELS: Record<StepStatus, string> = {
@@ -190,6 +194,9 @@ export function createIo(): SetupIo {
     },
     waitForEnter(prompt) {
       readLine(READ_LINE, `${prompt} `);
+    },
+    writeFile() {
+      throw new Error("not implemented");
     },
   };
 }
