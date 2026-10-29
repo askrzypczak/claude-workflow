@@ -188,4 +188,60 @@ describe("credentials phase stops", () => {
     expect(reports.some((r) => r.status === "would" && /after-swap/i.test(r.text))).toBe(true);
     expect(writeCalls(calls)).toEqual([]);
   });
+
+  it("the wrong-sha merge goes to a non-draft mergeable PR when the list also has a mergeable draft", () => {
+    const { calls } = run({
+      login: "fine-grained",
+      confirm: false,
+      respond: (c) =>
+        isGh(c, "pr", "list") ? prList([{ number: 3, mergeable: "MERGEABLE", isDraft: true }, { number: 8, mergeable: "MERGEABLE", isDraft: false }]) : undefined,
+    });
+
+    const probes = calls.filter(isMergeProbe).map((c) => parseGhApi(c)!.endpoint);
+    expect(probes).toContain(`repos/${FAKE_REPO}/pulls/8/merge`);
+    expect(probes).not.toContain(`repos/${FAKE_REPO}/pulls/3/merge`);
+  });
+
+  it("the wrong-sha merge falls back to a mergeable draft when no other open PR is mergeable", () => {
+    const { calls } = run({
+      login: "fine-grained",
+      confirm: false,
+      respond: (c) =>
+        isGh(c, "pr", "list") ? prList([{ number: 3, mergeable: "MERGEABLE", isDraft: true }, { number: 8, mergeable: "CONFLICTING", isDraft: false }]) : undefined,
+    });
+
+    const probes = calls.filter(isMergeProbe).map((c) => parseGhApi(c)!.endpoint);
+    expect(probes).toEqual([`repos/${FAKE_REPO}/pulls/3/merge`]);
+    const lists = calls.filter((c) => isGh(c, "pr", "list"));
+    expect(lists.length).toBeGreaterThan(0);
+    for (const list of lists) {
+      const fields = list.args[list.args.indexOf("--json") + 1]?.split(",") ?? [];
+      expect(fields).toContain("isDraft");
+    }
+  });
+
+  it("under --dry-run with the fine-grained login, a repo the token cannot see is skipped by the subject pick and the run does not throw", () => {
+    const world: FakeWorld = {
+      login: "fine-grained",
+      respond: (c) =>
+        repoNotFound(c) ??
+        (isGh(c, "pr", "list") && c.args.includes(FAKE_REPO)
+          ? { status: 1, stdout: "", stderr: `GraphQL: Could not resolve to a Repository with the name '${FAKE_REPO}'. (repository)` }
+          : undefined),
+    };
+    let outcome: ReturnType<typeof run> | undefined;
+
+    expect(() => {
+      outcome = run(world, true);
+    }).not.toThrow();
+
+    expect(outcome!.result).toBe("ok");
+    expect(outcome!.reports.some((r) => r.status === "todo" && r.text.includes(FAKE_REPO))).toBe(true);
+    expect(outcome!.calls.filter((c) => isGh(c, "pr", "list"))).toEqual([]);
+  });
 });
+
+/** `gh pr list --json` printing these PRs. */
+function prList(prs: unknown[]) {
+  return { status: 0, stdout: `${JSON.stringify(prs)}\n`, stderr: "" };
+}
