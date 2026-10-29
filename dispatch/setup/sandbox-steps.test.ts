@@ -1,10 +1,11 @@
 // The sandbox phase's dry run, its first write of ~/.claude/settings.json and its stops on a
-// missing install and on the managed copy, on the fake SetupIo (fake-io.ts).
+// missing install and on the managed copy, its handling of stale key entries in the managed
+// copy and of plugin list entries without an install path, on the fake SetupIo (fake-io.ts).
 import { describe, expect, it } from "vitest";
 import { FAKE_HOME, FAKE_REPO, fakeIo, fileWrites, writeCalls } from "./fake-io.ts";
 import type { FakeCall, FakeWorld } from "./fake-io.ts";
 import type { SetupContext } from "./main.ts";
-import { MANAGED_SETTINGS, sandbox } from "./sandbox.ts";
+import { MANAGED_SETTINGS, sandbox, sandboxSettings } from "./sandbox.ts";
 
 const CLONE = "/clone";
 const PLUGIN = "ticket-workflow@askrzypczak-plugins";
@@ -27,6 +28,20 @@ function world(skill: string, files: Record<string, string> = {}, overrides: Fak
 }
 
 const isSudo = (c: FakeCall) => c.cmd === "sudo";
+const isManagedTee = (c: FakeCall) => c.cmd === "sudo" && c.args[0] === "tee" && c.args[1] === MANAGED_SETTINGS;
+
+const asText = (settings: unknown) => `${JSON.stringify(settings, null, 2)}\n`;
+
+/** The settings generated for the world's one key, plus the three deny entries for `path`. */
+function withKeyEntries(path: string): Record<string, unknown> {
+  const settings = sandboxSettings([KEY], FAKE_HOME) as {
+    sandbox: { credentials: { files: unknown[] } };
+    permissions: { deny: unknown[] };
+  };
+  settings.sandbox.credentials.files.push({ path, mode: "deny" });
+  settings.permissions.deny.push(`Read(${path})`, `Edit(${path})`);
+  return settings;
+}
 
 function setup(w: FakeWorld, dryRun: boolean) {
   const fake = fakeIo(w);
@@ -83,5 +98,53 @@ describe("sandbox phase steps", () => {
     expect(reports.some((r) => r.status === "todo")).toBe(true);
     expect(calls.filter(isSudo)).toEqual([]);
     expect(files[MANAGED_SETTINGS]).toBe(managed);
+  });
+
+  it("overwrites a managed copy holding a gone key's three entries without a to-do, and names the removal", () => {
+    const { run, calls, reports } = setup(
+      world(SKILL_CURRENT, { [MANAGED_SETTINGS]: asText(withKeyEntries("~/.ssh/old-key")) }),
+      false,
+    );
+
+    expect(run()).toBe("ok");
+    expect(reports.filter((r) => r.status === "todo")).toEqual([]);
+    const tees = calls.filter(isManagedTee);
+    expect(tees).toHaveLength(1);
+    expect(tees[0]!.input).toBe(asText(sandboxSettings([KEY], FAKE_HOME)));
+    expect(
+      reports.some((r) => r.status === "done" && r.text.includes(MANAGED_SETTINGS) && r.text.includes("~/.ssh/old-key")),
+    ).toBe(true);
+  });
+
+  it("keeps a still-present file's three entries in the managed copy as extras", () => {
+    const managed = asText(withKeyEntries("~/.ssh/legacy-key"));
+    const { run, calls, files, reports } = setup(
+      world(SKILL_CURRENT, {
+        [`${FAKE_HOME}/.ssh/legacy-key`]: "PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: none\n",
+        [MANAGED_SETTINGS]: managed,
+      }),
+      false,
+    );
+
+    expect(run()).toBe("stop");
+    expect(reports.some((r) => r.status === "todo" && r.text.includes("legacy-key"))).toBe(true);
+    expect(calls.filter(isSudo)).toEqual([]);
+    expect(files[MANAGED_SETTINGS]).toBe(managed);
+  });
+
+  it("an unrelated plugin list entry without an installPath does not end the run", () => {
+    const listing = JSON.stringify([
+      { id: PLUGIN, scope: "user", installPath: INSTALL, version: "1.0.0" },
+      { id: "other-plugin@elsewhere", scope: "user", version: "1.0.0" },
+    ]);
+    const isList = (c: FakeCall) => c.cmd === "claude" && c.args.join(" ") === "plugin list --json";
+    const { run, files } = setup(
+      world(SKILL_CURRENT, {}, { respond: (c) => (isList(c) ? { status: 0, stdout: listing, stderr: "" } : undefined) }),
+      false,
+    );
+
+    expect(run()).toBe("ok");
+    const settings = JSON.parse(files[SETTINGS] ?? "null") as { sandbox: { enabled: boolean } } | null;
+    expect(settings?.sandbox.enabled).toBe(true);
   });
 });
