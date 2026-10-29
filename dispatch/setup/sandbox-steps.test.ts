@@ -1,6 +1,7 @@
 // The sandbox phase's dry run, its first write of ~/.claude/settings.json and its stops on a
 // missing install and on the managed copy, its handling of stale key entries in the managed
-// copy and of plugin list entries without an install path, on the fake SetupIo (fake-io.ts).
+// copy (a gone key's entries dropped, a present file's or a glob kept as extras) and of plugin
+// list entries without an install path, on the fake SetupIo (fake-io.ts).
 import { describe, expect, it } from "vitest";
 import { FAKE_HOME, FAKE_REPO, fakeIo, fileWrites, writeCalls } from "./fake-io.ts";
 import type { FakeCall, FakeWorld } from "./fake-io.ts";
@@ -128,6 +129,18 @@ describe("sandbox phase steps", () => {
 
     expect(run()).toBe("stop");
     expect(reports.some((r) => r.status === "todo" && r.text.includes("legacy-key"))).toBe(true);
+    expect(calls.filter(isSudo)).toEqual([]);
+    expect(files[MANAGED_SETTINGS]).toBe(managed);
+  });
+
+  it("keeps a glob deny under ~/.ssh in the managed copy as an extra", () => {
+    const settings = sandboxSettings([KEY], FAKE_HOME) as { permissions: { deny: unknown[] } };
+    settings.permissions.deny.push("Read(~/.ssh/*)");
+    const managed = asText(settings);
+    const { run, calls, files, reports } = setup(world(SKILL_CURRENT, { [MANAGED_SETTINGS]: managed }), false);
+
+    expect(run()).toBe("stop");
+    expect(reports.some((r) => r.status === "todo" && r.text.includes("~/.ssh/*"))).toBe(true);
     expect(calls.filter(isSudo)).toEqual([]);
     expect(files[MANAGED_SETTINGS]).toBe(managed);
   });
