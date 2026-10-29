@@ -5,11 +5,10 @@ import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { timestamp } from "../poller/io.ts";
 import { parseJson } from "../poller/schemas.ts";
 import type { RunOptions, RunResult } from "./io.ts";
 import type { Phase, SetupContext } from "./main.ts";
-import { findPrivateKeys } from "./ssh.ts";
+import { backupStamp, findPrivateKeys } from "./ssh.ts";
 
 /** Where macOS Claude Code reads managed settings from. */
 export const MANAGED_SETTINGS = "/Library/Application Support/ClaudeCode/managed-settings.json";
@@ -29,22 +28,29 @@ const TEMPLATE = parseJson(
   TEMPLATE_PATH,
 );
 
-/** `claude plugin list --json`: one entry per install. */
-const PluginList = z.array(
-  z.object({
-    id: z.string(),
-    scope: z.string(),
-    installPath: z.string(),
-    version: z.string().nullish(),
-    projectPath: z.string().nullish(),
-  }),
-);
-type Install = z.infer<typeof PluginList>[number];
-
 type JsonObject = Record<string, unknown>;
 
 const isObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** One install of this plugin; one with no installPath counts as stale. */
+const Install = z.object({
+  id: z.string(),
+  scope: z.string(),
+  installPath: z.string().nullish(),
+  version: z.string().nullish(),
+  projectPath: z.string().nullish(),
+});
+type Install = z.infer<typeof Install>;
+
+/**
+ * `claude plugin list --json`: one entry per install. Only this plugin's entries are validated,
+ * so a malformed entry of another plugin does not end the run.
+ */
+const PluginList = z
+  .array(z.unknown())
+  .transform((entries) => entries.filter((e) => isObject(e) && e.id === PLUGIN))
+  .pipe(z.array(Install));
 
 /** The first line of stderr, else of stdout, else the exit status. */
 function answer(result: RunResult): string {
@@ -53,9 +59,6 @@ function answer(result: RunResult): string {
 }
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
-
-/** `YYYYMMDD-HHMMSS`, local time. */
-const backupStamp = (d: Date) => timestamp(d).replace(/[-:]/g, "").replace(" ", "-");
 
 /** A path under `home` written `~/...`, as settings name it; any other path as it is. */
 function homePath(path: string, home: string): string {
@@ -178,23 +181,54 @@ function merge(current: unknown, generated: unknown, path: string, changes: stri
   return generated;
 }
 
+const KEY_FILE = /^~\/\.ssh\/([^/]+)$/;
+const KEY_RULE = /^(?:Read|Edit)\(~\/\.ssh\/([^/]+)\)$/;
+/** A glob is a hand-written rule, never a key file the script named. */
+const GLOB = /[*?[\]{}]/;
+
 /**
- * The entries of `current` that `generated` lacks, as dotted paths: keys, nested keys where
- * both sides are objects, and array items. A different value is not an extra.
+ * The ~/.ssh file name that `item`, at dotted `path`, denies when it has exactly the shape
+ * sandboxSettings gives a key entry; undefined for any other entry.
  */
-function extras(current: unknown, generated: unknown, path: string): string[] {
+function keyEntryName(path: string, item: unknown): string | undefined {
+  let name: string | undefined;
+  if (path === "sandbox.credentials.files" && isObject(item) && typeof item.path === "string") {
+    const shaped = Object.keys(item).length === 2 && item.mode === "deny";
+    name = shaped ? KEY_FILE.exec(item.path)?.[1] : undefined;
+  } else if (path === "permissions.deny" && typeof item === "string") {
+    name = KEY_RULE.exec(item)?.[1];
+  }
+  return name === undefined || GLOB.test(name) ? undefined : name;
+}
+
+/**
+ * The entries of `current` that `generated` lacks. `extra` holds them as dotted paths: keys,
+ * nested keys where both sides are objects, and array items. A different value is not an
+ * extra. Array items `isStale` accepts go to `removed` instead, one line per array.
+ */
+function leftovers(
+  current: unknown,
+  generated: unknown,
+  path: string,
+  isStale: (path: string, item: unknown) => boolean,
+  out: { extra: string[]; removed: string[] } = { extra: [], removed: [] },
+): { extra: string[]; removed: string[] } {
   if (isObject(current) && isObject(generated)) {
-    return Object.entries(current).flatMap(([key, value]) => {
+    for (const [key, value] of Object.entries(current)) {
       const at = child(path, key);
-      return Object.hasOwn(generated, key) ? extras(value, generated[key], at) : [at];
-    });
+      if (Object.hasOwn(generated, key)) leftovers(value, generated[key], at, isStale, out);
+      else out.extra.push(at);
+    }
+  } else if (Array.isArray(current) && Array.isArray(generated)) {
+    const gone: string[] = [];
+    for (const item of current) {
+      if (generated.some((g) => isDeepStrictEqual(g, item))) continue;
+      if (isStale(path, item)) gone.push(JSON.stringify(item));
+      else out.extra.push(`${path} item ${JSON.stringify(item)}`);
+    }
+    if (gone.length > 0) out.removed.push(`removed from ${path}: ${gone.join(", ")}`);
   }
-  if (Array.isArray(current) && Array.isArray(generated)) {
-    return current
-      .filter((item) => !generated.some((g) => isDeepStrictEqual(g, item)))
-      .map((item) => `${path} item ${JSON.stringify(item)}`);
-  }
-  return [];
+  return out;
 }
 
 const LIST_ARGS = ["plugin", "list", "--json"];
@@ -206,12 +240,16 @@ function checkedInstalls(ctx: SetupContext): Install[] {
   if (listed.status !== 0) throw new Error(`${what} failed: ${answer(listed)}`);
   const served = new Set(ctx.repos.map((r) => resolve(r.dir)));
   return parseJson(PluginList, listed.stdout, what).filter(
-    (i) => i.id === PLUGIN && (i.scope === "user" || (i.projectPath != null && served.has(resolve(i.projectPath)))),
+    (i) => i.scope === "user" || (i.projectPath != null && served.has(resolve(i.projectPath))),
   );
 }
 
-const hasNoTrack = (ctx: SetupContext, i: Install) =>
-  ctx.io.readFile(join(i.installPath, SKILL))?.includes(NO_TRACK) ?? false;
+const skillPath = (i: Install) => (i.installPath == null ? undefined : join(i.installPath, SKILL));
+
+const hasNoTrack = (ctx: SetupContext, i: Install) => {
+  const path = skillPath(i);
+  return path !== undefined && (ctx.io.readFile(path)?.includes(NO_TRACK) ?? false);
+};
 
 const installText = (i: Install) =>
   `${i.scope} scope, version ${i.version ?? "unknown"}${i.projectPath == null ? "" : `, project ${i.projectPath}`}`;
@@ -284,7 +322,7 @@ function pluginGate(ctx: SetupContext): boolean {
   for (const i of stale) {
     ctx.io.report(
       "todo",
-      `${PLUGIN} (${installText(i)}): its work-ticket skill (${join(i.installPath, SKILL)}) still lacks ${NO_TRACK} after ${updateCommand(i)}, so sandboxed sessions would fail at branch creation: a branch that tracks a remote one writes .git/config, which the sandbox protects. The marketplace's main does not carry the ${NO_TRACK} skills yet: merge them to main first, then rerun. No settings were written`,
+      `${PLUGIN} (${installText(i)}): its work-ticket skill (${skillPath(i) ?? "the list gives no install path"}) still lacks ${NO_TRACK} after ${updateCommand(i)}, so sandboxed sessions would fail at branch creation: a branch that tracks a remote one writes .git/config, which the sandbox protects. The marketplace's main does not carry the ${NO_TRACK} skills yet: merge them to main first, then rerun. No settings were written`,
     );
   }
   return false;
@@ -341,8 +379,12 @@ function userSettingsStep(ctx: SetupContext, generated: JsonObject): boolean {
   return true;
 }
 
-/** Writes `generated`, exactly, to the managed settings file through sudo when it differs. */
-function managedStep(ctx: SetupContext, generated: JsonObject): boolean {
+/**
+ * Writes `generated`, exactly, to the managed settings file through sudo when it differs.
+ * `sshNames` are the entries of ~/.ssh: a key entry in the script's shape for a name not
+ * among them is a deleted key's, which the copy drops, naming it.
+ */
+function managedStep(ctx: SetupContext, generated: JsonObject, sshNames: readonly string[]): boolean {
   if (ctx.noManaged) {
     ctx.io.report("note", `managed settings copy skipped (--no-managed): an existing ${MANAGED_SETTINGS} is left as it is`);
     return true;
@@ -365,16 +407,22 @@ function managedStep(ctx: SetupContext, generated: JsonObject): boolean {
       );
       return ctx.dryRun;
     }
-    const extra = extras(parsed.value, generated, "");
+    const present = new Set(sshNames);
+    const isStale = (path: string, item: unknown) => {
+      const name = keyEntryName(path, item);
+      return name !== undefined && !present.has(name);
+    };
+    const { extra, removed } = leftovers(parsed.value, generated, "", isStale);
     if (extra.length > 0) {
       ctx.io.report(
         "todo",
-        `managed settings copy ${MANAGED_SETTINGS} holds entries the generated settings lack, which writing the copy would drop: ${extra.join(", ")}. Remove them from the file and rerun, or rerun with --no-managed to leave the file as it is; nothing was written to it`,
+        `managed settings copy ${MANAGED_SETTINGS} holds entries the generated settings lack, which writing the copy would drop: ${extra.join(", ")}. The file belongs to root: remove them with sudo and an editor (sudo vi "${MANAGED_SETTINGS}"), then rerun, or rerun with --no-managed to leave the file as it is; nothing was written to it`,
       );
       return ctx.dryRun;
     }
     changes = [];
     merge(parsed.value, generated, "", changes);
+    changes.push(...removed);
   }
   const detail =
     changes === undefined ? "" : `: ${changes.length === 0 ? "same entries, in the generated order and layout" : changes.join("; ")}`;
@@ -408,6 +456,7 @@ export const sandbox: Phase = {
     if (!pluginGate(ctx)) return "stop";
     const generated = sandboxSettings(keysStep(ctx), ctx.home);
     if (!userSettingsStep(ctx, generated)) return "stop";
-    return managedStep(ctx, generated) ? "ok" : "stop";
+    const sshNames = ctx.io.listDir(join(ctx.home, ".ssh")) ?? [];
+    return managedStep(ctx, generated, sshNames) ? "ok" : "stop";
   },
 };
