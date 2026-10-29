@@ -2,82 +2,20 @@
 
 Agent sessions run their Bash commands in Claude Code's sandbox, set in the maintainer's user settings so that every session on the machine has it: interactive sessions, the poller's background sessions ("its Bash commands are sandboxed when its settings enable sandboxing") and their subagents ("Bash commands inside a subagent are sandboxed when sandboxing is enabled in the parent session"; both Claude Code docs, *Configure the sandboxed Bash tool*). These are the maintainer's steps; no agent applies them. Results described as tested come from nested `claude -p --settings` sessions in auto mode on macOS 26, with Claude Code 2.1.308 and `gh` 2.102.0.
 
+**Steps:**
+
+1. In a terminal, never from an agent session, in the main clone: `dispatch/setup-agents.sh sandbox` after `ssh`, or a full `dispatch/setup-agents.sh`. `--dry-run` first shows what each step would do and changes nothing.
+2. The phase first updates the marketplace and then the installed plugin (`claude plugin update`, including a served repo's own project-scope install): a marketplace update alone does not update the installed plugin. It writes no settings until the installed `work-ticket` skill creates branches with `--no-track` ([What breaks under the sandbox](#macos-exceptions)). If it still refuses after the update, the skills are not on `main` yet: merge them first, then rerun.
+3. It merges the settings into `~/.claude/settings.json` after a backup and prints each change. Then it writes the managed copy with `sudo`, which asks for the password. `--no-managed` skips the managed copy.
+4. Rerun the phase after adding a key to `~/.ssh`, such as a new served repo's deploy key, so that key is denied too.
+
 ## Settings
 
-Merge these keys into `~/.claude/settings.json`, adding to any `env` and `permissions.deny` entries already there. The `~/.ssh` entries must name every private key file on the machine, the account key and every deploy key ([Deploy keys](#deploy-keys)), each in `credentials.files` and in a `Read(...)` and an `Edit(...)` rule. The three below are example names: replace them with yours. After setup, run `ls ~/.ssh` and confirm that each private key in it is listed.
+The `sandbox` phase writes these settings from the template [`dispatch/setup/sandbox-settings.json`](../dispatch/setup/sandbox-settings.json). For each private key in `~/.ssh`, the account key and every deploy key, detected by its first line as in [Deploy keys](#deploy-keys), it adds a `credentials.files` deny entry and a `Read(...)` and an `Edit(...)` rule.
 
-```json
-{
-  "env": {
-    "CLAUDE_CODE_PLUGIN_PREFER_HTTPS": "1",
-    "CLAUDE_CODE_ENABLE_CFC": "0"
-  },
-  "sandbox": {
-    "enabled": true,
-    "failIfUnavailable": true,
-    "allowUnsandboxedCommands": false,
-    "enableWeakerNetworkIsolation": true,
-    "excludedCommands": ["git fetch *", "git pull *", "git push *"],
-    "network": {
-      "allowedDomains": [
-        "api.github.com",
-        "results-receiver.actions.githubusercontent.com",
-        "registry.npmjs.org"
-      ],
-      "strictAllowlist": true
-    },
-    "credentials": {
-      "files": [
-        { "path": "~/.ssh/id_ed25519", "mode": "deny" },
-        { "path": "~/.ssh/deploy-claude-workflow", "mode": "deny" },
-        { "path": "~/.ssh/deploy-example-app", "mode": "deny" },
-        { "path": "~/.claude/.credentials.json", "mode": "deny" },
-        { "path": "~/Library/Application Support/Google/Chrome", "mode": "deny" },
-        { "path": "~/Library/Application Support/BraveSoftware", "mode": "deny" },
-        { "path": "~/Library/Application Support/Arc", "mode": "deny" },
-        { "path": "~/Library/Application Support/Microsoft Edge", "mode": "deny" },
-        { "path": "~/Library/Application Support/Firefox", "mode": "deny" },
-        { "path": "~/Library/Safari", "mode": "deny" },
-        { "path": "~/Library/Cookies", "mode": "deny" }
-      ]
-    }
-  },
-  "permissions": {
-    "deny": [
-      "Read(~/.ssh/id_ed25519)",
-      "Edit(~/.ssh/id_ed25519)",
-      "Read(~/.ssh/deploy-claude-workflow)",
-      "Edit(~/.ssh/deploy-claude-workflow)",
-      "Read(~/.ssh/deploy-example-app)",
-      "Edit(~/.ssh/deploy-example-app)",
-      "Read(~/.claude/.credentials.json)",
-      "Edit(~/.claude/.credentials.json)",
-      "Read(~/Library/Application Support/Google/Chrome/**)",
-      "Edit(~/Library/Application Support/Google/Chrome/**)",
-      "Read(~/Library/Application Support/BraveSoftware/**)",
-      "Edit(~/Library/Application Support/BraveSoftware/**)",
-      "Read(~/Library/Application Support/Arc/**)",
-      "Edit(~/Library/Application Support/Arc/**)",
-      "Read(~/Library/Application Support/Microsoft Edge/**)",
-      "Edit(~/Library/Application Support/Microsoft Edge/**)",
-      "Read(~/Library/Application Support/Firefox/**)",
-      "Edit(~/Library/Application Support/Firefox/**)",
-      "Read(~/Library/Safari/**)",
-      "Edit(~/Library/Safari/**)",
-      "Read(~/Library/Cookies/**)",
-      "Edit(~/Library/Cookies/**)",
-      "Edit(~/.gitconfig)",
-      "Edit(~/.config/git/**)",
-      "Edit(//**/.git/hooks/**)",
-      "Edit(//**/.git/config)",
-      "Bash(git fetch *--upl*)",
-      "Bash(git pull *--upl*)",
-      "Bash(git push *--rece*)",
-      "Bash(git push *--e*)"
-    ]
-  }
-}
-```
+It merges them into `~/.claude/settings.json`. Other keys are kept; the template's entries are added to an existing `env`, `permissions.deny` and the other lists, without duplicates; a single value takes the template's value. It backs the file up first, to `~/.claude/settings.json.bak-<YYYYMMDD-HHMMSS>`, and prints each change. A file that is not valid JSON stops it before any change.
+
+It then writes the managed copy, `/Library/Application Support/ClaudeCode/managed-settings.json`, with `sudo`: the same settings, exactly, with nothing merged, and only when the file differs. When that file holds entries the template does not, it refuses and names them. `--no-managed` skips the copy. If the managed copy is removed, the user file stays as the fallback. Why the copy exists: [What stays outside](#what-stays-outside), Repository settings.
 
 - `enabled` also turns on auto-allow mode: a sandboxed command is approved "automatically, with no prompt" whatever the permission mode, with a few exceptions such as plan mode, while excluded commands still go through the regular permission flow (*Configure the sandboxed Bash tool*). To keep prompts for Bash, also set `autoAllowBashIfSandboxed` to `false`.
 - `failIfUnavailable` makes Claude Code exit at startup when the sandbox can't start, instead of running commands unsandboxed. `allowUnsandboxedCommands: false` takes away Claude's retry outside the sandbox: "With the retry disabled, Claude Code ignores the `dangerouslyDisableSandbox` parameter." (same page).
@@ -91,7 +29,7 @@ Merge these keys into `~/.claude/settings.json`, adding to any `env` and `permis
 
 ## macOS exceptions
 
-**Git over SSH.** "On macOS, `git fetch`, `git pull`, and `git push` against an SSH remote fail inside the sandbox even when the host is allowed." (*Configure the sandboxed Bash tool*). The JSON takes those three out of the sandbox with `excludedCommands`, the fix that page gives. "An excluded command runs with your full access.", and "The excluded git commands can reach any host, not only the ones in `allowedDomains`." (same page). They read `~/.ssh/config`, the key files and `~/.gitconfig`, so [Deploy keys](#deploy-keys) keeps the account key out of their reach, and these rules keep them from running a program Claude chose:
+**Git over SSH.** "On macOS, `git fetch`, `git pull`, and `git push` against an SSH remote fail inside the sandbox even when the host is allowed." (*Configure the sandboxed Bash tool*). The settings take those three out of the sandbox with `excludedCommands`, the fix that page gives. "An excluded command runs with your full access.", and "The excluded git commands can reach any host, not only the ones in `allowedDomains`." (same page). They read `~/.ssh/config`, the key files and `~/.gitconfig`, so [Deploy keys](#deploy-keys) keeps the account key out of their reach, and these rules keep them from running a program Claude chose:
 
 - `Bash(git fetch *--upl*)`, `Bash(git pull *--upl*)`, `Bash(git push *--rece*)` and `Bash(git push *--e*)` deny `--upload-pack`, `--receive-pack` and `--exec`, which name a program for git to run. Git accepts any unambiguous prefix of a long option, so each rule matches the shortest one. In a test, `git fetch --upload-pack=<script> .` and `git push --dry-run --receive-pack=<script> . <ref>` ran the script inside the sandbox even though both matched the exclusions, but *All settings* lists the call shapes that stay sandboxed only "among others", so the rules keep this from resting on undocumented behaviour.
 - A variable prefix needs no rule: in a test, `GIT_SSH_COMMAND=<script> git fetch origin` and a `PATH=...` prefix ran the script inside the sandbox, so there are no `GIT_SSH*` or `GIT_CONFIG*` rules. `git -c core.sshCommand=... fetch` doesn't start with `git fetch`, and a pattern matches "everything before the first `*` as written" (*Configure permissions*), so that call stays sandboxed too.
@@ -140,7 +78,7 @@ For each served repo, and for this one, the script does the following, where `<r
 4. Reach: `git ls-remote git@github.com-<repo>:<owner>/<repo>.git`. When it fails, GitHub does not have the key yet: the script copies `~/.ssh/deploy-<repo>.pub` to the clipboard, opens the repo's new-deploy-key page (Settings, Deploy keys, Add deploy key), waits for Enter while the maintainer adds it with "Allow write access", and runs the check again. A second failure stops it. [Checks](#checks) tests the push.
 5. Remote, only after step 4 passed: in the repo's clone (a served repo's `dir`; for this repo, the clone the poller runs from), `git remote set-url origin git@github.com-<repo>:<owner>/<repo>.git`. Worktrees share the clone's remotes.
 
-Each key file must be denied in [Settings](#settings); the script does not edit the settings.
+Each key file must be denied in [Settings](#settings); the `sandbox` phase adds each key to the settings.
 
 The account key is every private key in `~/.ssh` other than the `deploy-*` ones: the excluded git commands can use any key file. The script deals with it only after every served repo's remote works through its deploy key, so the maintainer is never left without a way to push:
 
@@ -148,7 +86,7 @@ The account key is every private key in `~/.ssh` other than the `deploy-*` ones:
 - No `UseKeychain` or `AddKeysToAgent` lines for it in `~/.ssh/config`: they would load it again. The script reports each such line, with its line number, and edits none, since a line may serve other hosts' keys.
 - Off the disk, or kept passphrase-protected: an excluded git command can read the file, and ssh tries default key names such as `~/.ssh/id_ed25519` on its own. The script stops on an account key with no passphrase and names both ways out: `ssh-keygen -p -f <key>`, or deleting the key once nothing needs it. It deletes no key.
 
-The marketplace clone moves to HTTPS; the repo is public, so it needs no credentials. For an `owner/repo` source Claude Code "probes `ssh -T git@github.com` and clones over SSH when the probe succeeds", and "Installs from `/plugin` inside a session and plugin updates don't fall back" (Claude Code docs, *Host and maintain a marketplace*). `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` in the JSON covers new clones. The script switches the existing one: `git -C ~/.claude/plugins/marketplaces/askrzypczak-plugins remote set-url origin https://github.com/askrzypczak/claude-workflow.git`.
+The marketplace clone moves to HTTPS; the repo is public, so it needs no credentials. For an `owner/repo` source Claude Code "probes `ssh -T git@github.com` and clones over SSH when the probe succeeds", and "Installs from `/plugin` inside a session and plugin updates don't fall back" (Claude Code docs, *Host and maintain a marketplace*). `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` in the settings template covers new clones. The script switches the existing one: `git -C ~/.claude/plugins/marketplaces/askrzypczak-plugins remote set-url origin https://github.com/askrzypczak/claude-workflow.git`.
 
 The maintainer pushes through the same alias remotes. For a repo without a deploy key, load the account key briefly with dispatch paused, as [Admin work](agent-credentials.md#admin-work) does, and `ssh-add -D` afterwards.
 
@@ -156,8 +94,7 @@ The maintainer pushes through the same alias remotes. For a repo without a deplo
 
 Claude in Chrome acts in the maintainer's own browser, with its sign-ins, and in auto mode, "when the auto mode classifier itself approves a browser call to a site, the extension skips its own per-site check for that call, unless your permission rules deny any site to Claude in Chrome" (Claude Code docs, *Use Claude Code with Chrome*). So keeping github.com out of the extension's site permissions is not a boundary in auto mode, and the docs give no rule syntax for denying a site to Claude in Chrome. The control is when it runs: off by default, never in a background session, and on only in an interactive session the maintainer is watching:
 
-- Run `/chrome` and turn off **Enabled by default** (the `claudeInChromeDefaultEnabled` key in `~/.claude.json`).
-- `CLAUDE_CODE_ENABLE_CFC=0` in the JSON's `env` keeps it off; the variable "Takes precedence over the `claudeInChromeDefaultEnabled` setting. The `--chrome` and `--no-chrome` flags take precedence over both." (Claude Code docs, *Environment variables*).
+- `CLAUDE_CODE_ENABLE_CFC=0` in the template's `env` keeps it off; the variable "Takes precedence over the `claudeInChromeDefaultEnabled` setting. The `--chrome` and `--no-chrome` flags take precedence over both." (Claude Code docs, *Environment variables*). So no `/chrome` step is needed: its **Enabled by default** toggle writes that setting (the `claudeInChromeDefaultEnabled` key in `~/.claude.json`), and [Checks](#checks) confirms that a background session has no browser tools.
 - Start `claude --chrome` only for an interactive session you are watching. Keep github.com out of the extension's site permissions as well ([Wiring](agent-credentials.md#wiring)).
 
 In a test, `-p` sessions loaded no Chrome tools even with Enabled by default on. Background sessions are interactive, so [Checks](#checks) covers them.
@@ -172,7 +109,7 @@ In a test, `-p` sessions loaded no Chrome tools even with Enabled by default on.
 - The `gh` token cannot merge ([Agent credentials](agent-credentials.md)) and, from a sandboxed session, reaches only the allowed hosts. But it could be posted to GitHub and used elsewhere until rotated, which is why the expiry note in [The token](agent-credentials.md#the-token) matters.
 - An untested alternative: deny `~/Library/Keychains` (in `credentials.files` and as `Read(...)` and `Edit(...)` rules) and store the `gh` token in `~/.config/gh/hosts.yml` with `gh auth login --with-token --insecure-storage`. That exposes only that token to sandboxed commands and leaves other keychain items closed, at the cost of a plaintext token file. The `gh` check in [Checks](#checks) covers it if the maintainer chooses it.
 - The trust-service path that `enableWeakerNetworkIsolation` opens.
-- Repository settings: "A `false` in your user settings doesn't make the sandbox admin-required, so a project's other sandbox settings still apply." (*Configure the sandboxed Bash tool*). A repo's `.claude/settings.json` or `.claude/settings.local.json` can set `enabled: false`, add `excludedCommands` or turn on weaker options. Sandboxed commands can't write those files, and Edit-tool writes to them go to the classifier in auto mode (`.claude` is a protected path, *Choose a permission mode*). `strictAllowlist` in user settings already makes Claude Code ignore a repo's `allowedDomains` (*Configure the sandboxed Bash tool*, "Locks that apply without an admin-required sandbox"). The same JSON in `/Library/Application Support/ClaudeCode/managed-settings.json` closes the rest: `allowUnsandboxedCommands: false` there makes the sandbox admin-required, and Claude Code then ignores "the settings in a repository's files that loosen the sandbox, `excludedCommands` entries included" (same page); a managed `enabled` "overrides anything a developer sets" (*All settings*).
+- Repository settings: "A `false` in your user settings doesn't make the sandbox admin-required, so a project's other sandbox settings still apply." (*Configure the sandboxed Bash tool*). A repo's `.claude/settings.json` or `.claude/settings.local.json` can set `enabled: false`, add `excludedCommands` or turn on weaker options. Sandboxed commands can't write those files, and Edit-tool writes to them go to the classifier in auto mode (`.claude` is a protected path, *Choose a permission mode*). `strictAllowlist` in user settings already makes Claude Code ignore a repo's `allowedDomains` (*Configure the sandboxed Bash tool*, "Locks that apply without an admin-required sandbox"). The same settings in `/Library/Application Support/ClaudeCode/managed-settings.json` (the `sandbox` phase writes them there unless `--no-managed`) close the rest: `allowUnsandboxedCommands: false` there makes the sandbox admin-required, and Claude Code then ignores "the settings in a repository's files that loosen the sandbox, `excludedCommands` entries included" (same page); a managed `enabled` "overrides anything a developer sets" (*All settings*).
 - A separate macOS user or a container would put all of the above behind one boundary. Left for later.
 
 ## Checks

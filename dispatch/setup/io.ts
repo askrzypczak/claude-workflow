@@ -11,6 +11,7 @@ import {
   readFileSync,
   readSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { listSessions } from "../poller/io.ts";
 import type { Session } from "../poller/schemas.ts";
@@ -129,6 +130,7 @@ export function createIo(): SetupIo {
     run(cmd, args, opts = {}) {
       const result = spawnSync(cmd, args, {
         env: childEnv(opts.env),
+        cwd: opts.cwd,
         input: opts.input,
         stdio: [opts.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         encoding: "utf8",
@@ -195,8 +197,9 @@ export function createIo(): SetupIo {
     waitForEnter(prompt) {
       readLine(READ_LINE, `${prompt} `);
     },
-    writeFile() {
-      throw new Error("not implemented");
+    writeFile(path, text) {
+      // The mode applies only when the file is created; an existing file keeps its own.
+      writeFileSync(path, text, { mode: 0o600 });
     },
   };
 }

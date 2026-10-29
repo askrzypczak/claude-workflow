@@ -1,4 +1,4 @@
-// Entry point, run by dispatch/setup-agents.sh: node dispatch/setup/main.ts [phase] [--dry-run]
+// Entry point, run by dispatch/setup-agents.sh: node dispatch/setup/main.ts [phase] [--dry-run] [--no-managed]
 // Runs the phases in order and stops at the first one that needs the maintainer.
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -10,7 +10,7 @@ import { createIo } from "./io.ts";
 import type { SetupIo } from "./io.ts";
 import { servedRepos } from "./repos.ts";
 import type { ServedRepo } from "./repos.ts";
-import { sandbox } from "./sandbox.ts";
+import { MANAGED_SETTINGS, sandbox } from "./sandbox.ts";
 import { ssh } from "./ssh.ts";
 
 export type PhaseResult = "ok" | "stop";
@@ -33,19 +33,23 @@ export interface Phase {
 /** The phases, in the order a full run takes them. */
 const PHASES: readonly Phase[] = [credentials, ssh, sandbox];
 
-const USAGE = `Usage: dispatch/setup-agents.sh [${PHASES.map((p) => p.name).join("|")}] [--dry-run]
+const USAGE = `Usage: dispatch/setup-agents.sh [${PHASES.map((p) => p.name).join("|")}] [--dry-run] [--no-managed]
   With no phase, runs every phase in order and stops at the first that needs the maintainer.
-  --dry-run  run the reads and print what each step would do; change nothing.`;
+  --dry-run  run the reads and print what each step would do; change nothing.
+  --no-managed  sandbox: skip the managed settings copy (${MANAGED_SETTINGS}, written with sudo).`;
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
-/** The phases argv selects and the dry-run flag, or undefined on a usage error. */
-function parse(argv: readonly string[]): { phases: readonly Phase[]; dryRun: boolean } | undefined {
+/** The phases argv selects and its flags, or undefined on a usage error. */
+function parse(argv: readonly string[]): { phases: readonly Phase[]; dryRun: boolean; noManaged: boolean } | undefined {
   let parsed;
   try {
     parsed = parseArgs({
       args: [...argv],
-      options: { "dry-run": { type: "boolean", default: false } },
+      options: {
+        "dry-run": { type: "boolean", default: false },
+        "no-managed": { type: "boolean", default: false },
+      },
       allowPositionals: true,
       strict: true,
     });
@@ -56,7 +60,7 @@ function parse(argv: readonly string[]): { phases: readonly Phase[]; dryRun: boo
   if (positionals.length > 1) return undefined;
   const name = positionals[0];
   const phases = name === undefined ? PHASES : PHASES.filter((p) => p.name === name);
-  return phases.length === 0 ? undefined : { phases, dryRun: values["dry-run"] };
+  return phases.length === 0 ? undefined : { phases, dryRun: values["dry-run"], noManaged: values["no-managed"] };
 }
 
 /** 0 when every phase passed, 1 when one stopped or failed, 2 on a usage error. */
@@ -71,7 +75,14 @@ export function runSetup(
   }
   try {
     const repos = servedRepos(base.io, base);
-    const ctx: SetupContext = { io: base.io, dryRun: args.dryRun, clone: base.clone, home: base.home, repos };
+    const ctx: SetupContext = {
+      io: base.io,
+      dryRun: args.dryRun,
+      noManaged: args.noManaged,
+      clone: base.clone,
+      home: base.home,
+      repos,
+    };
     for (const phase of args.phases) {
       console.log(`--- ${phase.name}${args.dryRun ? " (dry run)" : ""} ---`);
       if (phase.run(ctx) === "stop") {
