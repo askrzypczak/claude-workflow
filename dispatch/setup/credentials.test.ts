@@ -9,10 +9,11 @@
 //   unchecked is a line naming "auto-merge" and "unchecked";
 // - a live session's to-do names its fix, `claude stop <name>`;
 // - stray-token to-dos name what was found: the variable, the file, "keychain".
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { credentials, judgePrChecks, judgeRollup } from "./credentials.ts";
-import { FAKE_REPO, FAKE_TOKEN, fakeIo, parseGhApi, protectMain, restrictUpdates, writeCalls } from "./fake-io.ts";
+import { FAKE_LOGIN, FAKE_REPO, FAKE_TOKEN, fakeIo, parseGhApi, protectMain, restrictUpdates, writeCalls } from "./fake-io.ts";
 import type { FakeCall, FakeWorld } from "./fake-io.ts";
+import type { RunResult } from "./io.ts";
 import type { SetupContext } from "./main.ts";
 import { runSetup } from "./main.ts";
 
@@ -258,4 +259,130 @@ describe("credentials phase", () => {
     expect(autoMerge.length).toBeGreaterThan(0);
     for (const r of autoMerge) expect(["todo", "fail"]).not.toContain(r.status);
   });
+
+  it("the phase tells a fine-grained login from a classic one when gh auth status --json gives the token only with --show-token", () => {
+    const fine = setup({ login: "fine-grained", confirm: false, respond: realAuthStatus(STORED_FINE) });
+
+    expect(credentials.run(fine.ctx)).toBe("ok");
+    expect(fine.prompts.some((p) => p.kind === "confirm")).toBe(true);
+
+    const classic = setup({ respond: realAuthStatus(STORED_CLASSIC) });
+    credentials.run(classic.ctx);
+    expect(classic.prompts.filter((p) => p.kind === "confirm")).toEqual([]);
+    expect(classic.calls.some((c) => c.cmd === "open")).toBe(true);
+
+    for (const calls of [fine.calls, classic.calls]) {
+      const statuses = calls.filter((c) => isGh(c, "auth", "status"));
+      expect(statuses.length).toBeGreaterThan(0);
+      for (const c of statuses) expect(c.args).toContain("--show-token");
+    }
+  });
+
+  it("with two stored accounts, the active one's token kind decides the path", () => {
+    const twoAccounts = (c: FakeCall): RunResult | undefined => {
+      if (!isGh(c, "auth", "status")) return undefined;
+      const account = (login: string, active: boolean, token: string) => ({
+        state: "success",
+        active,
+        host: "github.com",
+        login,
+        tokenSource: "keyring",
+        gitProtocol: "ssh",
+        ...(c.args.includes("--show-token") ? { token } : {}),
+      });
+      const hosts = {
+        "github.com": [account("example-classic", false, STORED_CLASSIC), account(FAKE_LOGIN, true, STORED_FINE)],
+      };
+      return { status: 0, stdout: `${JSON.stringify({ hosts })}\n`, stderr: "" };
+    };
+    const { calls, prompts, ctx } = setup({
+      rulesets: [protectMain(), restrictUpdates()],
+      allowAutoMerge: false,
+      confirm: false,
+      respond: twoAccounts,
+    });
+
+    credentials.run(ctx);
+
+    expect(prompts.some((p) => p.kind === "confirm" && /new token/i.test(p.text))).toBe(true);
+    expect(calls.filter((c) => c.cmd === "open")).toEqual([]);
+    expect(settingWrites(calls)).toEqual([]);
+  });
+
+  it("the stored token read with --show-token appears in no report, console line or thrown error, even when gh's output does not parse", () => {
+    const normal = setup({ login: "fine-grained", confirm: false, respond: realAuthStatus(STORED_FINE) });
+    credentials.run(normal.ctx);
+    for (const r of normal.reports) expect(r.text).not.toContain(STORED_FINE);
+
+    const broken = `{"hosts":{"github.com":[{"state":"success","active":true,"login":"${FAKE_LOGIN}","token":"${STORED_FINE}"`;
+    const answers: RunResult[] = [
+      { status: 1, stdout: `${STORED_FINE}\n`, stderr: "" },
+      { status: 0, stdout: `${broken}\n`, stderr: "" },
+      { status: 1, stdout: `${broken}\n`, stderr: "" },
+    ];
+    for (const answer of answers) {
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { io, reports } = fakeIo({
+          login: "fine-grained",
+          confirm: false,
+          respond: (c) => (isGh(c, "auth", "status") ? answer : undefined),
+        });
+
+        runSetup(["credentials"], { io, clone: CLONE, home: HOME, configPath: "/nonexistent/repos.json" });
+
+        for (const r of reports) expect(r.text).not.toContain(STORED_FINE);
+        for (const arg of [...log.mock.calls, ...error.mock.calls].flat()) {
+          expect(String(arg)).not.toContain(STORED_FINE);
+        }
+      } finally {
+        vi.restoreAllMocks();
+      }
+    }
+  });
 });
+
+describe("credentials phase with gh reporting no hosts", () => {
+  it("gh auth status with hosts null is the no-login to-do, not an error", () => {
+    const { reports, ctx } = setup({
+      respond: (c) => (isGh(c, "auth", "status") ? { status: 0, stdout: '{"hosts":null}\n', stderr: "" } : undefined),
+    });
+
+    let result: unknown;
+    expect(() => {
+      result = credentials.run(ctx);
+    }).not.toThrow();
+
+    expect(result).toBe("stop");
+    expect(reports.some((r) => r.status === "todo" && r.text.includes("gh has no github.com login"))).toBe(true);
+  });
+});
+
+const STORED_FINE = "github_pat_STORED_FOR_TESTS_ONLY";
+const STORED_CLASSIC = "gho_STORED_FOR_TESTS_ONLY";
+
+/**
+ * `gh auth status --json hosts` as gh 2.102.0 prints it: the stored login, with its token only
+ * when asked with --show-token. After `gh auth login`, the account holds the token logged in with.
+ */
+function realAuthStatus(stored: string) {
+  let token = stored;
+  return (c: FakeCall): RunResult | undefined => {
+    if (isGh(c, "auth", "login")) {
+      token = (c.input ?? "").trim();
+      return undefined;
+    }
+    if (!isGh(c, "auth", "status")) return undefined;
+    const account = {
+      state: "success",
+      active: true,
+      host: "github.com",
+      login: FAKE_LOGIN,
+      tokenSource: "keyring",
+      gitProtocol: "ssh",
+      ...(c.args.includes("--show-token") ? { token } : {}),
+    };
+    return { status: 0, stdout: `${JSON.stringify({ hosts: { "github.com": [account] } })}\n`, stderr: "" };
+  };
+}
