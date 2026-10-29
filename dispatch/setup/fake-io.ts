@@ -15,6 +15,11 @@
 // By default GitHub holds no deploy key, the agent holds no key, and the maintainer pastes the
 // copied key while the phase waits for Enter.
 //
+// The sandbox model: `claude plugin list --json` prints `plugins` (a mutable install list),
+// `claude plugin marketplace update` succeeds, `claude plugin update <id> --scope <scope>`
+// moves the named install to `pluginUpdate` (or leaves it as it is), and `sudo mkdir -p` and
+// `sudo tee <path>` (which writes its stdin to `files`) succeed. `run` records `opts.cwd`.
+//
 // The fake ignores `--json` field lists and `--jq`: JSON reads print the whole object.
 // Commands it has no script for exit 127 with "unscripted" on stderr.
 import type { Session } from "../poller/schemas.ts";
@@ -32,6 +37,8 @@ export interface FakeCall {
   args: readonly string[];
   env: Readonly<Record<string, string>>;
   input: string | undefined;
+  /** The working directory, when the call gave one. */
+  cwd?: string;
 }
 
 export interface FakeReport {
@@ -46,7 +53,7 @@ export interface FakePrompt {
 
 /** A file-system call on the fake: `path` is the file read or written (for copyFile, `from`). */
 export interface FakeFileOp {
-  op: "readFile" | "readFirstLine" | "listDir" | "appendFile" | "copyFile";
+  op: "readFile" | "readFirstLine" | "listDir" | "appendFile" | "copyFile" | "writeFile";
   path: string;
   to?: string;
   text?: string;
@@ -61,6 +68,15 @@ export interface FakeRuleset {
   conditions?: unknown;
   rules?: unknown[];
   bypass_actors?: unknown[];
+}
+
+/** An install as `claude plugin list --json` prints it. */
+export interface FakePlugin {
+  id: string;
+  scope: string;
+  installPath: string;
+  version: string;
+  projectPath?: string;
 }
 
 export interface FakeWorld {
@@ -96,6 +112,13 @@ export interface FakeWorld {
   passphrase?: string[];
   /** `security find-internet-password -s github.com` finds an entry. Default false. */
   keychainHasGithub?: boolean;
+  /** What `claude plugin list --json` prints. Default none. */
+  plugins?: FakePlugin[];
+  /**
+   * Where `claude plugin update <id> --scope <scope>` moves the install it names (for project
+   * and local scope, the one whose projectPath is the call's cwd). Default: left unchanged.
+   */
+  pluginUpdate?: { installPath: string; version: string };
   /** Calls for which this returns true exit 1 with "HTTP 500" on stderr. */
   fail?: (call: FakeCall) => boolean;
   /** First say on every call; undefined falls through to the scripted world. */
@@ -172,12 +195,17 @@ export function isMergeProbe(call: FakeCall): boolean {
  * use: `install-launchd.sh` pause or resume; `gh api` with a POST, PUT, PATCH or DELETE
  * (explicit, or implied by a body) except the wrong-sha merge probe; `gh issue comment`;
  * `gh issue edit`; `gh pr edit`; `gh auth logout`; `gh auth login`; `open`; `ssh-keygen -t`
- * (generating a key); `pbcopy`; `ssh-add -d` or `-D`; and `git ... remote set-url`.
+ * (generating a key); `pbcopy`; `ssh-add -d` or `-D`; `git ... remote set-url`; every `sudo`
+ * call; `claude plugin marketplace update`; and `claude plugin update`.
  */
 export function isWrite(call: FakeCall): boolean {
   const [a0, a1] = call.args;
   if (call.cmd.endsWith("install-launchd.sh")) return a0 === "pause" || a0 === "resume";
-  if (call.cmd === "open" || call.cmd === "pbcopy") return true;
+  if (call.cmd === "open" || call.cmd === "pbcopy" || call.cmd === "sudo") return true;
+  if (call.cmd === "claude") {
+    const [, b1, b2] = call.args;
+    return a0 === "plugin" && (b1 === "update" || (b1 === "marketplace" && b2 === "update"));
+  }
   if (call.cmd === "ssh-keygen") return call.args.includes("-t");
   if (call.cmd.endsWith("ssh-add")) return call.args.includes("-d") || call.args.includes("-D");
   if (call.cmd === "git") {
@@ -199,9 +227,9 @@ export function writeCalls(calls: readonly FakeCall[]): FakeCall[] {
   return calls.filter(isWrite);
 }
 
-/** The file writes among `ops`: appendFile and copyFile. */
+/** The file writes among `ops`: appendFile, copyFile and writeFile. */
 export function fileWrites(ops: readonly FakeFileOp[]): FakeFileOp[] {
-  return ops.filter((o) => o.op === "appendFile" || o.op === "copyFile");
+  return ops.filter((o) => o.op === "appendFile" || o.op === "copyFile" || o.op === "writeFile");
 }
 
 const ok = (stdout = ""): RunResult => ({ status: 0, stdout, stderr: "" });
@@ -245,6 +273,7 @@ export function fakeIo(world: FakeWorld = {}) {
   let agentKeys = [...(world.agentKeys ?? [])];
   let clipboard: string | undefined;
   let lastOpen: string | undefined;
+  const plugins: FakePlugin[] = structuredClone(world.plugins ?? []);
 
   /** Whether the call authenticates as a fine-grained token (GH_TOKEN first, as gh does). */
   const fineGrained = (call: FakeCall) =>
@@ -504,6 +533,38 @@ export function fakeIo(world: FakeWorld = {}) {
     return undefined;
   };
 
+  const claude = (call: FakeCall): RunResult => {
+    const [a0, a1, a2, a3] = call.args;
+    if (a0 !== "plugin") return failed(`unscripted: claude ${call.args.join(" ")}`, 127);
+    if (a1 === "list" && call.args.includes("--json")) return json(plugins);
+    if (a1 === "marketplace" && a2 === "update" && a3 !== undefined) {
+      return ok(`Successfully updated marketplace: ${a3}\n`);
+    }
+    if (a1 === "update" && a2 !== undefined) {
+      const scope = flagValue(call.args, "--scope") ?? "user";
+      const target = plugins.find(
+        (p) => p.id === a2 && p.scope === scope && (scope === "user" || p.projectPath === call.cwd),
+      );
+      if (target && world.pluginUpdate) {
+        target.installPath = world.pluginUpdate.installPath;
+        target.version = world.pluginUpdate.version;
+      }
+      return ok(`Plugin "${a2}" updated.\n`);
+    }
+    return failed(`unscripted: claude ${call.args.join(" ")}`, 127);
+  };
+
+  const sudo = (call: FakeCall): RunResult => {
+    const [a0, a1, a2] = call.args;
+    if (a0 === "mkdir" && a1 === "-p" && a2 !== undefined) return ok();
+    if (a0 === "tee" && a1 !== undefined) {
+      const text = call.input ?? "";
+      files[a1] = text;
+      return ok(text);
+    }
+    return failed(`unscripted: sudo ${call.args.join(" ")}`, 127);
+  };
+
   const scripted = (call: FakeCall): RunResult => {
     const [a0] = call.args;
     if (call.cmd.endsWith("install-launchd.sh")) {
@@ -545,12 +606,15 @@ export function fakeIo(world: FakeWorld = {}) {
         : failed("security: The specified item could not be found in the keychain.", 44);
     }
     if (call.cmd === "gh") return gh(call);
+    if (call.cmd === "claude") return claude(call);
+    if (call.cmd === "sudo") return sudo(call);
     return failed(`unscripted: ${call.cmd} ${call.args.join(" ")}`, 127);
   };
 
   const io: SetupIo = {
     run(cmd: string, args: readonly string[], opts: RunOptions = {}): RunResult {
       const call: FakeCall = { cmd, args: [...args], env: { ...opts.env }, input: opts.input };
+      if (opts.cwd !== undefined) call.cwd = opts.cwd;
       calls.push(call);
       const answer = world.respond?.(call);
       if (answer) return answer;
@@ -598,6 +662,10 @@ export function fakeIo(world: FakeWorld = {}) {
       if (files[from] === undefined) throw new Error(`ENOENT: no such file or directory, copyfile '${from}'`);
       if (files[to] !== undefined) throw new Error(`EEXIST: file already exists, copyfile '${from}' -> '${to}'`);
       files[to] = files[from]!;
+    },
+    writeFile(path: string, text: string): void {
+      fileOps.push({ op: "writeFile", path, text });
+      files[path] = text;
     },
     waitForEnter(prompt: string): void {
       prompts.push({ kind: "enter", text: prompt });

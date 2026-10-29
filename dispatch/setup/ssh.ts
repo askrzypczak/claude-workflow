@@ -86,8 +86,8 @@ function hasHostLine(text: string, host: string): boolean {
 const aliasBlock = (t: Target) =>
   [`Host ${t.host}`, "  HostName github.com", "  User git", `  IdentityFile ~/.ssh/deploy-${t.name}`, "  IdentitiesOnly yes", ""].join("\n");
 
-/** `YYYYMMDD-HHMMSS`, local time. */
-const backupStamp = (d: Date) => timestamp(d).replace(/[-:]/g, "").replace(" ", "-");
+/** `YYYYMMDD-HHMMSS`, local time: the suffix of a backup file's `.bak-` name. */
+export const backupStamp = (d: Date) => timestamp(d).replace(/[-:]/g, "").replace(" ", "-");
 
 /** The deploy key and the alias are named by the repo part, so two repos must not share it. */
 function distinctNames(p: Pass): boolean {

@@ -30,6 +30,21 @@ describe("runSetup", () => {
     expect(runSetup(["credentials"], base(live.io))).toBe(1);
   });
 
+  it("with --no-managed, the sandbox phase leaves out the managed copy written through sudo", () => {
+    const world = () => ({
+      plugins: [{ id: "ticket-workflow@askrzypczak-plugins", scope: "user", installPath: "/plugin", version: "1.0.0" }],
+      files: { "/plugin/skills/work-ticket/SKILL.md": "Create the branch with `--no-track`.\n" },
+    });
+
+    const managed = fakeIo(world());
+    expect(runSetup(["sandbox"], base(managed.io))).toBe(0);
+    expect(managed.calls.some((c) => c.cmd === "sudo")).toBe(true);
+
+    const skipped = fakeIo(world());
+    expect(runSetup(["sandbox", "--no-managed"], base(skipped.io))).toBe(0);
+    expect(skipped.calls.some((c) => c.cmd === "sudo")).toBe(false);
+  });
+
   it("exits 1 with a single error line when a read fails", () => {
     const { io } = fakeIo({ fail: (c) => c.cmd === "gh" && c.args[0] === "auth" });
 
