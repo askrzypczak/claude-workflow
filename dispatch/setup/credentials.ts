@@ -49,9 +49,26 @@ const STARTUP_FILES = [".zshenv", ".zprofile", ".zshrc", ".zlogin", ".bash_profi
 const POLLER_PLIST = "Library/LaunchAgents/com.askrzypczak.claude-workflow-poller.plist";
 const RELOGIN = "run gh auth login --hostname github.com --with-token, paste the token, press Enter and then Ctrl-D";
 
-const Account = z.object({ login: z.string(), active: z.boolean().optional(), token: z.string().optional() });
-type Account = z.infer<typeof Account>;
-const AuthStatus = z.object({ hosts: z.record(z.string(), z.array(Account)) });
+/** One stored account as `gh auth status --json hosts --show-token` prints it. */
+const AuthEntry = z.object({
+  login: z.string(),
+  active: z.boolean().optional(),
+  state: z.string().optional(),
+  error: z.string().optional(),
+  token: z.string().optional(),
+});
+const AuthStatus = z.object({ hosts: z.record(z.string(), z.array(AuthEntry)) });
+
+/** A stored github.com login as the phase keeps it: whether its token is fine-grained, never the token. */
+interface Account {
+  login: string;
+  active: boolean;
+  /** gh's check of the token: "success", "timeout" or "error" (GitHub refused it). */
+  state: string | undefined;
+  /** gh's reason for an "error" state. */
+  error: string | undefined;
+  fineGrained: boolean;
+}
 const RepoInfo = z.object({
   permissions: z.object({ admin: z.boolean().optional() }).optional(),
   allow_auto_merge: z.boolean().optional(),
@@ -85,6 +102,7 @@ const PrList = z.array(
   z.object({
     number: z.number(),
     mergeable: z.string().optional(),
+    isDraft: z.boolean().optional(),
     labels: Named.optional(),
     statusCheckRollup: z.array(RollupEntry).optional(),
   }),
@@ -96,6 +114,8 @@ const RunList = z.array(z.object({ databaseId: z.number() }));
 interface Pass extends SetupContext {
   /** The pasted token once read; replaced in every reported line. */
   secret: string;
+  /** Served repos the fine-grained token cannot see (HTTP 404 in step 2). */
+  unseen: Set<string>;
   say(status: StepStatus, text: string): void;
 }
 
@@ -112,32 +132,57 @@ function apiAnswer(result: RunResult): string {
   return body === "" ? line : `${line}: ${body}`;
 }
 
+/** A read-only gh command that exited non-zero: the command and gh's answer. */
+class ReadFailed extends Error {
+  readonly command: string;
+  readonly answer: string;
+  constructor(command: string, answer: string) {
+    super(`${command} failed: ${answer}`);
+    this.command = command;
+    this.answer = answer;
+  }
+}
+
 /** A read-only gh command's JSON; throws when the command failed. */
 function parseRead<T extends z.ZodType>(schema: T, args: string[], result: RunResult): z.output<T> {
   const what = `gh ${args.join(" ")}`;
-  if (result.status !== 0) throw new Error(`${what} failed: ${answer(result)}`);
+  if (result.status !== 0) throw new ReadFailed(what, answer(result));
   return parseJson(schema, result.stdout, what);
 }
 
 /** Runs a read-only gh command and parses its JSON; throws when it fails. */
-function ghJson<T extends z.ZodType>(p: Pass, schema: T, args: string[]): z.output<T> {
-  return parseRead(schema, args, p.io.run("gh", args));
+function ghJson<T extends z.ZodType>(p: Pass, schema: T, args: string[], opts?: RunOptions): z.output<T> {
+  return parseRead(schema, args, p.io.run("gh", args, opts));
 }
 
-/** The github.com accounts gh has stored. */
+/**
+ * The github.com accounts gh has stored. `gh auth status --json` leaves the token out unless
+ * asked with --show-token, so this read asks for it, keeps only whether it starts github_pat_
+ * and drops the value at once. Its errors name the command and quote none of its output.
+ */
 function accounts(p: Pass): Account[] {
-  const result = p.io.run("gh", ["auth", "status", "--json", "hosts"]);
+  const args = ["auth", "status", "--json", "hosts", "--show-token"];
+  const what = `gh ${args.join(" ")}`;
+  const result = p.io.run("gh", args);
+  // With --json, gh exits 0 even when GitHub refuses a token; any other exit is a fatal error.
+  if (result.status !== 0) throw new Error(`${what} failed: ${answer({ ...result, stdout: "" })}`);
+  let data: unknown;
   try {
-    return parseJson(AuthStatus, result.stdout, "gh auth status --json hosts").hosts[HOST] ?? [];
-  } catch (err) {
-    if (result.status !== 0) throw new Error(`gh auth status failed: ${answer(result)}`);
-    throw err;
+    data = JSON.parse(result.stdout);
+  } catch {
+    throw new Error(`${what}: the output is not valid JSON`);
   }
+  const parsed = AuthStatus.safeParse(data);
+  if (!parsed.success) throw new Error(`${what}: the output is not a list of accounts per host`);
+  return (parsed.data.hosts[HOST] ?? []).map((a) => ({
+    login: a.login,
+    active: a.active ?? false,
+    state: a.state,
+    error: a.error,
+    fineGrained: a.token?.startsWith(FINE_GRAINED) ?? false,
+  }));
 }
 
-// `gh auth status` masks the token unless asked for `--show-token`, keeping its prefix up to the
-// last underscore (confirmed in gh 2.102.0's help), so a fine-grained token still reads `github_pat_`.
-const isFineGrained = (account: Account) => account.token?.startsWith(FINE_GRAINED) ?? false;
 const hasTestCheckRun = (rollup: readonly z.infer<typeof RollupEntry>[]) =>
   rollup.some((e) => e.__typename === "CheckRun" && e.name === "test");
 const isUpdateRule = (rule: z.infer<typeof Rule>) =>
@@ -298,7 +343,7 @@ function rulesetStep(p: Pass, active: Account | undefined): boolean {
     p.say("todo", `gh has no ${HOST} login: run gh auth login, then rerun`);
     return p.dryRun;
   }
-  const fineGrained = isFineGrained(active);
+  const { fineGrained } = active;
   p.say("note", `gh login: ${active.login}, with a ${fineGrained ? "fine-grained" : "classic"} token`);
   let ok = true;
   for (const { repo } of p.repos) {
@@ -309,6 +354,7 @@ function rulesetStep(p: Pass, active: Account | undefined): boolean {
         "todo",
         `${repo}: the token cannot see this repo (HTTP 404): edit the token at https://${HOST}/settings/personal-access-tokens, select ${repo} under Repository access, then rerun`,
       );
+      p.unseen.add(repo);
       ok = false;
       continue;
     }
@@ -333,6 +379,17 @@ function rulesetStep(p: Pass, active: Account | undefined): boolean {
     }
   }
   return ok || p.dryRun;
+}
+
+/** Step 2 when GitHub refuses the stored login's token: nothing can be read or changed as it. */
+function skipRulesetStep(p: Pass, active: Account): void {
+  p.say("note", `gh login: ${active.login}, whose token GitHub refuses`);
+  for (const { repo } of p.repos) {
+    p.say(
+      "note",
+      `${repo}: the ${RULESET} and auto-merge step is skipped because GitHub refuses the stored login's token${active.error ? ` (${active.error})` : ""}; ${RULESET} is read back after the swap`,
+    );
+  }
 }
 
 /** The token form, pre-filled with everything GitHub's URL parameters allow. */
@@ -380,9 +437,22 @@ interface Subject {
   label: string;
 }
 
-/** What the pre-swap test works on, reported; a to-do when no served repo has all of it. */
-function pickSubject(p: Pass): Subject | undefined {
-  const subject = findSubject(p);
+/**
+ * What the pre-swap test works on, reported; a to-do when no served repo has all of it. With
+ * the new token in `opts`, a failed read is a to-do too, not an error.
+ */
+function pickSubject(p: Pass, opts?: RunOptions): Subject | undefined {
+  let subject: Subject | undefined;
+  try {
+    subject = findSubject(p, opts);
+  } catch (err) {
+    if (opts === undefined || !(err instanceof ReadFailed)) throw err;
+    p.say(
+      "todo",
+      `pre-swap test: with the new token, ${err.command} failed (${err.answer}): edit the token at https://${HOST}/settings/personal-access-tokens, select that repo under Repository access, then rerun and paste the same token`,
+    );
+    return undefined;
+  }
   if (subject === undefined) {
     p.say(
       "todo",
@@ -395,24 +465,28 @@ function pickSubject(p: Pass): Subject | undefined {
   return subject;
 }
 
-/** The first served repo with an open PR with a `test` check run, an open issue, a run and a free label. */
-function findSubject(p: Pass): Subject | undefined {
+/**
+ * The first served repo with an open PR with a `test` check run, an open issue, a run and a free
+ * label, read with `opts` (the new token, when given). Repos the token cannot see are skipped.
+ */
+function findSubject(p: Pass, opts?: RunOptions): Subject | undefined {
   for (const { repo } of p.repos) {
+    if (p.unseen.has(repo)) continue;
     const prs = ghJson(p, PrList, [
       "pr", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", "number,labels,statusCheckRollup",
-    ]);
+    ], opts);
     const pr = prs.find((x) => hasTestCheckRun(x.statusCheckRollup ?? []));
     if (pr === undefined) continue;
     const [issue] = ghJson(p, IssueList, [
       "issue", "list", "--repo", repo, "--state", "open", "--limit", "1", "--json", "number,labels",
-    ]);
+    ], opts);
     // A completed run: an in-progress run has no log to read yet.
     const [run] = ghJson(p, RunList, [
       "run", "list", "--repo", repo, "--status", "completed", "--limit", "1", "--json", "databaseId",
-    ]);
+    ], opts);
     if (issue === undefined || run === undefined) continue;
     const carried = new Set([...(pr.labels ?? []), ...(issue.labels ?? [])].map((l) => l.name.toLowerCase()));
-    const label = ghJson(p, Named, ["label", "list", "--repo", repo, "--limit", "200", "--json", "name"])
+    const label = ghJson(p, Named, ["label", "list", "--repo", repo, "--limit", "200", "--json", "name"], opts)
       .map((l) => l.name)
       .find((name) => !WORKFLOW_LABELS.has(name.toLowerCase()) && !carried.has(name.toLowerCase()));
     if (label === undefined) continue;
@@ -425,11 +499,16 @@ function findSubject(p: Pass): Subject | undefined {
  * Step 4: one command per row of the permission table, with the token only as GH_TOKEN in the
  * child's environment, each judged by its output. The test comment and labels are removed.
  */
-function preSwapTest(p: Pass, subject: Subject | undefined, token: string | undefined): boolean {
+function preSwapTest(
+  p: Pass,
+  subject: Subject | undefined,
+  token: string | undefined,
+  unpicked = "a PR, issue and run (none found, above)",
+): boolean {
   if (subject === undefined || token === undefined) {
     p.say(
       "would",
-      `pre-swap test: with the new token only in the child environment, run one command per permission against ${subject === undefined ? "a PR, issue and run (none found, above)" : "the PR, issue and run above"}, then delete the test comment and remove the label`,
+      `pre-swap test: with the new token only in the child environment, run one command per permission against ${subject === undefined ? unpicked : "the PR, issue and run above"}, then delete the test comment and remove the label`,
     );
     return true;
   }
@@ -622,12 +701,18 @@ function scanStrayTokens(p: Pass): number {
   return found;
 }
 
-/** Step 7: the wrong-sha merge on an open, mergeable PR must be refused with 403. */
+/**
+ * Step 7: the wrong-sha merge on an open, mergeable PR must be refused with 403. A draft is used
+ * only when no other open PR is mergeable: GitHub may refuse a draft (405) before it checks the token.
+ */
 function mergeProbe(p: Pass): boolean {
   let computing = false;
   for (const { repo } of p.repos) {
-    const prs = ghJson(p, PrList, ["pr", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", "number,mergeable"]);
-    const pr = prs.find((x) => x.mergeable === "MERGEABLE");
+    const prs = ghJson(p, PrList, [
+      "pr", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", "number,mergeable,isDraft",
+    ]);
+    const mergeable = prs.filter((x) => x.mergeable === "MERGEABLE");
+    const pr = mergeable.find((x) => x.isDraft !== true) ?? mergeable[0];
     if (pr === undefined) {
       computing ||= prs.some((x) => x.mergeable === "UNKNOWN");
       continue;
@@ -672,10 +757,10 @@ function afterSwapChecks(p: Pass): boolean {
   }
   let ok = true;
   const stored = accounts(p);
-  if (stored.length === 1 && isFineGrained(stored[0]!)) {
+  if (stored.length === 1 && stored[0]!.fineGrained) {
     p.say("pass", `after-swap: one ${HOST} login (${stored[0]!.login}), with a fine-grained token`);
   } else {
-    const what = stored.map((a) => `${a.login} (${isFineGrained(a) ? "fine-grained" : "not fine-grained"})`).join(", ");
+    const what = stored.map((a) => `${a.login} (${a.fineGrained ? "fine-grained" : "not fine-grained"})`).join(", ");
     p.say(
       "todo",
       `after-swap: gh auth status shows ${what || `no ${HOST} login`}, not one fine-grained login: log out the others with gh auth logout --hostname ${HOST} --user <login>, then rerun`,
@@ -693,6 +778,7 @@ export const credentials: Phase = {
     const p: Pass = {
       ...ctx,
       secret: "",
+      unseen: new Set(),
       say(status, text) {
         ctx.io.report(status, this.secret === "" ? text : text.split(this.secret).join("<token>"));
       },
@@ -701,9 +787,12 @@ export const credentials: Phase = {
     if (!pauseDispatch(p)) return "stop";
     const stored = accounts(p);
     const active = stored.find((a) => a.active) ?? stored[0];
-    if (!rulesetStep(p, active)) return "stop";
+    // GitHub refuses the stored login's token (expired or revoked): nothing can run as that login.
+    const expired = active?.state === "error";
+    if (expired) skipRulesetStep(p, active);
+    else if (!rulesetStep(p, active)) return "stop";
 
-    const swapped = active !== undefined && isFineGrained(active);
+    const swapped = !expired && active !== undefined && active.fineGrained;
     if (swapped && p.dryRun) {
       p.say("would", "token: ask whether to create a new token and swap it in (default No, which skips the token, the pre-swap test and the login swap)");
     }
@@ -711,6 +800,19 @@ export const credentials: Phase = {
       p.say("already", "token: the fine-grained login is in place and no new token was wanted");
       p.say("already", "pre-swap test: not needed without a new token");
       p.say("already", "login swap: the fine-grained login stays");
+    } else if (expired) {
+      // Only the new token can read the served repos, so the subject is picked after the form.
+      const token = readToken(p, active);
+      if (token === undefined && !p.dryRun) return "stop";
+      let subject: Subject | undefined;
+      if (token === undefined) {
+        p.say("would", "pre-swap test: pick its PR, issue, run and label, reading with the new token once it is pasted");
+      } else {
+        subject = pickSubject(p, { env: { GH_TOKEN: token } });
+        if (subject === undefined) return "stop";
+      }
+      if (!preSwapTest(p, subject, token, "the PR, issue and run picked with the new token")) return "stop";
+      if (!swapLogin(p, token)) return "stop";
     } else {
       // Picked before the token form: a missing PR, issue or run must not cost a generated token.
       const subject = pickSubject(p);
