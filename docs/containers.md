@@ -117,7 +117,7 @@ What runs where: unattended sessions, the poller and orchestration run in the co
 
     docker exec -it -w /home/node/<repo> claude-workflow-agent claude --permission-mode auto
 
-The flag matters: a session signed in with a `setup-token` token starts in manual mode and stops at its first Bash call (#164, answer 5). Claude in Chrome and live table play stay on the host, in sessions the maintainer watches.
+The flag matters: a session signed in with a `setup-token` token starts in manual mode and stops at its first Bash call (#164, answer 5). Claude in Chrome and other interactive work that needs the host stay there, in sessions the maintainer watches.
 
 ### Claude in Chrome
 
@@ -136,9 +136,9 @@ On the host:
 - So install the extension only in a dedicated Chrome profile that is not signed in to GitHub, remove it from every other profile, and keep github.com out of its site permissions. A session that drives that profile has no signed-in Merge button to reach. This is reasoned, not tested.
 - The Claude desktop app's built-in browser pane keeps its own sign-ins: do not sign in to github.com there (the same route as Claude in Chrome).
 
-### Table play
+### Freeing memory
 
-Live play runs on the host, and on an 8 GB Mac it needs the memory the Colima VM holds. To free it:
+On an 8 GB Mac, work on the host can need the memory the Colima VM holds. To free it:
 
 1. Run `dispatch/install-launchd.sh pause`. It ends a poll running in the container and lists the container's live sessions by id.
 2. Finish or stop those sessions (`docker exec claude-workflow-agent claude stop <id>`). A session still working when the VM stops becomes `failed`, and its ticket gets `agent-failed`.

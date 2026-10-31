@@ -116,7 +116,7 @@ If a session fails, is stopped, or ends without handing the ticket off, the poll
 | What would launch now | `dispatch/launchd/job.sh --dry-run` |
 | Pause everything | `dispatch/install-launchd.sh pause` |
 | Resume | `dispatch/install-launchd.sh resume` |
-| Free memory | `dispatch/install-launchd.sh pause`, then `colima stop` ([Table play](../docs/containers.md#table-play)) |
+| Free memory | `dispatch/install-launchd.sh pause`, then `colima stop` ([Freeing memory](../docs/containers.md#freeing-memory)) |
 
 ### Options
 
