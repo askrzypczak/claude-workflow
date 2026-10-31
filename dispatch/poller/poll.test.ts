@@ -506,3 +506,16 @@ describe("pollRepo: failures abort the repo", () => {
     expect(Object.keys(state.launched)).toEqual(["3"]);
   });
 });
+
+describe("pollRepo: failure comments", () => {
+  it("a failed session's comment names the container's claude logs command", () => {
+    const f = fakeIo({});
+    const bodies: string[] = [];
+    const io: PollerIo = { ...f.io, commentOnIssue: (_repo, _n, body) => void bodies.push(body) };
+    const state: RepoState = { launched: { 3: { name: "app-3", at: NOW - 3600 } }, attempts: {}, ciAttempts: {} };
+    pollRepo(repo(), state, run({ sessions: [session("app-3", "failed")] }), io);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatch(/docker exec (\S+ )*claude-workflow-agent claude logs app-3\b/);
+    expect(bodies[0]).toMatch(/docker exec (\S+ )*claude-workflow-agent claude agents\b/);
+  });
+});

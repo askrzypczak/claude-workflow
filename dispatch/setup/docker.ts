@@ -28,8 +28,15 @@ export function cloneDir(repo: string): string {
   return `${CONTAINER_HOME}/${repo.slice(repo.indexOf("/") + 1)}`;
 }
 
-/** `docker exec [-i] -u node [-w dir] claude-workflow-agent <args>`. */
-export function nodeExec(io: SetupIo, args: readonly string[], opts: { cwd?: string; input?: string } = {}): RunResult {
+/** `colima <args>` that starts the VM the container runs in: no host directory is mounted. */
+export const COLIMA_ARGS: readonly string[] = ["start", "--cpu", "4", "--memory", "4", "--disk", "40", "--mount", "none"];
+
+/** `docker exec [-i] -u node [-w dir] [-e K=V]... claude-workflow-agent <args>`. */
+export function nodeExec(
+  io: SetupIo,
+  args: readonly string[],
+  opts: { cwd?: string; input?: string; env?: Readonly<Record<string, string>> } = {},
+): RunResult {
   const flags = [
     ...(opts.input === undefined ? [] : ["-i"]),
     "-u",

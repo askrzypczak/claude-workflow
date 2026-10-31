@@ -42,9 +42,9 @@ const FINE_GRAINED = "github_pat_";
 const SSH_DIR = `${CONTAINER_HOME}/.ssh`;
 const CLAUDE_JSON = `${CONTAINER_HOME}/.claude.json`;
 const USER_SETTINGS = `${CONTAINER_HOME}/.claude/settings.json`;
-const MARKETPLACE = "askrzypczak-plugins";
+export const MARKETPLACE = "askrzypczak-plugins";
 const MARKETPLACE_REPO = "askrzypczak/claude-workflow";
-const PLUGIN = `ticket-workflow@${MARKETPLACE}`;
+export const PLUGIN = `ticket-workflow@${MARKETPLACE}`;
 const IDENTITY = ["user.name", "user.email"] as const;
 /** In-container commands, as the to-dos name them. */
 const AS_NODE = `docker exec -u node ${CONTAINER}`;

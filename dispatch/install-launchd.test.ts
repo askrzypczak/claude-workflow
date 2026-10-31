@@ -40,6 +40,16 @@ beforeEach(() => {
     `#!/usr/bin/env bash\necho "poller $*" >>"${p("order.log")}"\necho "WOULD LAUNCH app-1"\necho "ENV max=\${CLAUDE_MAX_SESSIONS-unset} keep=\${KEEP_ME-unset}"\n[ -f "${p("poller-busy")}" ] && echo "another run is active (pid 1); exiting"\n[ -f "${p("poller-fail")}" ] && exit 3\nexit 0\n`,
   );
   chmodSync(p("poller"), 0o755);
+  // Fake job (dispatch/launchd/job.sh): records its args; deps and halt fail if job-fail-<step>
+  // exists; a poll behaves as the fake poller does.
+  writeFileSync(
+    p("job"),
+    `#!/usr/bin/env bash\necho "job $*" >>"${p("order.log")}"\n` +
+      `case "\${1:-}" in deps | halt) echo "JOB $1"; [ -f "${p("job-fail-")}$1" ] && exit 1; exit 0 ;; esac\n` +
+      `echo "WOULD LAUNCH app-1"\necho "ENV max=\${CLAUDE_MAX_SESSIONS-unset} keep=\${KEEP_ME-unset}"\n` +
+      `[ -f "${p("poller-busy")}" ] && echo "another run is active (pid 1); exiting"\n[ -f "${p("poller-fail")}" ] && exit 3\nexit 0\n`,
+  );
+  chmodSync(p("job"), 0o755);
   // Fake npm: records its args and working dir, fails if npm-fail exists.
   writeFileSync(
     p("npm"),
@@ -80,6 +90,7 @@ const runWith = (opts: RunOpts, ...args: string[]) =>
       STATE_DIR: p("state"),
       CLAUDE_WORKFLOW_CONFIG: p("cfg", "repos.json"),
       POLLER: p("poller"),
+      JOB: p("job"),
       NPM: p("npm"),
       ...opts.env,
     },
@@ -626,5 +637,73 @@ describe("install-launchd.sh", () => {
       expect(enable, c.join("\n")).toBeGreaterThanOrEqual(0);
       expect(bootstrap, c.join("\n")).toBeGreaterThan(enable);
     });
+  });
+});
+
+describe("install-launchd.sh and the container job", () => {
+  const label = () => `gui/${process.getuid!()}/${LABEL}`;
+  const plist = () => p("agents", `${LABEL}.plist`);
+  const jobRuns = () => order().filter((l) => l === "job" || l.startsWith("job "));
+
+  it("pause disables the job before booting it out, then runs the job's halt step", () => {
+    writeFileSync(plist(), "installed plist");
+    const r = run("pause");
+    expect(r.status, r.stderr).toBe(0);
+    const o = order();
+    const disable = o.indexOf(`launchctl disable ${label()}`);
+    const bootout = o.indexOf(`launchctl bootout ${label()}`);
+    const halt = o.indexOf("job halt");
+    expect(disable, o.join("\n")).toBeGreaterThanOrEqual(0);
+    expect(bootout, o.join("\n")).toBeGreaterThan(disable);
+    expect(halt, o.join("\n")).toBeGreaterThan(bootout);
+    // Nothing else of the job runs: no poll, so nothing starts Colima or the container.
+    expect(jobRuns()).toStrictEqual(["job halt"]);
+    expect(r.stdout).toMatch(/JOB halt/);
+
+    // A failing halt step does not undo or fail the pause.
+    rmSync(p("order.log"), { force: true });
+    writeFileSync(p("job-fail-halt"), "");
+    const failed = run("pause");
+    expect(failed.status, failed.stderr).toBe(0);
+    expect(order()).toContain(`launchctl disable ${label()}`);
+    expect(jobRuns()).toStrictEqual(["job halt"]);
+  });
+
+  it("install runs the job's deps step after npm ci and before the dry run, and installs nothing when it fails", () => {
+    writeFileSync(p("job-fail-deps"), "");
+    const failed = run("install", "--yes");
+    expect(failed.status).toBe(1);
+    expect(order().slice(0, 2)).toStrictEqual(["npm ci", "job deps"]);
+    expect(jobRuns()).toStrictEqual(["job deps"]);
+    expect(existsSync(plist())).toBe(false);
+    expect(calls()).toStrictEqual([]);
+
+    rmSync(p("job-fail-deps"));
+    rmSync(p("order.log"), { force: true });
+    const r = run("install", "--yes");
+    expect(r.status, r.stderr).toBe(0);
+    expect(order().slice(0, 3)).toStrictEqual(["npm ci", "job deps", "job --dry-run"]);
+    expect(existsSync(plist())).toBe(true);
+  });
+
+  it("the installed plist runs dispatch/launchd/job.sh", () => {
+    const r = run("install", "--yes");
+    expect(r.status, r.stderr).toBe(0);
+    const text = readFileSync(plist(), "utf8");
+    const program = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text)?.[1] ?? "";
+    const args = [...program.matchAll(/<string>([^<]*)<\/string>/g)].map((m) => m[1]);
+    expect(args).toStrictEqual(["/bin/bash", `${p("clone")}/dispatch/launchd/job.sh`]);
+  });
+
+  it("uninstall runs the job's halt step after booting the poller out", () => {
+    writeFileSync(plist(), "installed plist");
+    const r = run("uninstall");
+    expect(r.status, r.stderr).toBe(0);
+    const o = order();
+    const bootout = o.indexOf(`launchctl bootout ${label()}`);
+    const halt = o.indexOf("job halt");
+    expect(bootout, o.join("\n")).toBeGreaterThanOrEqual(0);
+    expect(halt, o.join("\n")).toBeGreaterThan(bootout);
+    expect(jobRuns()).toStrictEqual(["job halt"]);
   });
 });

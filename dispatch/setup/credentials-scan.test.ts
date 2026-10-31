@@ -1,8 +1,9 @@
-// The stray-token scan's places beyond the shell and git: Claude Code's user settings and the
-// poller's LaunchAgent.
+// The stray-token scan's places beyond the shell and git: Claude Code's user settings, the
+// poller's LaunchAgent and the served repos' .mcp.json files.
 import { describe, expect, it } from "vitest";
 import { credentials } from "./credentials.ts";
-import { FAKE_REPO, fakeIo, writeCalls } from "./fake-io.ts";
+import { FAKE_REPO, fakeIo, parseDockerExec, writeCalls } from "./fake-io.ts";
+import type { FakeDocker } from "./fake-io.ts";
 
 const HOME = "/home/example";
 
@@ -51,5 +52,63 @@ describe("stray-token scan", () => {
     expect(writeCalls(calls)).toEqual([]);
     expect(todos.some((t) => t.includes("claude-workflow-poller.plist") && t.includes("GITHUB_TOKEN"))).toBe(true);
     for (const r of reports) expect(r.text).not.toContain(value);
+  });
+});
+
+describe("stray-token scan of .mcp.json files", () => {
+  const APP = "example-owner/example-app";
+  const APP_CLONE = "/home/node/example-app";
+  const mcpJson = (name: string) =>
+    JSON.stringify({ mcpServers: { [name]: { command: "npx", args: ["-y", "@modelcontextprotocol/server-github"] } } });
+
+  function scanServed(docker: FakeDocker) {
+    const fake = fakeIo({ login: "fine-grained", files: { "/clone/.mcp.json": mcpJson("github-tools") }, docker });
+    const result = credentials.run({
+      io: fake.io,
+      dryRun: false,
+      clone: "/clone",
+      home: HOME,
+      repos: [
+        { repo: FAKE_REPO, dir: "/clone" },
+        { repo: APP, dir: APP_CLONE },
+      ],
+    });
+    return {
+      ...fake,
+      result,
+      todos: fake.reports.filter((r) => r.status === "todo").map((r) => r.text),
+      notes: fake.reports.filter((r) => r.status === "note").map((r) => r.text),
+    };
+  }
+
+  it("the stray-token scan reads this clone's .mcp.json on the host and each served repo's through the container", () => {
+    const { result, todos, fileOps, calls } = scanServed({
+      container: { state: "running" },
+      files: { [`${APP_CLONE}/.mcp.json`]: mcpJson("github-app") },
+    });
+
+    expect(result).toBe("stop");
+    expect(todos.some((t) => t.includes(".mcp.json") && t.includes("github-tools"))).toBe(true);
+    expect(todos.some((t) => t.includes(".mcp.json") && t.includes("github-app"))).toBe(true);
+    expect(fileOps.some((op) => op.op === "readFile" && op.path === "/clone/.mcp.json")).toBe(true);
+    // The served repo's dir is a container path: the host is never asked for it.
+    expect(fileOps.filter((op) => op.path.startsWith("/home/node"))).toEqual([]);
+    expect(
+      calls.some((c) => parseDockerExec(c)?.command.some((a) => a.includes(`${APP_CLONE}/.mcp.json`)) === true),
+    ).toBe(true);
+    expect(writeCalls(calls)).toEqual([]);
+  });
+
+  it("the stray-token scan notes the served repos it did not scan when the container is not running", () => {
+    const { todos, notes, fileOps, calls } = scanServed({
+      container: { state: "stopped" },
+      files: { [`${APP_CLONE}/.mcp.json`]: mcpJson("github-app") },
+    });
+
+    expect(notes.filter((n) => n.includes(APP) && n.includes(".mcp.json"))).toHaveLength(1);
+    expect(todos.some((t) => t.includes("github-tools"))).toBe(true);
+    expect(todos.some((t) => t.includes("github-app"))).toBe(false);
+    expect(fileOps.filter((op) => op.path.startsWith("/home/node"))).toEqual([]);
+    expect(calls.some((c) => c.cmd === "docker" && c.args[0] === "start")).toBe(false);
   });
 });

@@ -76,9 +76,24 @@ elif [ "$1" = "api" ]; then if [ -f "$rd/api-fail" ]; then exit 1; fi; echo "{\\
 fi
 `,
   );
+  // A fake curl: a host listed in <dir>/reach answers, any other is refused. By default the
+  // firewall holds: api.github.com answers and example.com does not.
+  writeFileSync(
+    join(bin, "curl"),
+    `#!/usr/bin/env bash
+echo "$*" >>"${dir}/curl.log"
+url=""; for a in "$@"; do case "$a" in http://* | https://*) url="$a" ;; esac; done
+host="\${url#*://}"; host="\${host%%/*}"
+if [ -n "$host" ] && grep -qxF "$host" "${dir}/reach"; then exit 0; fi
+echo "curl: (7) Failed to connect to $host port 443 after 2 ms: Couldn't connect to server" >&2
+exit 7
+`,
+  );
   chmodSync(join(bin, "claude"), 0o755);
   chmodSync(join(bin, "gh"), 0o755);
-  for (const f of ["gh.log", "claude.log", "claude.cwd.log"])
+  chmodSync(join(bin, "curl"), 0o755);
+  writeFileSync(join(dir, "reach"), "api.github.com\n");
+  for (const f of ["gh.log", "claude.log", "claude.cwd.log", "curl.log"])
     writeFileSync(join(dir, f), "");
   writeFileSync(join(dir, "sessions.json"), "[]");
   mkdirSync(fakeHome());
@@ -1162,6 +1177,42 @@ describe("agent-poller session cap", () => {
       expect(readLines("claude.log")).toStrictEqual([]);
     });
   }
+});
+
+describe("agent-poller firewall preflight", () => {
+  const readyIssue = [{ number: 1, author: { login: APP.owner }, labels: [{ name: "agent-ok" }, { name: "ready" }] }];
+  const reach = (...hosts: string[]) => writeFileSync(join(dir, "reach"), hosts.map((h) => `${h}\n`).join(""));
+
+  it("refuses to launch, naming the URL, when https://example.com is reachable", () => {
+    configure();
+    writeFileSync(join(rdir(APP.repo), "issues.json"), JSON.stringify(readyIssue));
+    reach("api.github.com", "example.com");
+    const r = exec();
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(r.stdout).toContain("https://example.com");
+    expect(readLines("claude.log")).toStrictEqual([]);
+  });
+
+  it("refuses to launch, naming the URL, when https://api.github.com is not reachable", () => {
+    configure();
+    writeFileSync(join(rdir(APP.repo), "issues.json"), JSON.stringify(readyIssue));
+    reach();
+    const r = exec();
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(r.stdout).toContain("https://api.github.com");
+    expect(readLines("claude.log")).toStrictEqual([]);
+  });
+
+  it("a dry run logs that the firewall preflight passed", () => {
+    configure();
+    writeFileSync(join(rdir(APP.repo), "issues.json"), JSON.stringify(readyIssue));
+    const r = exec({ dry: true });
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/firewall preflight passed/i);
+    const urls = readLines("curl.log").join("\n");
+    expect(urls).toContain("https://api.github.com");
+    expect(urls).toContain("https://example.com");
+  });
 });
 
 describe("agent-poller entrypoint", () => {
