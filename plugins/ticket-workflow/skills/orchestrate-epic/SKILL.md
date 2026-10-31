@@ -32,27 +32,34 @@ For each released child (no open blocker, or blocked only by a sibling awaiting 
 - sonnet at medium for a child whose ticket is docs-only or confined to one adapter (no new abstraction, no shared code, no security or data handling);
 - never `high` (the README's effort rule).
 
+The child's own sub-agents run on tiers of their own, which the brief and the launch template's Tier line carry; the child's tier does not carry over to them:
+- `implementer`: `work-ticket`'s default (haiku at xhigh); opus at medium for subtle logic; opus at xhigh only for security-boundary code (a firewall, an entrypoint, credential handling).
+- `reviewer`: opus at medium, because the first reviewer (step 6) is the quality gate; none for a `simple` child, as `work-ticket` step 6 says.
+
 Children with no open blocker between them may run in parallel; the brief says what each owns. Get the directory of `gh` with `command -v gh`.
 
-**The brief.** Before the first launch, write the epic brief to `${TMPDIR:-/tmp}/orchestrate-epic-<repo-name>-<E>-brief.md`, a local file outside git, and put its absolute path in every launch prompt. It holds the standing decisions (each with its decider and, where a decision log entry exists, its id), the run order, each child's owned files and tests, shared-file conventions and the routine rules (step 5). Update it after each gate instead of restating decisions in the next prompt. On a resumed run, reuse it if present; otherwise rewrite it from the children's plan comments.
+**The brief.** Before the first launch, write the epic brief to `${TMPDIR:-/tmp}/orchestrate-epic-<repo-name>-<E>-brief.md`, a local file outside git, and put its absolute path in every launch prompt. It holds the standing decisions (each with its decider and, where a decision log entry exists, its id), the run order, each child's owned files and tests, shared-file conventions, the sub-agent tiers above and the routine rules (step 5). Update it after each gate instead of restating decisions in the next prompt. On a resumed run, reuse it and the plan files if present; otherwise rewrite them from the children's plan comments.
+
+**Plan and review files.** Each child writes its plan to `${TMPDIR:-/tmp}/orchestrate-epic-<repo-name>-<E>-<N>-plan.md`, and its reviewer's findings with its triage of them to `${TMPDIR:-/tmp}/orchestrate-epic-<repo-name>-<E>-<N>-review.md`. Both are local files beside the brief, outside git. Put both absolute paths in its launch prompt. You read the plan there at the gate (step 5); the first reviewer reads the review file (step 6).
 
 Launch prompt template. Fill every `<placeholder>` and substitute the absolute plugin root for `${CLAUDE_PLUGIN_ROOT}` (the sub-agent's environment does not resolve it):
 
     Work ticket #<N> in <owner>/<repo>: read and follow <plugin-root>/skills/work-ticket/SKILL.md, with these changes. You are a sub-agent of the epic #<E> orchestrator.
     - Setup: you run in your own worktree. Run `npm ci` first. Prepend <gh-dir> to PATH.
     - Guard: three refusals. The comment guard rejects a `gh api` path under /issues/ or /pulls/ that contains a shell variable or subshell: write numbers out literally. It recognises only the literal `| node <plugin-root>/scripts/trusted-comments.ts` pipe: write it out, never through a variable. The worktree isolation guard refuses, inside a compound command, a `node` or `git` argument computed at runtime (a variable or subshell): write paths out, or split the command.
-    - Stop and report: you have no AskUserQuestion and no plan mode. At every point work-ticket asks the human, enters plan mode or waits for sign-off, end your turn with the questions or the plan in your report. The orchestrator answers and resumes you with SendMessage.
+    - Stop and report: you have no AskUserQuestion and no plan mode. At every point where work-ticket asks the human, enters plan mode or waits for sign-off, first save the plan as it stands to <plan-path>: work-ticket step 2's sections, with the orchestrator's answers so far folded in. Then end your turn with a report of the open questions plus a summary of at most 300 words; do not paste the plan. The orchestrator reads the plan from that file, answers and resumes you with SendMessage. Once it approves, that file is the approved plan: post work-ticket step 3's comment from it and build from it.
+    - Hand-off: before work-ticket step 8, save your reviewer's findings to <review-path>, each with your triage of it (applied, deferred, noted or overridden, and why); for a `simple` plan, write "none: simple child" there. At step 8, and after each feedback round, report the PR link, the check results (local and `gh pr checks`), the contract commit and anything that needs the orchestrator's call, in at most 400 words.
     - Base: the branch base is origin/epic-<E>, not origin/main. Everywhere work-ticket says origin/main (plan reads, branch base, the reviewer's base ref, the step 7 conflict check) use origin/epic-<E>. Open the PR with `--base epic-<E> --label orchestrate-epic-run`; keep `Closes #<N>` in the body for the record.
     - Attribution: the step 3 comment opens "Plan approved by the epic #<E> orchestrator session (Claude), standing in for the maintainer; not human-approved." The PR's plan heading is "Plan (approved by the epic #<E> orchestrator, not human-approved)". Every Decisions line names who decided; the maintainer's own decisions say "maintainer" and the date. With a Decision log section, entries for decisions the orchestrator makes say `Decided by: epic #<E> orchestrator, not human-approved`.
     - Brief: read <brief-path> before planning. Its standing decisions, rules and sibling ownership are settled: apply them, record each one you use under Decisions with its decider, and do not ask about them.
-    - Tier: you run on <model> at <effort>; name it and your worktree's absolute path in your report. <commit conventions: only for a sonnet child; the project's commit conventions, read from its CLAUDE.md, to follow at work-ticket step 7>
+    - Tier: you run on <model> at <effort>; name it and your worktree's absolute path in your report. Your sub-agents' tiers (set them with the Agent tool's model and effort): the implementer on work-ticket's default (haiku at xhigh), opus at medium for subtle logic, opus at xhigh only for security-boundary code (a firewall, an entrypoint, credential handling); your `reviewer` on opus at medium, and none for a `simple` plan. <commit conventions: only for a sonnet child; the project's commit conventions, read from its CLAUDE.md, to follow at work-ticket step 7>
     - Follow-ups: a ticket you file gets `Part of #<E>` as the first line of its body, no `ready` and no `agent-ok`. Report its number. The orchestrator decides whether it stays in the epic.
     - <plan early, branch late: only for a child blocked by one sibling; see below>
 
 **Plan early, branch late**, only for a child blocked by one sibling #M whose PR you approved but have not integrated. Add to its prompt: plan against that sibling's branch (`git show origin/issue-M-<slug>:<path>`); treat both `Blocked by #M` and the `blocked` label as not blocking for step 1's stop (that one blocker only; leave the label for label cleanup); hold step 3 (branch) until the orchestrator sends "integrated".
 
 ## 5. Gates
-Read each sub-agent's report: its plan, its questions, its amendments.
+Read each sub-agent's report (its questions, its summary, its amendments), and read its plan from its plan file (step 4), not from the report.
 
 **Triage.** A question goes to the human when it bends a recorded maintainer decision or changes user-visible behaviour, and for what `work-ticket` reserves for a human-approved plan (`contract N/A (cut)`). Everything else is your call: test fixture strategy, implementer tier, AC rewording, option cuts, plan gaps, contract amendments, a follow-up that fits the epic (step 8). Report those to the human afterwards so they can veto.
 
@@ -70,9 +77,10 @@ Per child PR, launch a fresh `ticket-workflow:first-reviewer` sub-agent (if the 
     - AC as approved: <the AC diff from the child's plan comment>
     - Decisions: <this child's gate decisions and the routine rules, copied from the brief>
     - Post-gate instructions: <every instruction sent to this child after the gate, from its SendMessage rounds, or none>
+    - Child review: <the child's review file path, from step 4: its reviewer's findings and its triage of them>
     - Base ref: origin/epic-<E>
-    - Worktree: <the child's worktree path, from its report>; read whole files there, read only.
-    - Focus: <from the plan: correctness risks to trace, sibling boundaries to check, notes the child's own reviewer left unapplied that need a call>
+    - Worktree: <the child's worktree path, from its report>; read the diff and the child reviewer's findings first; read whole files only where the focus list points or the diff leaves a question open, read only.
+    - Focus: <from the plan: correctness risks to trace, sibling boundaries to check; the child's unapplied reviewer notes are in the review file>
 
 Read the report. Check it against the post-gate instructions and the focus list, and ask the reviewer with `SendMessage` about any item it does not mention. Re-read code only where it leaves a question open or you disagree, and make the final call. The child PR must carry `orchestrate-epic-run`: check it, and add it (`gh pr edit <PR> --add-label orchestrate-epic-run`) if missing. Post a verdict comment on the PR headed "Review (epic #E orchestrator, acting as first reviewer for the maintainer)". Requested changes go to the child agent with `SendMessage`, as a feedback round (the way `address-feedback` handles one); then re-review.
 
@@ -104,7 +112,7 @@ When every child other than a spike child (step 1) is integrated and closed:
 - Post the same table on the epic. It stays open: the human's merge of the epic PR closes it.
 - `gh issue edit E --remove-label in-progress --add-label needs-review`.
 - Wait for CI on the epic PR (`gh pr checks`) and read `gh pr view --json mergeable`; if `CONFLICTING`, merge `origin/main` in as in step 7.
-- Delete the brief.
+- Delete the brief and the children's plan and review files.
 - Hand off with `needs input:` merge the epic PR.
 
 ## Hard rules
