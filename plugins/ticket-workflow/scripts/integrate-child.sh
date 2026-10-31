@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Integrate a child branch into its epic branch, in two subcommands around orchestrate-epic step 7's own
-# plain fetch (before merge) and push of epic-<epic> (between merge and close), which the sandbox's git
-# exclusions match. This script runs no git network command.
+# plain fetch (before merge) and push of epic-<epic> (between merge and close). This script runs no git
+# network command.
 # Usage: scripts/integrate-child.sh merge|close <epic> <issue> <slug> <pr>   (run in the epic-<epic> worktree)
 #   merge: --no-ff merge of origin/issue-<issue>-<slug> into epic-<epic>, as last fetched.
 #     exit 0 merged (a rerun after a merge is "Already up to date", also 0); 1 merge conflict (aborted,
