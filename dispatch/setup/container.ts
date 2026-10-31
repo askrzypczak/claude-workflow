@@ -668,17 +668,20 @@ function sharedOwner(repos: readonly ServedRepo[]): string | undefined {
 interface ProbeAdvice {
   /** Who holds the token, as the lines name it. */
   whose: string;
-  /** What became of the token when the probe failed. */
+  /** What becomes of the token when the probe does not pass, as a clause ("it was not stored"). */
   outcome: string;
   /** The fix when the token can merge. */
   canMerge: string;
   /** The fix when the token cannot read a served repo's PRs. */
   unseen: string;
+  /** With no PR to probe on, a note and the step passes, instead of a to-do. */
+  noPr?: (computing: boolean) => string;
 }
 
 /**
  * The wrong-sha merge with `token` only as GH_TOKEN, on the host: true when GitHub refused it
- * with 403, else a to-do with the advice for what it got.
+ * with 403 (or, with `advice.noPr`, when no PR could take the probe), else a to-do with the
+ * advice for what it got.
  */
 function mergeRefused(p: Pass, token: string, advice: ProbeAdvice): boolean {
   const { whose, outcome } = advice;
@@ -686,7 +689,7 @@ function mergeRefused(p: Pass, token: string, advice: ProbeAdvice): boolean {
   try {
     verdict = wrongShaMerge(p.io, p.repos, { env: { GH_TOKEN: token } });
   } catch (err) {
-    p.say("todo", `gh: with ${whose}, ${message(err)}, ${outcome}: ${advice.unseen}`);
+    p.say("todo", `gh: with ${whose}, ${message(err)}, and ${outcome}: ${advice.unseen}`);
     return false;
   }
   switch (verdict.kind) {
@@ -694,21 +697,30 @@ function mergeRefused(p: Pass, token: string, advice: ProbeAdvice): boolean {
       p.say("pass", `gh: a wrong-sha merge of ${verdict.where} with ${whose} was refused with 403: it cannot merge`);
       return true;
     case "can-merge":
-      p.say("todo", `gh: a wrong-sha merge of ${verdict.where} with ${whose} got ${verdict.code ?? "a success"}: the token can merge, ${outcome}. ${advice.canMerge}`);
+      p.say("todo", `gh: a wrong-sha merge of ${verdict.where} with ${whose} got ${verdict.code ?? "a success"}: the token can merge, and ${outcome}. ${advice.canMerge}`);
       return false;
     case "inconclusive":
-      p.say("todo", `gh: the wrong-sha merge of ${verdict.where} with ${whose} was inconclusive (${verdict.answer}), ${outcome}: rerun when an open PR is mergeable`);
+      p.say("todo", `gh: the wrong-sha merge of ${verdict.where} with ${whose} was inconclusive (${verdict.answer}), and ${outcome}: rerun when an open PR is mergeable`);
       return false;
     case "no-pr":
+      if (advice.noPr !== undefined) {
+        p.say("note", advice.noPr(verdict.computing));
+        return true;
+      }
       p.say(
         "todo",
-        `gh: ${verdict.computing ? "GitHub is still computing whether the open PRs can be merged, so the wrong-sha merge has no PR yet" : "no served repo has an open, mergeable PR for the wrong-sha merge"}, so ${whose} could not be checked, ${outcome}: ${verdict.computing ? "rerun in a minute" : "open one, then rerun"}`,
+        verdict.computing
+          ? `gh: GitHub is still computing whether the open PRs can be merged, so ${whose} could not be checked yet, and ${outcome}: rerun in a minute`
+          : `gh: no served repo has an open, mergeable PR for the wrong-sha merge, so ${whose} could not be checked, and ${outcome}: open one, then rerun`,
       );
       return false;
   }
 }
 
-/** The container's one fine-grained login, probed on every run: its token must not be able to merge. */
+/**
+ * The container's one fine-grained login, probed again on every run: its token must not be able
+ * to merge. With no PR to probe on, it stands, as it was refused with 403 when it was pasted.
+ */
 function existingLoginStep(p: Pass, login: string): boolean {
   const whose = `the container's ${GH_HOST} login ${login} (its fine-grained token)`;
   const logout = `${AS_NODE} gh auth logout --hostname ${GH_HOST} --user ${login}`;
@@ -723,11 +735,16 @@ function existingLoginStep(p: Pass, login: string): boolean {
     );
     return p.dryRun;
   }
+  const notReprobed = `gh: the container's ${GH_HOST} login ${login} was not re-probed`;
   const refused = mergeRefused(p, token, {
     whose,
-    outcome: "so the phase stops here",
+    outcome: "the phase stops here",
     canMerge: `Log it out in the container (${logout}), then rerun to paste a token with Contents read-only`,
     unseen: `the token must see every served repo; edit it at https://${GH_HOST}/settings/personal-access-tokens, then rerun`,
+    noPr: (computing) =>
+      computing
+        ? `${notReprobed}: GitHub is still computing mergeability; rerun in a minute to re-probe`
+        : `${notReprobed}: no served repo has an open, mergeable PR for the wrong-sha merge (its token was refused with 403 when it was pasted); the next container run with an open, mergeable PR probes it again`,
   });
   return refused || p.dryRun;
 }
@@ -784,7 +801,7 @@ function ghStep(p: Pass): boolean {
   }
   const refused = mergeRefused(p, token, {
     whose: "the pasted token",
-    outcome: "so it was not stored",
+    outcome: "it was not stored",
     canMerge: `Delete it at https://${GH_HOST}/settings/personal-access-tokens, create one with Contents read-only, then rerun`,
     unseen: `the token must see every served repo; edit it at https://${GH_HOST}/settings/personal-access-tokens, then rerun and paste it again`,
   });
