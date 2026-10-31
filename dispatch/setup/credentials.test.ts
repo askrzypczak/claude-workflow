@@ -29,7 +29,7 @@ function setup(world: FakeWorld = {}, dryRun = false) {
     dryRun,
     clone: CLONE,
     home: HOME,
-    repos: [{ repo: FAKE_REPO, dir: CLONE }],
+    repos: [{ repo: FAKE_REPO }],
   };
   return { ...fake, ctx };
 }
