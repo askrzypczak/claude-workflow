@@ -14,8 +14,8 @@ export const READY_LINE = "entrypoint: firewall applied";
 /** What the entrypoint logs when the firewall cannot be applied; the container then exits. */
 export const FAILED_LINE = "entrypoint: firewall failed; not starting";
 
-/** The label whose value decides whether the container is replaced (container.ts sets it). */
-const CONFIG_LABEL = "claude-workflow.config";
+/** The label whose value decides whether the container is replaced. */
+export const CONFIG_LABEL = "claude-workflow.config";
 
 /** The first line of stderr, else of stdout, else the exit status. */
 function answer(result: RunResult): string {

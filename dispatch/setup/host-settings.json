@@ -6,6 +6,8 @@
     "deny": [
       "Read(~/.claude/.credentials.json)",
       "Edit(~/.claude/.credentials.json)",
+      "Read(~/.config/claude-workflow/claude-agent.env)",
+      "Edit(~/.config/claude-workflow/claude-agent.env)",
       "Read(~/Library/Application Support/Google/Chrome/**)",
       "Edit(~/Library/Application Support/Google/Chrome/**)",
       "Read(~/Library/Application Support/BraveSoftware/**)",

@@ -14,6 +14,7 @@ import type { MergeVerdict } from "./credentials.ts";
 import {
   claudeExec,
   cloneDir,
+  CONFIG_LABEL,
   CONTAINER,
   CONTAINER_HOME,
   containerState,
@@ -31,8 +32,7 @@ import type { ServedRepo } from "./repos.ts";
 
 /** The Claude token's env file, under the home directory. */
 export const ENV_FILE = ".config/claude-workflow/claude-agent.env";
-/** The label whose value decides whether the container is replaced. */
-export const CONFIG_LABEL = "claude-workflow.config";
+export { CONFIG_LABEL };
 
 /** Colima with no host directory mounted into its VM (dispatch/container/README.md, Verify). */
 const COLIMA_START = "colima start --cpu 4 --memory 4 --disk 40 --mount none";
@@ -131,10 +131,13 @@ interface Pass extends SetupContext {
 /** The Claude token's env file: its text, or pending under --dry-run when it does not exist yet. */
 type EnvFile = { text: string } | "pending";
 
-/** Pauses dispatch and refuses while a session is live, once per run. */
+/**
+ * Pauses dispatch and refuses while a session is live in the container, once per run. Host
+ * sessions are left out: starting, replacing or logging in the container never reaches them.
+ */
 function quiet(p: Pass): boolean {
   if (p.quiesced) return true;
-  if (!quiesce(p, p.say)) return false;
+  if (!quiesce(p, p.say, { host: false })) return false;
   p.quiesced = true;
   return true;
 }
@@ -661,21 +664,92 @@ function sharedOwner(repos: readonly ServedRepo[]): string | undefined {
   return owners.size === 1 ? [...owners][0] : undefined;
 }
 
-/** The container's own fine-grained gh login, refused unless a wrong-sha merge with it gets 403. */
+/** What a failed wrong-sha merge tells the maintainer to do, per outcome. */
+interface ProbeAdvice {
+  /** Who holds the token, as the lines name it. */
+  whose: string;
+  /** What became of the token when the probe failed. */
+  outcome: string;
+  /** The fix when the token can merge. */
+  canMerge: string;
+  /** The fix when the token cannot read a served repo's PRs. */
+  unseen: string;
+}
+
+/**
+ * The wrong-sha merge with `token` only as GH_TOKEN, on the host: true when GitHub refused it
+ * with 403, else a to-do with the advice for what it got.
+ */
+function mergeRefused(p: Pass, token: string, advice: ProbeAdvice): boolean {
+  const { whose, outcome } = advice;
+  let verdict: MergeVerdict;
+  try {
+    verdict = wrongShaMerge(p.io, p.repos, { env: { GH_TOKEN: token } });
+  } catch (err) {
+    p.say("todo", `gh: with ${whose}, ${message(err)}, ${outcome}: ${advice.unseen}`);
+    return false;
+  }
+  switch (verdict.kind) {
+    case "refused":
+      p.say("pass", `gh: a wrong-sha merge of ${verdict.where} with ${whose} was refused with 403: it cannot merge`);
+      return true;
+    case "can-merge":
+      p.say("todo", `gh: a wrong-sha merge of ${verdict.where} with ${whose} got ${verdict.code ?? "a success"}: the token can merge, ${outcome}. ${advice.canMerge}`);
+      return false;
+    case "inconclusive":
+      p.say("todo", `gh: the wrong-sha merge of ${verdict.where} with ${whose} was inconclusive (${verdict.answer}), ${outcome}: rerun when an open PR is mergeable`);
+      return false;
+    case "no-pr":
+      p.say(
+        "todo",
+        `gh: ${verdict.computing ? "GitHub is still computing whether the open PRs can be merged, so the wrong-sha merge has no PR yet" : "no served repo has an open, mergeable PR for the wrong-sha merge"}, so ${whose} could not be checked, ${outcome}: ${verdict.computing ? "rerun in a minute" : "open one, then rerun"}`,
+      );
+      return false;
+  }
+}
+
+/** The container's one fine-grained login, probed on every run: its token must not be able to merge. */
+function existingLoginStep(p: Pass, login: string): boolean {
+  const whose = `the container's ${GH_HOST} login ${login} (its fine-grained token)`;
+  const logout = `${AS_NODE} gh auth logout --hostname ${GH_HOST} --user ${login}`;
+  // Read as node, where the login is stored; the token comes back on stdout and goes only to GH_TOKEN.
+  const read = nodeExec(p.io, ["gh", "auth", "token", "--hostname", GH_HOST]);
+  const token = read.stdout.trim();
+  if (token.length >= 12) p.hidden.push(token);
+  if (read.status !== 0 || token === "") {
+    p.say(
+      "todo",
+      `gh: reading ${whose} in the container failed (${answer({ ...read, stdout: "" })}), so it could not be checked: log it out (${logout}), then rerun to paste a new token`,
+    );
+    return p.dryRun;
+  }
+  const refused = mergeRefused(p, token, {
+    whose,
+    outcome: "so the phase stops here",
+    canMerge: `Log it out in the container (${logout}), then rerun to paste a token with Contents read-only`,
+    unseen: `the token must see every served repo; edit it at https://${GH_HOST}/settings/personal-access-tokens, then rerun`,
+  });
+  return refused || p.dryRun;
+}
+
+/**
+ * The container's own fine-grained gh login: a pasted token is refused unless a wrong-sha merge
+ * with it gets 403, and an existing login's token is probed the same way on every run.
+ */
 function ghStep(p: Pass): boolean {
   const name = `claude-workflow-container-${timestamp(new Date()).slice(0, 10)}`;
   const login = `gh auth login --hostname ${GH_HOST} --with-token in the container as node, the token on stdin`;
   const probe = "check that a wrong-sha merge with it is refused with 403 (it runs on the host with the token only as GH_TOKEN, and a token that can merge is never stored)";
   if (!p.live) {
-    p.say("would", `gh: unless the container has one fine-grained login, open the pre-filled token form (${name}), read the token at a hidden prompt, ${probe}, then ${login}`);
+    p.say(
+      "would",
+      `gh: if the container has one fine-grained login, read its token as node and check that a wrong-sha merge with it is refused with 403; else open the pre-filled token form (${name}), read the token at a hidden prompt, ${probe}, then ${login}`,
+    );
     return true;
   }
   const accounts = containerAccounts(p);
   const only = accounts.length === 1 ? accounts[0]! : undefined;
-  if (only !== undefined && only.fineGrained && only.state !== "error") {
-    p.say("already", `gh: the container has one ${GH_HOST} login (${only.login}), with a fine-grained token`);
-    return true;
-  }
+  if (only !== undefined && only.fineGrained && only.state !== "error") return existingLoginStep(p, only.login);
   if (accounts.length > 0) {
     const shown = accounts
       .map((a) => `${a.login} (${a.fineGrained ? "fine-grained" : "not fine-grained"}${a.state === "error" ? ", refused by GitHub" : ""})`)
@@ -690,7 +764,7 @@ function ghStep(p: Pass): boolean {
     p.say("would", `gh: open the pre-filled token form (${name}), read the token at a hidden prompt, ${probe}, then ${login}`);
     return true;
   }
-  // A gh login change: no session may be live while it happens.
+  // A gh login change: no session may be live in the container while it happens.
   if (!quiet(p)) return false;
 
   const url = tokenFormUrl(sharedOwner(p.repos), name);
@@ -708,34 +782,13 @@ function ghStep(p: Pass): boolean {
     p.say("todo", "gh: no fine-grained token was pasted (one starts github_pat_): rerun and paste the token the form generated");
     return false;
   }
-  let verdict: MergeVerdict;
-  try {
-    verdict = wrongShaMerge(p.io, p.repos, { env: { GH_TOKEN: token } });
-  } catch (err) {
-    p.say("todo", `gh: with the pasted token, ${message(err)}: the token must see every served repo; edit it at https://${GH_HOST}/settings/personal-access-tokens, then rerun and paste it again`);
-    return false;
-  }
-  const notStored = "so it was not stored";
-  switch (verdict.kind) {
-    case "refused":
-      p.say("pass", `gh: a wrong-sha merge of ${verdict.where} with the pasted token was refused with 403: it cannot merge`);
-      break;
-    case "can-merge":
-      p.say(
-        "todo",
-        `gh: a wrong-sha merge of ${verdict.where} with the pasted token got ${verdict.code ?? "a success"}: the token can merge, ${notStored}. Delete it at https://${GH_HOST}/settings/personal-access-tokens, create one with Contents read-only, then rerun`,
-      );
-      return false;
-    case "inconclusive":
-      p.say("todo", `gh: the wrong-sha merge of ${verdict.where} with the pasted token was inconclusive (${verdict.answer}), ${notStored}: rerun when an open PR is mergeable`);
-      return false;
-    case "no-pr":
-      p.say(
-        "todo",
-        `gh: ${verdict.computing ? "GitHub is still computing whether the open PRs can be merged, so the wrong-sha merge has no PR yet" : "no served repo has an open, mergeable PR for the wrong-sha merge"}, so the pasted token was not checked and not stored: ${verdict.computing ? "rerun in a minute" : "open one, then rerun"}`,
-      );
-      return false;
-  }
+  const refused = mergeRefused(p, token, {
+    whose: "the pasted token",
+    outcome: "so it was not stored",
+    canMerge: `Delete it at https://${GH_HOST}/settings/personal-access-tokens, create one with Contents read-only, then rerun`,
+    unseen: `the token must see every served repo; edit it at https://${GH_HOST}/settings/personal-access-tokens, then rerun and paste it again`,
+  });
+  if (!refused) return false;
   const loggedIn = nodeExec(p.io, ["gh", "auth", "login", "--hostname", GH_HOST, "--with-token"], { input: `${token}\n` });
   if (loggedIn.status !== 0) {
     p.say("todo", `gh: gh auth login in the container failed (${answer(loggedIn)}): rerun`);

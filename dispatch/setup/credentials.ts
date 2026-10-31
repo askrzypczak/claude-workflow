@@ -207,8 +207,16 @@ const isAdminBypass = (actor: z.infer<typeof BypassActor>) =>
   actor.actor_type === ADMIN_BYPASS.actor_type &&
   actor.bypass_mode === ADMIN_BYPASS.bypass_mode;
 
-/** Step 1: pause dispatch, then refuse to go on while a session is live on the host or in the agent container. */
-export function quiesce(ctx: SetupContext, say: (status: StepStatus, text: string) => void): boolean {
+/**
+ * Step 1: pause dispatch, then refuse to go on while a session is live on the host or in the
+ * agent container. With `opts.host` false, host sessions are not checked: what the container
+ * phase changes never reaches them.
+ */
+export function quiesce(
+  ctx: SetupContext,
+  say: (status: StepStatus, text: string) => void,
+  opts?: { host?: boolean },
+): boolean {
   const p = { ...ctx, say };
   const script = join(p.clone, LAUNCHD);
   const status = p.io.run(script, ["status"]);
@@ -229,9 +237,10 @@ export function quiesce(ctx: SetupContext, say: (status: StepStatus, text: strin
   }
   p.say("note", `dispatch stays paused until a full setup run passes every phase and resumes it, or until ${LAUNCHD} resume`);
 
-  const live = p.io.listSessions().filter((s) => !ENDED.includes(s.state));
+  const host = opts?.host !== false;
+  const live = host ? p.io.listSessions().filter((s) => !ENDED.includes(s.state)) : [];
   for (const s of live) p.say("todo", stopTodo(s, "claude agents", "claude"));
-  if (live.length === 0) p.say("pass", "no live sessions in claude agents");
+  if (host && live.length === 0) p.say("pass", "no live sessions in claude agents");
 
   // Throws when the container's list cannot be read: a wrong empty answer would let a write
   // go ahead under a live session.
