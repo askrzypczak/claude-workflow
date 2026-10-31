@@ -1,47 +1,56 @@
-// The check phase on the fake SetupIo (fake-io.ts): the static settings checks, the probe
-// session launched the way the poller launches, and when dispatch resumes.
+// The check phase on the fake SetupIo (fake-io.ts) and its docker world: the probe session in
+// the container, how it is stopped and cleaned up, and when dispatch resumes.
+//
+// Report keywords these tests match on (case-insensitive): `would` lines naming "probe" and
+// "resume" under --dry-run; a `note` naming "paused" on a check-only run.
 import { describe, expect, it } from "vitest";
 import { LAUNCH_FLAGS } from "../poller/config.ts";
-import { check, pollerEnv, probeItems } from "./check.ts";
-import { FAKE_HOME, FAKE_REPO, fakeIo } from "./fake-io.ts";
-import type { FakeCall, FakeLaunch, FakeWorld } from "./fake-io.ts";
+import { check, probeItems } from "./check.ts";
+import { FAKE_HOME, FAKE_REPO, fakeIo, parseDockerExec, writeCalls } from "./fake-io.ts";
+import type { FakeCall, FakeDocker, FakeWorld } from "./fake-io.ts";
 import type { SetupContext } from "./main.ts";
-import { sandboxSettings } from "./sandbox.ts";
 
 const CLONE = "/clone";
 const OTHER = "/work/example-other";
-const SETTINGS = `${FAKE_HOME}/.claude/settings.json`;
-/** Sorted, as findPrivateKeys returns them. */
-const KEYS = [`${FAKE_HOME}/.ssh/deploy-example-tools`, `${FAKE_HOME}/.ssh/id_ed25519`];
-const PRIVATE_KEY = "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE-KEY-BODY-FOR-TESTS\n-----END OPENSSH PRIVATE KEY-----\n";
+const OTHER_REPO = "example-owner/example-other";
+const FIRST = "/home/node/example-tools";
 const INSTALL_LAUNCHD = `${CLONE}/dispatch/install-launchd.sh`;
 
-const text = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
+const pem = (name: string) => `-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE-KEY-BODY-FOR-TESTS-${name}\n-----END OPENSSH PRIVATE KEY-----\n`;
 
 /** Every probe item passes, then the END line. */
-const passing = () => [...probeItems(KEYS).map((i) => `SANDBOX-PROBE PASS ${i}: ok`), "SANDBOX-PROBE END", ""].join("\n");
+const passing = () => [...probeItems().map((i) => `SETUP-PROBE PASS ${i}: ok`), "SETUP-PROBE END", ""].join("\n");
 
 /** The given item fails; every other passes; then the END line. */
 const failingAt = (index: number) => () =>
   [
-    ...probeItems(KEYS).map((i, n) => (n === index ? `SANDBOX-PROBE FAIL ${i}: not refused` : `SANDBOX-PROBE PASS ${i}: ok`)),
-    "SANDBOX-PROBE END",
+    ...probeItems().map((i, n) => (n === index ? `SETUP-PROBE FAIL ${i}: not refused` : `SETUP-PROBE PASS ${i}: ok`)),
+    "SETUP-PROBE END",
     "",
   ].join("\n");
 
-/** Two keys in ~/.ssh and user settings generated for them. */
-function world(overrides: FakeWorld = {}, settings: unknown = sandboxSettings(KEYS, FAKE_HOME)): FakeWorld {
+/** A running, ready container with both repos cloned, their deploy keys, a gh login and a passing probe. */
+function dockerWorld(overrides: FakeDocker = {}): FakeDocker {
   return {
-    files: {
-      [KEYS[0]!]: PRIVATE_KEY,
-      [`${KEYS[0]!}.pub`]: "ssh-ed25519 AAAAFAKEdeploy deploy\n",
-      [KEYS[1]!]: PRIVATE_KEY,
-      [`${KEYS[1]!}.pub`]: "ssh-ed25519 AAAAFAKEaccount account\n",
-      [SETTINGS]: text(settings),
+    container: { state: "running" },
+    clones: {
+      [FIRST]: `git@github.com-example-tools:${FAKE_REPO}.git`,
+      "/home/node/example-other": `git@github.com-example-other:${OTHER_REPO}.git`,
     },
+    files: {
+      "/home/node/.ssh/deploy-example-tools": pem("deploy-example-tools"),
+      "/home/node/.ssh/deploy-example-tools.pub": { text: "ssh-ed25519 AAAAFAKEtools deploy\n", mode: 0o644 },
+      "/home/node/.ssh/deploy-example-other": pem("deploy-example-other"),
+      "/home/node/.ssh/deploy-example-other.pub": { text: "ssh-ed25519 AAAAFAKEother deploy\n", mode: 0o644 },
+    },
+    ghLogin: "fine-grained",
     probe: passing,
     ...overrides,
   };
+}
+
+function world(docker: FakeDocker = {}, overrides: FakeWorld = {}): FakeWorld {
+  return { deployKeys: [FAKE_REPO, OTHER_REPO], docker: dockerWorld(docker), ...overrides };
 }
 
 function setup(w: FakeWorld, opts: { dryRun?: boolean; fullRun?: boolean } = {}) {
@@ -53,7 +62,7 @@ function setup(w: FakeWorld, opts: { dryRun?: boolean; fullRun?: boolean } = {})
     home: FAKE_HOME,
     repos: [
       { repo: FAKE_REPO, dir: CLONE },
-      { repo: "example-owner/example-other", dir: OTHER },
+      { repo: OTHER_REPO, dir: OTHER },
     ],
     ...(opts.fullRun === undefined ? {} : { fullRun: opts.fullRun }),
   };
@@ -61,71 +70,102 @@ function setup(w: FakeWorld, opts: { dryRun?: boolean; fullRun?: boolean } = {})
 }
 
 const isResume = (c: FakeCall) => c.cmd === INSTALL_LAUNCHD && c.args[0] === "resume";
-const isStopOf = (launch: FakeLaunch | undefined) => (c: FakeCall) =>
-  launch !== undefined && c.cmd === "claude" && c.args[0] === "stop" && c.args[1] === launch.name;
-const isAnyStop = (c: FakeCall) => c.cmd === "claude" && c.args[0] === "stop";
+/** The command a docker exec call runs, or undefined for any other call. */
+const execCommand = (c: FakeCall) => parseDockerExec(c)?.command;
+const isClaudeStop = (c: FakeCall) => {
+  const command = execCommand(c);
+  return (command?.[0] === "claude" && command[1] === "stop") || (c.cmd === "claude" && c.args[0] === "stop");
+};
+const stopTarget = (c: FakeCall) => execCommand(c)?.[2] ?? c.args[1];
+const isProbeStart = (c: FakeCall) => execCommand(c)?.[0] === "claude" && (execCommand(c) ?? []).includes("--bg");
 
 describe("check phase", () => {
-  it("launches the probe session once with LAUNCH_FLAGS in the first served repo's dir", () => {
-    const { run, launches } = setup(world(), { fullRun: true });
+  it("a container that is not running stops the check with a to-do, and no session starts", () => {
+    const worlds: [string, FakeWorld][] = [
+      ["stopped", world({ container: { state: "stopped" } })],
+      ["absent", world({ container: undefined, volume: true })],
+      ["no docker", world({ reachable: false })],
+    ];
+    for (const [label, w] of worlds) {
+      const { run, launches, calls, reports } = setup(w, { fullRun: true });
+
+      expect(run(), label).toBe("stop");
+      expect(reports.some((r) => r.status === "todo"), label).toBe(true);
+      expect(launches, label).toEqual([]);
+      expect(calls.some(isProbeStart), label).toBe(false);
+      expect(calls.some(isResume), label).toBe(false);
+    }
+  });
+
+  it("the probe session starts in the first clone with LAUNCH_FLAGS and --permission-mode auto", () => {
+    const { run, launches, calls } = setup(world(), { fullRun: true });
 
     run();
     expect(launches).toHaveLength(1);
-    expect(launches[0]!.dir).toBe(CLONE);
-    expect(launches[0]!.flags).toEqual(LAUNCH_FLAGS);
-    expect(launches[0]!.name).toMatch(/^sandbox-probe-/);
+    const launch = launches[0]!;
+    expect(launch.dir).toBe(FIRST);
+    expect(launch.name).toMatch(/^setup-probe-/);
+    expect(launch.flags.join(" ")).toContain(LAUNCH_FLAGS.join(" "));
+    const mode = launch.flags.indexOf("--permission-mode");
+    expect(mode).toBeGreaterThanOrEqual(0);
+    expect(launch.flags[mode + 1]).toBe("auto");
+    const started = calls.filter(isProbeStart);
+    expect(started).toHaveLength(1);
+    expect(parseDockerExec(started[0]!)?.workdir).toBe(FIRST);
   });
 
-  it("gives the probe session an environment holding only HOME and PATH", () => {
-    const { run, launches } = setup(world(), { fullRun: true });
+  it("the probe session is stopped with claude stop <id>, the id found by the session's name", () => {
+    const { run, launches, calls, docker } = setup(
+      world({ sessions: [{ id: "fake-other-1", name: "tools-3", state: "done", startedAt: 1 }] }),
+      { fullRun: true },
+    );
 
     run();
     expect(launches).toHaveLength(1);
-    const env = launches[0]!.env;
-    expect(Object.keys(env).sort()).toEqual(["HOME", "PATH"]);
-    expect(env.HOME).toBe(FAKE_HOME);
-    expect(env.PATH).toBe(pollerEnv(FAKE_HOME).PATH);
+    const name = launches[0]!.name;
+    const id = docker.sessions().find((s) => s.name === name)?.id;
+    expect(id).toBeDefined();
+    const stops = calls.filter(isClaudeStop);
+    expect(stops.map(stopTarget)).toEqual([id]);
+    const listed = calls.findIndex((c) => execCommand(c)?.[0] === "claude" && execCommand(c)?.[1] === "agents");
+    expect(listed).toBeGreaterThanOrEqual(0);
+    expect(listed).toBeLessThan(calls.indexOf(stops[0]!));
+    expect(docker.sessions().find((s) => s.id === id)?.state).toBe("stopped");
   });
 
-  it("no result within the timeout fails the check and stops the probe session", () => {
-    const { run, launches, calls, reports } = setup(world({ probe: () => undefined }), { fullRun: true });
+  it("a probe session missing from the list gets a note, and no stop by name runs", () => {
+    const { run, launches, calls, reports } = setup(world({ unlisted: true }), { fullRun: true });
 
-    expect(run()).toBe("stop");
+    run();
     expect(launches).toHaveLength(1);
-    expect(calls.some(isStopOf(launches[0]))).toBe(true);
-    expect(reports.some((r) => r.status === "todo")).toBe(true);
-    expect(calls.some(isResume)).toBe(false);
+    const name = launches[0]!.name;
+    expect(calls.filter(isClaudeStop).map(stopTarget)).not.toContain(name);
+    expect(calls.some(isClaudeStop)).toBe(false);
+    expect(reports.some((r) => r.status === "note" && r.text.includes(name))).toBe(true);
   });
 
-  it("removes the result file and stops the probe session on pass, fail and timeout", () => {
-    const probes: [string, FakeWorld["probe"]][] = [
+  it("the probe result is read and removed through docker exec on pass, fail and timeout", () => {
+    const probes: [string, FakeDocker["probe"]][] = [
       ["pass", passing],
       ["fail", failingAt(0)],
       ["timeout", () => undefined],
     ];
     for (const [label, probe] of probes) {
-      const { run, launches, calls, fileOps } = setup(world({ probe }), { fullRun: true });
+      const { run, launches, calls, fileOps, docker } = setup(world({ probe }), { fullRun: true });
 
       run();
       expect(launches, label).toHaveLength(1);
-      const launch = launches[0]!;
-      const removed = fileOps.filter((o) => o.op === "removeFile").map((o) => o.path);
-      expect(removed, label).toContain(`${launch.dir}/.${launch.name}.txt`);
-      expect(calls.filter(isStopOf(launch)), label).toHaveLength(1);
+      const result = `${FIRST}/.${launches[0]!.name}.txt`;
+      const asNode = calls.map(parseDockerExec).filter((x) => x !== undefined && x.user === "node");
+      expect(asNode.some((x) => x!.command[0] === "cat" && x!.command.includes(result)), label).toBe(true);
+      expect(asNode.some((x) => x!.command[0] === "rm" && x!.command.includes(result)), label).toBe(true);
+      expect(fileOps.some((o) => o.path === result), label).toBe(false);
+      expect(docker.file(result), label).toBeUndefined();
     }
   });
 
-  it("a full run resumes dispatch when the static checks and every probe item pass", () => {
-    const { run, calls, reports } = setup(world(), { fullRun: true });
-
-    expect(run()).toBe("ok");
-    expect(calls.filter(isResume)).toHaveLength(1);
-    expect(reports.filter((r) => r.status === "pass").length).toBeGreaterThanOrEqual(probeItems(KEYS).length);
-    expect(reports.some((r) => r.status === "fail" || r.status === "todo")).toBe(false);
-  });
-
-  it("a FAIL item leaves dispatch paused and stops the phase", () => {
-    const { run, calls, reports } = setup(world({ probe: failingAt(2) }), { fullRun: true });
+  it("a FAIL item stops the phase and leaves dispatch paused", () => {
+    const { run, calls, reports } = setup(world({ probe: failingAt(0) }), { fullRun: true });
 
     expect(run()).toBe("stop");
     expect(calls.some(isResume)).toBe(false);
@@ -133,17 +173,24 @@ describe("check phase", () => {
     expect(reports.some((r) => r.status === "todo")).toBe(true);
   });
 
-  it("failing static checks stop the phase before the probe launches", () => {
-    const incomplete = sandboxSettings(KEYS, FAKE_HOME) as { sandbox: Record<string, unknown> };
-    delete incomplete.sandbox.enabled;
-    const { run, launches, calls, reports } = setup(world({}, incomplete), { fullRun: true });
+  it("no result within the timeout fails the check and stops the probe session", () => {
+    const { run, launches, calls, reports, docker } = setup(world({ probe: () => undefined }), { fullRun: true });
 
     expect(run()).toBe("stop");
-    expect(launches).toEqual([]);
-    expect(calls.some(isAnyStop)).toBe(false);
-    expect(calls.some(isResume)).toBe(false);
-    expect(reports.some((r) => r.status === "fail" && r.text.includes("sandbox.enabled"))).toBe(true);
+    expect(launches).toHaveLength(1);
+    const id = docker.sessions().find((s) => s.name === launches[0]!.name)?.id;
+    expect(calls.filter(isClaudeStop).map(stopTarget)).toEqual([id]);
     expect(reports.some((r) => r.status === "todo")).toBe(true);
+    expect(calls.some(isResume)).toBe(false);
+  });
+
+  it("a full run resumes dispatch when the direct checks and every probe item pass", () => {
+    const { run, calls, reports } = setup(world(), { fullRun: true });
+
+    expect(run()).toBe("ok");
+    expect(calls.filter(isResume)).toHaveLength(1);
+    expect(reports.filter((r) => r.status === "pass").length).toBeGreaterThanOrEqual(probeItems().length);
+    expect(reports.some((r) => r.status === "fail" || r.status === "todo")).toBe(false);
   });
 
   it("a check-only run leaves dispatch paused and says so", () => {
@@ -162,13 +209,12 @@ describe("check phase", () => {
 
     expect(run()).toBe("ok");
     expect(launches).toEqual([]);
-    expect(calls.some(isAnyStop)).toBe(false);
+    expect(writeCalls(calls)).toEqual([]);
+    expect(calls.some(isClaudeStop)).toBe(false);
     expect(calls.some(isResume)).toBe(false);
-    expect(fileOps.some((o) => o.op === "removeFile" || o.op === "waitForFile")).toBe(false);
+    expect(fileOps.some((o) => o.op === "writeFile" || o.op === "removeFile" || o.op === "appendFile")).toBe(false);
     const would = reports.filter((r) => r.status === "would").map((r) => r.text);
     expect(would.some((t) => /probe/i.test(t))).toBe(true);
     expect(would.some((t) => /resume/i.test(t))).toBe(true);
-    // The static checks still run.
-    expect(fileOps.some((o) => o.op === "readFile" && o.path === SETTINGS)).toBe(true);
   });
 });

@@ -85,6 +85,11 @@ export interface SetupIo {
   waitForFile(path: string, done: (text: string) => boolean, timeoutMs: number): string | undefined;
   /** Removes a file; no error when it is missing. */
   removeFile(path: string): void;
+  /**
+   * Calls `read` until `done` holds for its text and returns that text; at the timeout, the
+   * last text read, or undefined when every read was undefined.
+   */
+  poll(read: () => string | undefined, done: (text: string) => boolean, timeoutMs: number): string | undefined;
 }
 
 const LABELS: Record<StepStatus, string> = {
@@ -256,6 +261,9 @@ export function createIo(): SetupIo {
     },
     removeFile(path) {
       rmSync(path, { force: true });
+    },
+    poll() {
+      throw new Error("not implemented");
     },
   };
 }

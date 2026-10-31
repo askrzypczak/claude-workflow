@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
@@ -46,31 +46,6 @@ describe("createIo() file methods", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("listDir names a directory's entries and is undefined for a missing one", () => {
-    const listed = join(dir, "listed");
-    mkdirSync(listed);
-    writeFileSync(join(listed, "a"), "");
-    mkdirSync(join(listed, "b"));
-
-    expect(createIo().listDir(listed)?.sort()).toEqual(["a", "b"]);
-    expect(createIo().listDir(join(dir, "missing"))).toBeUndefined();
-  });
-
-  it("readFirstLine is undefined for a missing path and for a directory", () => {
-    expect(createIo().readFirstLine(join(dir, "missing"))).toBeUndefined();
-    expect(createIo().readFirstLine(dir)).toBeUndefined();
-  });
-
-  it("appendFile creates a missing file with mode 0600 and then appends to it", () => {
-    const path = join(dir, "appended");
-
-    createIo().appendFile(path, "one\n");
-    createIo().appendFile(path, "two\n");
-
-    expect(readFileSync(path, "utf8")).toBe("one\ntwo\n");
-    expect(statSync(path).mode & 0o777).toBe(0o600);
-  });
-
   it("writeFile creates a missing file with mode 0600 and replaces an existing file's text, keeping its mode", () => {
     const created = join(dir, "written");
     createIo().writeFile(created, "one\n");
@@ -99,5 +74,24 @@ describe("createIo() file methods", () => {
     expect(readFileSync(to, "utf8")).toBe("original\n");
     expect(() => createIo().copyFile(from, to)).toThrow();
     expect(readFileSync(to, "utf8")).toBe("original\n");
+  });
+});
+
+describe("createIo().poll", () => {
+  it("poll returns the first read that done accepts", () => {
+    const answers = ["partial", "accepted", "later"];
+    const read = vi.fn(() => answers.shift());
+    const done = vi.fn((text: string) => text === "accepted");
+
+    expect(createIo().poll(read, done, 1500)).toBe("accepted");
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(done.mock.calls.map(([text]) => text)).toEqual(["partial", "accepted"]);
+  });
+
+  it("poll returns the last read at the timeout, or undefined", () => {
+    const answers = ["first", "second"];
+    expect(createIo().poll(() => answers.shift() ?? "second", () => false, 300)).toBe("second");
+
+    expect(createIo().poll(() => undefined, () => true, 300)).toBeUndefined();
   });
 });

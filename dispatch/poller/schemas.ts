@@ -9,7 +9,7 @@ const Labels = z
 
 /** `claude agents --json --all`. `startedAt` is epoch milliseconds. */
 export const Sessions = z.array(
-  z.object({ name: z.string().optional(), state: z.string(), startedAt: z.number() }),
+  z.object({ id: z.string().optional(), name: z.string().optional(), state: z.string(), startedAt: z.number() }),
 );
 export type Session = z.infer<typeof Sessions>[number];
 

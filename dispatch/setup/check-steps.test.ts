@@ -1,31 +1,30 @@
 // The check phase's steps on the fake SetupIo (fake-io.ts): the resume after
-// `install-launchd.sh status`, and the probe script command the session is told to run.
+// `install-launchd.sh status`, and what the probe session is told to do.
 import { describe, expect, it } from "vitest";
 import { check, probeItems } from "./check.ts";
 import { FAKE_HOME, FAKE_REPO, fakeIo } from "./fake-io.ts";
 import type { FakeCall, FakeWorld } from "./fake-io.ts";
 import type { SetupContext } from "./main.ts";
-import { sandboxSettings } from "./sandbox.ts";
 
 const CLONE = "/clone";
-const SETTINGS = `${FAKE_HOME}/.claude/settings.json`;
-/** Sorted, as findPrivateKeys returns them. */
-const KEYS = [`${FAKE_HOME}/.ssh/deploy-example-tools`, `${FAKE_HOME}/.ssh/id_ed25519`];
-const PRIVATE_KEY = "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE-KEY-BODY-FOR-TESTS\n-----END OPENSSH PRIVATE KEY-----\n";
+const FIRST = "/home/node/example-tools";
 const INSTALL_LAUNCHD = `${CLONE}/dispatch/install-launchd.sh`;
 
+const pem = (name: string) => `-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE-KEY-BODY-FOR-TESTS-${name}\n-----END OPENSSH PRIVATE KEY-----\n`;
 /** Every probe item passes, then the END line. */
-const passing = () => [...probeItems(KEYS).map((i) => `SANDBOX-PROBE PASS ${i}: ok`), "SANDBOX-PROBE END", ""].join("\n");
+const passing = () => [...probeItems().map((i) => `SETUP-PROBE PASS ${i}: ok`), "SETUP-PROBE END", ""].join("\n");
 
-/** Two keys in ~/.ssh, user settings generated for them, and a probe where every item passes. */
+/** A running, ready container with the repo cloned, its deploy key, a gh login and a passing probe. */
 function world(overrides: FakeWorld = {}): FakeWorld {
   return {
-    files: {
-      [KEYS[0]!]: PRIVATE_KEY,
-      [KEYS[1]!]: PRIVATE_KEY,
-      [SETTINGS]: `${JSON.stringify(sandboxSettings(KEYS, FAKE_HOME), null, 2)}\n`,
+    deployKeys: [FAKE_REPO],
+    docker: {
+      container: { state: "running" },
+      clones: { [FIRST]: `git@github.com-example-tools:${FAKE_REPO}.git` },
+      files: { "/home/node/.ssh/deploy-example-tools": pem("deploy-example-tools") },
+      ghLogin: "fine-grained",
+      probe: passing,
     },
-    probe: passing,
     ...overrides,
   };
 }
@@ -69,14 +68,23 @@ describe("check phase resume", () => {
 });
 
 describe("check phase probe prompt", () => {
-  it("the prompt has the session run the probe script with the result file, the repo and each key, each quoted", () => {
+  it("the prompt has git fetch and git push --dry-run run as separate Bash calls, and the browser tools reported", () => {
     const { launches } = fullRun(world());
 
     expect(launches).toHaveLength(1);
-    const { name, prompt } = launches[0]!;
-    const command =
-      `bash '${CLONE}/dispatch/setup/sandbox-probe.sh' '${CLONE}/.${name}.txt' '${FAKE_REPO}' ` +
-      `'${KEYS[0]!}' '${KEYS[1]!}'`;
-    expect(prompt).toContain(command);
+    const { prompt } = launches[0]!;
+    expect(prompt).toContain("git fetch origin");
+    expect(prompt).toContain("git push --dry-run origin HEAD:refs/heads/setup-probe");
+    // Each git command is its own Bash call, so auto mode judges each one alone.
+    const lines = prompt.split("\n");
+    const fetchLine = lines.findIndex((l) => l.includes("git fetch origin"));
+    const pushLine = lines.findIndex((l) => l.includes("git push --dry-run"));
+    expect(fetchLine).toBeGreaterThanOrEqual(0);
+    expect(pushLine).toBeGreaterThan(fetchLine);
+    expect(lines[fetchLine]).not.toContain("git push");
+    expect(prompt).toMatch(/(own|separate) Bash calls?/i);
+    expect(prompt).toMatch(/browser/i);
+    for (const item of probeItems()) expect(prompt, item).toContain(item);
+    expect(prompt).toContain(`.${launches[0]!.name}.txt`);
   });
 });

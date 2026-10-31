@@ -24,6 +24,8 @@ export interface SetupContext {
   repos: readonly ServedRepo[];
   /** --no-managed: skip the managed settings copy. */
   noManaged?: boolean;
+  /** --rebuild: container rebuilds the image with --pull --no-cache and replaces the container. */
+  rebuild?: boolean;
   /** A full run (no phase argument): only then may the check phase resume dispatch. */
   fullRun?: boolean;
 }
