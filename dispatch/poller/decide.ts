@@ -3,12 +3,12 @@
 import type { Attempts, Check, CiAttempts, Issue, IssueRow, Launched, PrRow, PrStatus, Session } from "./schemas.ts";
 
 /** An unlisted session younger than this may just not be listed yet. */
-export const LISTING_GRACE_SEC = 600;
+const LISTING_GRACE_SEC = 600;
 
 /** CI-fix sessions per PR, across head SHAs. */
-export const MAX_CI_ATTEMPTS = 2;
+const MAX_CI_ATTEMPTS = 2;
 
-const ENDED = ["done", "failed", "stopped"];
+export const ENDED = ["done", "failed", "stopped"];
 const HANDED_OFF = ["needs-review", "blocked", "agent-failed"];
 
 /** Go ahead (with any extra data), or skip, with a log line when the skip is worth reporting. */

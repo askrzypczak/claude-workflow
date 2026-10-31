@@ -42,6 +42,8 @@ const readJson = (f: string) => JSON.parse(readFileSync(f, "utf8"));
 // CI runner can have an older node there. EXTRA_PATH comes first: the fake gh/claude (and any
 // fake node) win, then the node running these tests.
 const extraPath = () => [join(dir, "bin"), dirname(process.execPath)].join(delimiter);
+// Every run gets a fake HOME.
+const fakeHome = () => join(dir, "home");
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "poller-"));
@@ -74,11 +76,27 @@ elif [ "$1" = "api" ]; then if [ -f "$rd/api-fail" ]; then exit 1; fi; echo "{\\
 fi
 `,
   );
+  // A fake curl: a host listed in <dir>/reach answers, any other is refused. By default the
+  // firewall holds: api.github.com answers and example.com does not.
+  writeFileSync(
+    join(bin, "curl"),
+    `#!/usr/bin/env bash
+echo "$*" >>"${dir}/curl.log"
+url=""; for a in "$@"; do case "$a" in http://* | https://*) url="$a" ;; esac; done
+host="\${url#*://}"; host="\${host%%/*}"
+if [ -n "$host" ] && grep -qxF "$host" "${dir}/reach"; then exit 0; fi
+echo "curl: (7) Failed to connect to $host port 443 after 2 ms: Couldn't connect to server" >&2
+exit 7
+`,
+  );
   chmodSync(join(bin, "claude"), 0o755);
   chmodSync(join(bin, "gh"), 0o755);
-  for (const f of ["gh.log", "claude.log", "claude.cwd.log"])
+  chmodSync(join(bin, "curl"), 0o755);
+  writeFileSync(join(dir, "reach"), "api.github.com\n");
+  for (const f of ["gh.log", "claude.log", "claude.cwd.log", "curl.log"])
     writeFileSync(join(dir, f), "");
   writeFileSync(join(dir, "sessions.json"), "[]");
+  mkdirSync(fakeHome());
 });
 
 afterEach(() => {
@@ -107,6 +125,7 @@ function exec({ dry = false, env = {} }: ExecOpts = {}) {
     encoding: "utf8",
     env: {
       ...process.env,
+      HOME: fakeHome(),
       EXTRA_PATH: extraPath(),
       STATE_DIR: join(dir, "state"),
       CLAUDE_WORKFLOW_CONFIG: join(dir, "repos.json"),
@@ -315,7 +334,7 @@ describe("agent-poller conflict phase", () => {
   }
 
   const CONFLICT_LAUNCH =
-    "--bg --name app-5-conflict --model opus --effort xhigh /ticket-workflow:resolve-conflicts 5";
+    "--bg --name app-5-conflict --model opus --effort xhigh --permission-mode auto /ticket-workflow:resolve-conflicts 5";
 
   it("launches resolve-conflicts for a CONFLICTING issue PR and records it", () => {
     const r = runConflict({});
@@ -685,7 +704,7 @@ describe("agent-poller CI phase", () => {
   it("launches `app-N-ci` for a red PR and writes `launched.json` and `ci-attempts.json` (AC1)", () => {
     const r = runCi({});
     expect(r.launches).toStrictEqual([
-      "--bg --name app-5-ci --model opus --effort xhigh /ticket-workflow:fix-ci 5",
+      "--bg --name app-5-ci --model opus --effort xhigh --permission-mode auto /ticket-workflow:fix-ci 5",
     ]);
     expect(r.state["ci-5"]).toMatchObject({ name: "app-5-ci", pr: "9" });
     expect(r.ciAttempts).toStrictEqual({ 9: { headSha: "head1", count: 1 } });
@@ -752,13 +771,13 @@ describe("agent-poller multiple repos", () => {
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(
       r.stdout.includes(
-        `[dry-run] (cd ${ea.dir} && claude --bg --name a-3 --model opus --effort xhigh "/ticket-workflow:work-ticket 3")`,
+        `[dry-run] (cd ${ea.dir} && claude --bg --name a-3 --model opus --effort xhigh --permission-mode auto "/ticket-workflow:work-ticket 3")`,
       ),
       r.stdout,
     ).toBe(true);
     expect(
       r.stdout.includes(
-        `[dry-run] (cd ${eb.dir} && claude --bg --name b-6 --model opus --effort xhigh "/ticket-workflow:work-ticket 6 auto")`,
+        `[dry-run] (cd ${eb.dir} && claude --bg --name b-6 --model opus --effort xhigh --permission-mode auto "/ticket-workflow:work-ticket 6 auto")`,
       ),
       r.stdout,
     ).toBe(true);
@@ -778,8 +797,8 @@ describe("agent-poller multiple repos", () => {
     const r = exec();
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(readLines("claude.log").sort()).toStrictEqual([
-      "--bg --name a-5 --model opus --effort xhigh /ticket-workflow:work-ticket 5",
-      "--bg --name b-5 --model opus --effort xhigh /ticket-workflow:work-ticket 5",
+      "--bg --name a-5 --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 5",
+      "--bg --name b-5 --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 5",
     ]);
     const cwds = readLines("claude.cwd.log");
     expect(cwds.some((l) => l.startsWith(`${realpath(ea.dir)}|`) && l.includes("a-5"))).toBe(true);
@@ -830,7 +849,7 @@ describe("agent-poller multiple repos", () => {
     expect(r.status).not.toBe(0);
     expect(/\[a\] .*poll failed/.test(r.stdout), r.stdout).toBe(true);
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name b-6 --model opus --effort xhigh /ticket-workflow:work-ticket 6",
+      "--bg --name b-6 --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 6",
     ]);
     // errexit is active inside the failed repo: it stopped at the failing call.
     expect(!gh().some((c) => c.startsWith("pr list --repo org/alpha"))).toBe(true);
@@ -848,7 +867,7 @@ describe("agent-poller launch flags", () => {
   const writeIssues = (repo: string, issues: unknown[]) =>
     writeFileSync(join(rdir(repo), "issues.json"), JSON.stringify(issues));
 
-  it("launches with exactly --model opus --effort xhigh, ignoring CLAUDE_BG_FLAGS and CLAUDE_ALLOW_BYPASS_PERMISSIONS", () => {
+  it("launches with exactly --model opus --effort xhigh --permission-mode auto, ignoring CLAUDE_BG_FLAGS and CLAUDE_ALLOW_BYPASS_PERMISSIONS", () => {
     configure([A]);
     writeIssues(A.repo, [ready(1)]);
     const r = exec({
@@ -859,7 +878,7 @@ describe("agent-poller launch flags", () => {
     });
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name a-1 --model opus --effort xhigh /ticket-workflow:work-ticket 1",
+      "--bg --name a-1 --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 1",
     ]);
   });
 
@@ -867,7 +886,7 @@ describe("agent-poller launch flags", () => {
     configure([A]);
     writeIssues(A.repo, [ready(1)]);
     const r = exec();
-    expect(r.stdout).toMatch(/#1: launching a-1 \(flags: --model opus --effort xhigh\)/);
+    expect(r.stdout).toMatch(/#1: launching a-1 \(flags: --model opus --effort xhigh --permission-mode auto\)/);
   });
 
   it("logs the launch flags on conflict launches too", () => {
@@ -900,7 +919,7 @@ describe("agent-poller launch flags", () => {
     );
     const r = exec();
     expect(r.status, r.stdout + r.stderr).toBe(0);
-    expect(r.stdout).toMatch(/launching a-5-conflict \(flags: --model opus --effort xhigh\)/);
+    expect(r.stdout).toMatch(/launching a-5-conflict \(flags: --model opus --effort xhigh --permission-mode auto\)/);
   });
 });
 
@@ -975,7 +994,7 @@ describe("agent-poller session cap", () => {
     r = exec({ env });
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name a-3 --model opus --effort xhigh /ticket-workflow:work-ticket 3",
+      "--bg --name a-3 --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 3",
     ]);
     expect(tracked("a").sort()).toStrictEqual(["1", "3"]);
   });
@@ -1018,8 +1037,8 @@ describe("agent-poller session cap", () => {
     const r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name a-1 --model opus --effort xhigh /ticket-workflow:work-ticket 1",
-      "--bg --name a-2 --model opus --effort xhigh /ticket-workflow:work-ticket 2",
+      "--bg --name a-1 --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 1",
+      "--bg --name a-2 --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 2",
     ]);
     expect(r.stdout).toMatch(/\[b\] deferred #3: at session cap/);
   });
@@ -1034,8 +1053,8 @@ describe("agent-poller session cap", () => {
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(r.stdout).toMatch(/\[a\] deferred #2: at session cap/);
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name b-3 --model opus --effort xhigh /ticket-workflow:work-ticket 3",
-      "--bg --name b-4 --model opus --effort xhigh /ticket-workflow:work-ticket 4",
+      "--bg --name b-3 --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 3",
+      "--bg --name b-4 --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 4",
     ]);
   });
 
@@ -1044,7 +1063,7 @@ describe("agent-poller session cap", () => {
     writeIssues(A.repo, [ready(1), ready(2)]);
     const r = exec();
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name a-1 --model opus --effort xhigh /ticket-workflow:work-ticket 1",
+      "--bg --name a-1 --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 1",
     ]);
     expect(r.stdout).toMatch(/deferred #2: at session cap/);
   });
@@ -1080,7 +1099,7 @@ describe("agent-poller session cap", () => {
     const r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name a-3 --model opus --effort xhigh /ticket-workflow:work-ticket 3",
+      "--bg --name a-3 --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 3",
     ]);
   });
 
@@ -1134,7 +1153,7 @@ describe("agent-poller session cap", () => {
     r = exec({ env: { CLAUDE_MAX_SESSIONS: "2" } });
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(readLines("claude.log")).toStrictEqual([
-      "--bg --name a-5-conflict --model opus --effort xhigh /ticket-workflow:resolve-conflicts 5",
+      "--bg --name a-5-conflict --model opus --effort xhigh --permission-mode auto /ticket-workflow:resolve-conflicts 5",
     ]);
   });
 
@@ -1158,6 +1177,42 @@ describe("agent-poller session cap", () => {
       expect(readLines("claude.log")).toStrictEqual([]);
     });
   }
+});
+
+describe("agent-poller firewall preflight", () => {
+  const readyIssue = [{ number: 1, author: { login: APP.owner }, labels: [{ name: "agent-ok" }, { name: "ready" }] }];
+  const reach = (...hosts: string[]) => writeFileSync(join(dir, "reach"), hosts.map((h) => `${h}\n`).join(""));
+
+  it("refuses to launch, naming the URL, when https://example.com is reachable", () => {
+    configure();
+    writeFileSync(join(rdir(APP.repo), "issues.json"), JSON.stringify(readyIssue));
+    reach("api.github.com", "example.com");
+    const r = exec();
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(r.stdout).toContain("https://example.com");
+    expect(readLines("claude.log")).toStrictEqual([]);
+  });
+
+  it("refuses to launch, naming the URL, when https://api.github.com is not reachable", () => {
+    configure();
+    writeFileSync(join(rdir(APP.repo), "issues.json"), JSON.stringify(readyIssue));
+    reach();
+    const r = exec();
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(r.stdout).toContain("https://api.github.com");
+    expect(readLines("claude.log")).toStrictEqual([]);
+  });
+
+  it("a dry run logs that the firewall preflight passed", () => {
+    configure();
+    writeFileSync(join(rdir(APP.repo), "issues.json"), JSON.stringify(readyIssue));
+    const r = exec({ dry: true });
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/firewall preflight passed/i);
+    const urls = readLines("curl.log").join("\n");
+    expect(urls).toContain("https://api.github.com");
+    expect(urls).toContain("https://example.com");
+  });
 });
 
 describe("agent-poller entrypoint", () => {

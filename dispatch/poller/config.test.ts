@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { expandHome, parseConfig, parseMaxSessions } from "./config.ts";
+import { expandHome, LAUNCH_FLAGS, parseConfig, parseMaxSessions } from "./config.ts";
 
 const ok = { repo: "org/app", dir: "/work/app", sessionPrefix: "app", owner: "me" };
 const parse = (value: unknown, dirExists = (_dir: string) => true) =>
@@ -111,5 +111,11 @@ describe("parseMaxSessions", () => {
 
   it.each(["0", "abc", "-1", "1.5", "01", " 3"])("rejects %j", (raw) => {
     expect(() => parseMaxSessions(raw)).toThrow(`CLAUDE_MAX_SESSIONS='${raw}' is not a positive integer`);
+  });
+});
+
+describe("LAUNCH_FLAGS", () => {
+  it("LAUNCH_FLAGS asks for opus at xhigh effort in auto permission mode", () => {
+    expect(LAUNCH_FLAGS).toEqual(["--model", "opus", "--effort", "xhigh", "--permission-mode", "auto"]);
   });
 });

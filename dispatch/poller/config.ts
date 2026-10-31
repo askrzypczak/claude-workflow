@@ -4,8 +4,11 @@ import { readFileSync, statSync } from "node:fs";
 import { z } from "zod";
 import { parseJson } from "./schemas.ts";
 
-/** Every dispatched session starts on opus at xhigh effort. */
-export const LAUNCH_FLAGS = ["--model", "opus", "--effort", "xhigh"];
+/**
+ * Every dispatched session starts on opus at xhigh effort, in auto permission mode: a session
+ * signed in with a setup token starts in manual mode otherwise, and stops at its first Bash call.
+ */
+export const LAUNCH_FLAGS = ["--model", "opus", "--effort", "xhigh", "--permission-mode", "auto"];
 
 const text = (error: string) => z.string({ error }).min(1, error);
 

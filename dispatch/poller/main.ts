@@ -1,15 +1,28 @@
 // Entry point, run by dispatch/agent-poller.sh: node dispatch/poller/main.ts [--dry-run]
-// Validates the config, takes the lock, fetches sessions once, then polls each repo.
-// A failure in one repo is logged and the others still run; the exit code is then 1.
+// Validates the config, checks the agent container's firewall, takes the lock, fetches sessions
+// once, then polls each repo. A failure in one repo is logged and the others still run; the exit
+// code is then 1.
 import { parseArgs } from "node:util";
 import { loadConfig, parseMaxSessions } from "./config.ts";
 import type { RepoConfig } from "./config.ts";
 import { liveByPrefix, liveCount } from "./decide.ts";
-import { acquireLock, createIo, listSessions, loadState, log, releaseLock } from "./io.ts";
+import { acquireLock, createIo, listSessions, loadState, log, reachable, releaseLock } from "./io.ts";
 import { pollRepo } from "./poll.ts";
 import type { Session } from "./schemas.ts";
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** On the agent container's allowlist; reading it does not count against GitHub's rate limit. */
+const ALLOWED = "https://api.github.com/rate_limit";
+/** Off the allowlist, so the firewall refuses it. */
+const REFUSED = "https://example.com";
+
+/** Why the firewall does not hold here, or undefined when it does. Sessions launch only behind it. */
+function firewallPreflight(): string | undefined {
+  if (!reachable(ALLOWED)) return `${ALLOWED} is not reachable, so sessions could not reach GitHub`;
+  if (reachable(REFUSED)) return `${REFUSED} is reachable, so this is not behind the agent container's firewall`;
+  return undefined;
+}
 
 interface RunOptions {
   stateDir: string;
@@ -77,11 +90,16 @@ function main(): number {
     log(`${message(err)}; aborting`);
     return 1;
   }
+  const refused = firewallPreflight();
+  if (refused !== undefined) {
+    log(`firewall preflight failed: ${refused}; launching nothing, aborting`);
+    return 1;
+  }
+  if (values["dry-run"]) log(`firewall preflight passed (${ALLOWED} reachable, ${REFUSED} refused)`);
   if (repos.length === 0) {
     log(`config ${configPath} has no repos; nothing to do`);
     return 0;
   }
-
   // No signal handlers: a signal ends the run at once, and the next run takes over the lock
   // its gone pid left behind.
   const lock = acquireLock(stateDir);

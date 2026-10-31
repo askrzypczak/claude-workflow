@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Poll GitHub for agent-ready tickets in every configured repo and start background
-# Claude Code sessions (visible in `claude agents`). Run from launchd. See dispatch/README.md.
+# Claude Code sessions (visible in `claude agents`). The launchd job runs it inside the agent
+# container through dispatch/launchd/job.sh. See dispatch/README.md.
 # Usage: dispatch/agent-poller.sh [--dry-run]
 #
 # This is a thin entrypoint: it sets PATH (launchd gives the job a minimal one) and runs

@@ -1,13 +1,13 @@
 [
   {
     "repo": "example-owner/example-app",
-    "dir": "~/Projects/example-app",
+    "dir": "/home/node/example-app",
     "sessionPrefix": "app",
     "owner": "example-owner"
   },
   {
     "repo": "example-owner/example-tools",
-    "dir": "~/Projects/example-tools",
+    "dir": "/home/node/example-tools",
     "sessionPrefix": "tools",
     "owner": "example-owner"
   }

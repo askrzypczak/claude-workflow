@@ -1,0 +1,35 @@
+{
+  "env": {
+    "CLAUDE_CODE_ENABLE_CFC": "0"
+  },
+  "permissions": {
+    "deny": [
+      "Read(~/.claude/.credentials.json)",
+      "Edit(~/.claude/.credentials.json)",
+      "Read(~/.config/claude-workflow/claude-agent.env)",
+      "Edit(~/.config/claude-workflow/claude-agent.env)",
+      "Read(~/Library/Application Support/Google/Chrome/**)",
+      "Edit(~/Library/Application Support/Google/Chrome/**)",
+      "Read(~/Library/Application Support/BraveSoftware/**)",
+      "Edit(~/Library/Application Support/BraveSoftware/**)",
+      "Read(~/Library/Application Support/Arc/**)",
+      "Edit(~/Library/Application Support/Arc/**)",
+      "Read(~/Library/Application Support/Microsoft Edge/**)",
+      "Edit(~/Library/Application Support/Microsoft Edge/**)",
+      "Read(~/Library/Application Support/Firefox/**)",
+      "Edit(~/Library/Application Support/Firefox/**)",
+      "Read(~/Library/Safari/**)",
+      "Edit(~/Library/Safari/**)",
+      "Read(~/Library/Cookies/**)",
+      "Edit(~/Library/Cookies/**)",
+      "Edit(~/.gitconfig)",
+      "Edit(~/.config/git/**)",
+      "Edit(//**/.git/hooks/**)",
+      "Edit(//**/.git/config)",
+      "Bash(git fetch *--upl*)",
+      "Bash(git pull *--upl*)",
+      "Bash(git push *--rece*)",
+      "Bash(git push *--e*)"
+    ]
+  }
+}
