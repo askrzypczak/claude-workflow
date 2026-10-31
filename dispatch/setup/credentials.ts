@@ -1,5 +1,6 @@
-// The credentials phase: pause dispatch, the restrict-updates ruleset, the fine-grained
-// token, the pre-swap test, the login swap, the stray-token scan and the after-swap checks.
+// The credentials phase: pause dispatch, the protect-main check and the restrict-updates
+// ruleset, the fine-grained token, the pre-swap test, the login swap, the stray-token scan and
+// the after-swap checks.
 // docs/agent-credentials.md gives the reasons; this file carries them out.
 import { join } from "node:path";
 import { z } from "zod";
@@ -13,9 +14,15 @@ const HOST = "github.com";
 const LAUNCHD = "dispatch/install-launchd.sh";
 const FINE_GRAINED = "github_pat_";
 const RULESET = "restrict-updates";
+/** The ruleset that requires a pull request on the default branch, with nothing bypassing it. */
+const PROTECT_MAIN = "protect-main";
 
-/** The Repository admin role, which may bypass only by merging a pull request. */
-const ADMIN_BYPASS = { actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "pull_request" };
+/**
+ * The Repository admin role, exempt from restrict-updates: GitHub skips the ruleset's rules for
+ * that role, so a browser merge shows no bypass box. protect-main is then what refuses direct
+ * updates to the default branch by the admin identity and by deploy keys with write access.
+ */
+const ADMIN_BYPASS = { actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "exempt" };
 
 /** The ruleset that stops a workflow's GITHUB_TOKEN from updating the default branch. */
 const RESTRICT_UPDATES = {
@@ -72,10 +79,13 @@ interface Account {
   fineGrained: boolean;
 }
 const RepoInfo = z.object({
+  default_branch: z.string(),
   permissions: z.object({ admin: z.boolean().optional() }).optional(),
   allow_auto_merge: z.boolean().optional(),
 });
 const RulesetList = z.array(z.object({ id: z.number(), name: z.string() }));
+/** `rules/branches/<branch>`: the rules that apply to a branch, each with its ruleset's id. */
+const BranchRules = z.array(z.object({ type: z.string(), ruleset_id: z.number() }));
 const Rule = z.object({ type: z.string(), parameters: z.record(z.string(), z.unknown()).nullish() });
 const BypassActor = z.object({
   actor_id: z.number().nullish(),
@@ -254,7 +264,7 @@ function matchesWanted(r: Ruleset): boolean {
 
 /** Step 2 under an admin login: create restrict-updates, or put it back when it drifted. */
 function ensureRuleset(p: Pass, repo: string, existing: Ruleset | undefined): boolean {
-  const shape = "an update rule on the default branch; only the Repository admin role bypasses, for pull requests only";
+  const shape = "an update rule on the default branch; only the Repository admin role bypasses it, in exempt mode";
   if (existing && matchesWanted(existing)) {
     p.say("already", `${repo}: ${RULESET} is in place (${shape})`);
     return true;
@@ -300,8 +310,8 @@ function ensureAutoMergeOff(p: Pass, repo: string, allowAutoMerge: boolean | und
 
 /**
  * The ruleset checks a login without admin rights can make: it exists, it is active, it holds
- * the update rule and this login may bypass it only by pull request. With `bypassList`, also
- * the bypass list when GitHub returns it.
+ * the update rule and this login's bypass reads exempt. With `bypassList`, also the bypass
+ * list when GitHub returns it.
  */
 function checkRuleset(p: Pass, repo: string, r: Ruleset | undefined, prefix: string, bypassList: boolean): boolean {
   const fix = "fix it in the browser (Settings > Rules > Rulesets), then rerun";
@@ -317,29 +327,71 @@ function checkRuleset(p: Pass, repo: string, r: Ruleset | undefined, prefix: str
   check(r.enforcement === "active", "enforcement is active", `enforcement is ${r.enforcement}, not active`);
   check((r.rules ?? []).some(isUpdateRule), "has the update rule", "has no update rule (Restrict updates)");
   const bypass = r.current_user_can_bypass ?? "not returned";
-  check(
-    bypass === "pull_requests_only",
-    "bypass for this login is pull_requests_only",
-    `bypass for this login is ${bypass}, not pull_requests_only`,
-  );
+  check(bypass === "exempt", "bypass for this login is exempt", `bypass for this login is ${bypass}, not exempt`);
   if (bypassList) {
     if (r.bypass_actors === undefined) {
       p.say(
         "note",
-        `${prefix}${repo}: GitHub returns the bypass list of ${RULESET} only to logins that can edit it: in the browser, check it is the Repository admin role alone, For pull requests only, with nothing in Always allow`,
+        `${prefix}${repo}: GitHub returns the bypass list of ${RULESET} only to logins that can edit it: in the browser, check it is the Repository admin role alone, in exempt mode`,
       );
     } else {
       check(
         r.bypass_actors.length === 1 && isAdminBypass(r.bypass_actors[0]!),
-        "bypass list is the Repository admin role alone, for pull requests only",
-        "bypass list is not the Repository admin role alone in pull_request mode",
+        "bypass list is the Repository admin role alone, in exempt mode",
+        "bypass list is not the Repository admin role alone in exempt mode",
       );
     }
   }
   return ok;
 }
 
-/** Step 2: per served repo, the ruleset and auto-merge; writes only under an admin login. */
+/**
+ * Step 2, before restrict-updates: some active ruleset on the default branch has a pull_request
+ * rule, reads current_user_can_bypass never for this login and, where GitHub returns it, has an
+ * empty bypass list. Reads only: a missing or bypassable ruleset is fixed in the browser.
+ */
+function checkProtectMain(p: Pass, repo: string, branch: string): boolean {
+  const todo = (text: string) => {
+    p.say("todo", `${repo}: ${PROTECT_MAIN}: ${text}: fix it in the browser (Settings > Rules > Rulesets), then rerun`);
+    return false;
+  };
+  // GitHub returns only the rules of active rulesets.
+  const ids = new Set(
+    ghJson(p, BranchRules, ["api", `repos/${repo}/rules/branches/${branch}`])
+      .filter((rule) => rule.type === "pull_request")
+      .map((rule) => rule.ruleset_id),
+  );
+  if (ids.size === 0) {
+    return todo(`no active ruleset on ${branch} has a pull_request rule (Require a pull request before merging)`);
+  }
+  const rulesets = [...ids].map((id) => ghJson(p, Ruleset, ["api", `repos/${repo}/rulesets/${id}`]));
+  const binding = rulesets.filter((r) => r.current_user_can_bypass === "never");
+  if (binding.length === 0) {
+    const read = rulesets.map((r) => `ruleset ${r.id} reads ${r.current_user_can_bypass ?? "not returned"}`);
+    return todo(
+      `this login can bypass every active ruleset with a pull_request rule on ${branch} (current_user_can_bypass: ${read.join(", ")}; none reads never)`,
+    );
+  }
+  const empty = binding.some((r) => r.bypass_actors?.length === 0);
+  const unlisted = binding.some((r) => r.bypass_actors === undefined);
+  if (!empty && !unlisted) {
+    const actors = new Set(binding.flatMap((r) => r.bypass_actors ?? []).map((a) => a.actor_type));
+    return todo(`the bypass list is not empty (${[...actors].join(", ")}), so those actors can bypass the pull_request rule on ${branch}`);
+  }
+  p.say(
+    "pass",
+    `${repo}: ${PROTECT_MAIN}: ${branch} has an active pull_request rule this login cannot bypass (current_user_can_bypass never)${empty ? ", and its bypass list is empty" : ""}`,
+  );
+  if (!empty) {
+    p.say(
+      "note",
+      `${repo}: GitHub returns a ruleset's bypass list only to logins that can edit it: in the browser, check that ${PROTECT_MAIN} has no bypass actors`,
+    );
+  }
+  return true;
+}
+
+/** Step 2: per served repo, the protect-main check, the ruleset and auto-merge; writes only under an admin login. */
 function rulesetStep(p: Pass, active: Account | undefined): boolean {
   if (active === undefined) {
     p.say("todo", `gh has no ${HOST} login: run gh auth login, then rerun`);
@@ -361,16 +413,23 @@ function rulesetStep(p: Pass, active: Account | undefined): boolean {
       continue;
     }
     const info = parseRead(RepoInfo, args, read);
-    const ruleset = readRuleset(p, repo);
-    if (!fineGrained && info.permissions?.admin === true) {
-      if (!ensureRuleset(p, repo, ruleset) || !ensureAutoMergeOff(p, repo, info.allow_auto_merge)) return false;
+    const admin = !fineGrained && info.permissions?.admin === true;
+    if (!admin) {
+      p.say(
+        "note",
+        `${repo}: this login has no admin rights here${fineGrained ? " (a fine-grained token never does)" : ""}, so nothing is changed and only the readable checks run`,
+      );
+    }
+    // With the admin role exempt from restrict-updates, protect-main must hold before
+    // restrict-updates is created or reset. Under --dry-run the would lines still follow.
+    const protectedMain = checkProtectMain(p, repo, info.default_branch);
+    ok = protectedMain && ok;
+    if (admin) {
+      if (!protectedMain && !p.dryRun) return false;
+      if (!ensureRuleset(p, repo, readRuleset(p, repo)) || !ensureAutoMergeOff(p, repo, info.allow_auto_merge)) return false;
       continue;
     }
-    p.say(
-      "note",
-      `${repo}: this login has no admin rights here${fineGrained ? " (a fine-grained token never does)" : ""}, so nothing is changed and only the readable checks run`,
-    );
-    ok = checkRuleset(p, repo, ruleset, "", false) && ok;
+    ok = checkRuleset(p, repo, readRuleset(p, repo), "", false) && ok;
     if (info.allow_auto_merge === undefined) {
       p.say("note", `${repo}: auto-merge unchecked: GitHub does not return allow_auto_merge to this login; check Settings > General in the browser`);
     } else if (info.allow_auto_merge) {
@@ -389,7 +448,7 @@ function skipRulesetStep(p: Pass, active: Account): void {
   for (const { repo } of p.repos) {
     p.say(
       "note",
-      `${repo}: the ${RULESET} and auto-merge step is skipped because GitHub refuses the stored login's token${active.error ? ` (${active.error})` : ""}; ${RULESET} is read back after the swap; auto-merge is unchecked: check Settings > General in the browser`,
+      `${repo}: the ${PROTECT_MAIN} check and the ${RULESET} and auto-merge step are skipped because GitHub refuses the stored login's token${active.error ? ` (${active.error})` : ""}; ${RULESET} is read back after the swap and a rerun checks ${PROTECT_MAIN}; auto-merge is unchecked: check Settings > General in the browser`,
     );
   }
 }
@@ -566,6 +625,7 @@ function preSwapTest(
   ], judgeRollup);
   check(`gh run view ${run} --log`, ["run", "view", String(run), ...R, "--log"]);
   check(`gh api repos/${repo}/commits/main`, ["api", `repos/${repo}/commits/main`, "--jq", ".sha"]);
+  check(`gh api repos/${repo}/rules/branches/main`, ["api", `repos/${repo}/rules/branches/main`]);
   check("gh label list", ["label", "list", ...R, "--limit", "5"]);
   check(`gh api repos/${repo}/rulesets`, ["api", `repos/${repo}/rulesets`]);
 

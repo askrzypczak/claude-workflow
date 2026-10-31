@@ -69,6 +69,20 @@ describe("credentials phase writes", () => {
     expect(JSON.parse(puts[0]!.input ?? "")).toEqual(JSON.parse(post!.input ?? ""));
   });
 
+  it("under an admin login a restrict-updates still in pull_request mode is reset to exempt with one PUT", () => {
+    const { calls } = run({
+      rulesets: [
+        protectMain(),
+        restrictUpdates({ bypass_actors: [{ actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "pull_request" }] }),
+      ],
+    });
+
+    const puts = apiCalls(calls, "PUT", `repos/${FAKE_REPO}/rulesets/${restrictUpdates().id}`);
+    expect(puts).toHaveLength(1);
+    const body = JSON.parse(puts[0]!.input ?? "") as Record<string, unknown>;
+    expect(body.bypass_actors).toEqual([{ actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "exempt" }]);
+  });
+
   it("deletes the pre-swap test comment by the id gh printed, as the new token", () => {
     const { calls } = run({
       respond: (c) =>
