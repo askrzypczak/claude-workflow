@@ -96,7 +96,13 @@ export function runSetup(
       console.log(`--- ${phase.name}${args.dryRun ? " (dry run)" : ""} ---`);
       if (phase.run(ctx) === "stop") {
         console.log(`Stopped in ${phase.name}: do the to-dos above, then rerun dispatch/setup-agents.sh.`);
-        dispatchPaused(base.io, base.clone);
+        try {
+          if (dispatchPaused(base.io, base.clone)) {
+            console.log("Dispatch stays paused until a full run of dispatch/setup-agents.sh passes every phase, or until dispatch/install-launchd.sh resume.");
+          }
+        } catch {
+          // The status read failed: the stop line above stands alone.
+        }
         return 1;
       }
     }

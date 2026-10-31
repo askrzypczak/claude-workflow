@@ -144,4 +144,24 @@ describe("runSetup", () => {
     expect(lines.some((line) => /paused/i.test(line))).toBe(false);
     expect(console.error).not.toHaveBeenCalled();
   });
+
+  it("a phase that stops when the dispatch status cannot be read prints the stop line alone", () => {
+    let statusReads = 0;
+    const { io } = fakeIo({
+      sessions: liveSession,
+      respond: (c) => {
+        if (!(c.cmd.endsWith("install-launchd.sh") && c.args[0] === "status")) return undefined;
+        statusReads++;
+        return statusReads > 1 ? { status: 1, stdout: "", stderr: "launchctl: boom" } : undefined;
+      },
+    });
+
+    expect(runSetup(["credentials"], base(io))).toBe(1);
+    expect(statusReads).toBeGreaterThan(1);
+    const lines = printed();
+    const stop = lines.findIndex(isStopLine);
+    expect(stop).toBeGreaterThanOrEqual(0);
+    expect(lines.slice(stop + 1)).toEqual([]);
+    expect(console.error).not.toHaveBeenCalled();
+  });
 });

@@ -10,7 +10,6 @@ import { z } from "zod";
 import { timestamp } from "../poller/io.ts";
 import { parseJson } from "../poller/schemas.ts";
 import { checkProtectMain, probeMerge, quiesce, tokenFormUrl } from "./credentials.ts";
-import type { MergeVerdict } from "./credentials.ts";
 import {
   claudeExec,
   cloneDir,
@@ -664,7 +663,7 @@ function sharedOwner(repos: readonly ServedRepo[]): string | undefined {
   return owners.size === 1 ? [...owners][0] : undefined;
 }
 
-/** What a failed wrong-sha merge tells the maintainer to do, per outcome. */
+/** What a failed merge probe tells the maintainer to do, per outcome. */
 interface ProbeAdvice {
   /** Who holds the token, as the lines name it. */
   whose: string;
@@ -672,39 +671,33 @@ interface ProbeAdvice {
   outcome: string;
   /** The fix when the token can merge. */
   canMerge: string;
-  /** The fix when the token cannot read a served repo's PRs. */
+  /** The fix when the probe is inconclusive: a 404 means the token cannot see the repo. */
   unseen: string;
 }
 
 /**
- * The wrong-sha merge with `token` only as GH_TOKEN, on the host: true when GitHub refused it
- * with 403, else a to-do with the advice for what it got.
+ * The merge probe with `token` only as GH_TOKEN, on the host: true when GitHub refused it with
+ * 403 on every served repo, else a to-do with the advice for what it got.
  */
 function mergeRefused(p: Pass, token: string, advice: ProbeAdvice): boolean {
   const { whose, outcome } = advice;
-  let verdict: MergeVerdict;
-  try {
-    verdict = probeMerge(p.io, p.repos, { env: { GH_TOKEN: token } });
-  } catch (err) {
-    p.say("todo", `gh: with ${whose}, ${message(err)}, and ${outcome}: ${advice.unseen}`);
-    return false;
-  }
+  const verdict = probeMerge(p.io, p.repos, { env: { GH_TOKEN: token } });
   switch (verdict.kind) {
     case "refused":
-      p.say("pass", `gh: a wrong-sha merge of ${verdict.where} with ${whose} was refused with 403: it cannot merge`);
+      p.say("pass", `gh: the merge probe on ${verdict.where} with ${whose} was refused with 403: it cannot merge`);
       return true;
     case "can-merge":
-      p.say("todo", `gh: a wrong-sha merge of ${verdict.where} with ${whose} got ${verdict.code ?? "a success"}: the token can merge, and ${outcome}. ${advice.canMerge}`);
+      p.say("todo", `gh: the merge probe on ${verdict.where} with ${whose} got ${verdict.code ?? "a success"}: the token can merge, and ${outcome}. ${advice.canMerge}`);
       return false;
     case "inconclusive":
-      p.say("todo", `gh: the wrong-sha merge of ${verdict.where} with ${whose} was inconclusive (${verdict.answer}), and ${outcome}: rerun when an open PR is mergeable`);
+      p.say("todo", `gh: the merge probe on ${verdict.where} with ${whose} was inconclusive (${verdict.answer}), and ${outcome}: ${advice.unseen}`);
       return false;
   }
 }
 
 /**
- * The container's one fine-grained login, probed again on every run: its token must not be able
- * to merge.
+ * The container's one fine-grained login, probed with the merge probe again on every run: its
+ * token must not be able to merge.
  */
 function existingLoginStep(p: Pass, login: string): boolean {
   const whose = `the container's ${GH_HOST} login ${login} (its fine-grained token)`;
@@ -730,17 +723,18 @@ function existingLoginStep(p: Pass, login: string): boolean {
 }
 
 /**
- * The container's own fine-grained gh login: a pasted token is refused unless a wrong-sha merge
- * with it gets 403, and an existing login's token is probed the same way on every run.
+ * The container's own fine-grained gh login: a pasted token is refused unless the merge probe
+ * with it gets 403 on every served repo, and an existing login's token is probed the same way on
+ * every run.
  */
 function ghStep(p: Pass): boolean {
   const name = `claude-workflow-container-${timestamp(new Date()).slice(0, 10)}`;
   const login = `gh auth login --hostname ${GH_HOST} --with-token in the container as node, the token on stdin`;
-  const probe = "check that a wrong-sha merge with it is refused with 403 (it runs on the host with the token only as GH_TOKEN, and a token that can merge is never stored)";
+  const probe = "check that the merge probe with it (a ref creation at an all-zero sha) is refused with 403 on each served repo (it runs on the host with the token only as GH_TOKEN, and a token that can merge is never stored)";
   if (!p.live) {
     p.say(
       "would",
-      `gh: if the container has one fine-grained login, read its token as node and check that a wrong-sha merge with it is refused with 403; else open the pre-filled token form (${name}), read the token at a hidden prompt, ${probe}, then ${login}`,
+      `gh: if the container has one fine-grained login, read its token as node and check that the merge probe with it (a ref creation at an all-zero sha) is refused with 403 on each served repo; else open the pre-filled token form (${name}), read the token at a hidden prompt, ${probe}, then ${login}`,
     );
     return true;
   }

@@ -77,6 +77,24 @@ describe("container phase secrets", () => {
     expect(reports.some((r) => r.text.includes(FAKE_TOKEN))).toBe(false);
   });
 
+  it("a pasted token whose merge probe is inconclusive is refused and never reaches the container", () => {
+    const notFound = (c: FakeCall) =>
+      isMergeProbe(c) && c.env.GH_TOKEN === FAKE_TOKEN
+        ? { status: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" }
+        : undefined;
+    const { result, calls, reports, fileOps, docker } = run(world({}, { secret: FAKE_TOKEN, respond: notFound }));
+
+    expect(result).toBe("stop");
+    expect(calls.some((c) => isMergeProbe(c) && c.env.GH_TOKEN === FAKE_TOKEN)).toBe(true);
+    expect(reports.some((r) => r.status === "todo" && /inconclusive/i.test(r.text))).toBe(true);
+    expect(calls.filter((c) => c.cmd === "docker").some((c) => carries(c, FAKE_TOKEN))).toBe(false);
+    expect(calls.some(isLogin)).toBe(false);
+    expect(docker.login()).toBeUndefined();
+    expect(calls.some((c) => c.args.some((a) => a.includes(FAKE_TOKEN)))).toBe(false);
+    expect(fileOps.some((o) => (o.text ?? "").includes(FAKE_TOKEN))).toBe(false);
+    expect(reports.some((r) => r.text.includes(FAKE_TOKEN))).toBe(false);
+  });
+
   it("a token that is not fine-grained is refused before any probe", () => {
     const classic = "ghp_fakeClassicTokenForTests0000000000";
     const { result, calls, reports, docker } = run(world({}, { secret: classic }));
@@ -109,7 +127,7 @@ describe("container phase secrets", () => {
     expect(docker.login()).toBe("fine-grained");
   });
 
-  it("an existing container login whose wrong-sha merge is not refused stops the phase", () => {
+  it("an existing container login whose merge probe is not refused stops the phase", () => {
     const { result, calls, reports, docker } = run(
       world({ ghLogin: "fine-grained" }, { merges: [FAKE_CONTAINER_TOKEN] }),
     );

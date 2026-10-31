@@ -116,8 +116,6 @@ const RollupEntry = z.object({ __typename: z.string().optional(), name: z.string
 const PrList = z.array(
   z.object({
     number: z.number(),
-    mergeable: z.string().optional(),
-    isDraft: z.boolean().optional(),
     labels: Named.optional(),
     statusCheckRollup: z.array(RollupEntry).optional(),
   }),
@@ -817,6 +815,11 @@ function scanStrayTokens(p: Pass): number {
   return found;
 }
 
+/** The ref the merge probe asks GitHub to create: outside refs/heads and refs/tags, so never a branch or tag. */
+const PROBE_REF = "refs/claude-workflow-probe/cannot-merge";
+/** The sha the merge probe names: no object has it, so GitHub never creates the ref. */
+const ZERO_SHA = "0".repeat(40);
+
 /** What the merge probe showed about a token. */
 export type MergeVerdict =
   | { kind: "refused"; where: string }
@@ -825,42 +828,56 @@ export type MergeVerdict =
 
 /**
  * The merge probe on every served repo, in order, run with `opts` (the token as GH_TOKEN, when
- * given): a ref create at the all-zero sha, which GitHub never makes.
+ * given): a ref create at the all-zero sha, which GitHub never makes. A repo that refuses it is
+ * passed over; the first that does not decides.
  */
 export function probeMerge(io: SetupIo, repos: readonly ServedRepo[], opts?: RunOptions): MergeVerdict {
-  throw new Error("not implemented");
+  for (const { repo } of repos) {
+    const result = io.run("gh", [
+      "api", "-X", "POST", `repos/${repo}/git/refs`, "-f", `ref=${PROBE_REF}`, "-f", `sha=${ZERO_SHA}`,
+    ], opts);
+    const code = /HTTP (\d{3})/.exec(result.stderr)?.[1];
+    if (result.status !== 0 && code === "403") continue;
+    if (result.status === 0 || code === "422") return { kind: "can-merge", where: repo, code };
+    return { kind: "inconclusive", where: repo, answer: answer(result) };
+  }
+  return { kind: "refused", where: repos.map((r) => r.repo).join(", ") };
 }
 
 /** True when install-launchd.sh status shows dispatch disabled and not loaded; throws when the status read fails. */
 export function dispatchPaused(io: SetupIo, clone: string): boolean {
-  throw new Error("not implemented");
+  const status = io.run(join(clone, LAUNCHD), ["status"]);
+  if (status.status !== 0) throw new Error(`${LAUNCHD} status failed: ${answer(status)}`);
+  const loaded = /^Loaded:\s*yes/m.test(status.stdout);
+  const disabled = /^Disabled:\s*yes/m.test(status.stdout);
+  return disabled && !loaded;
 }
 
-/** Step 7: the wrong-sha merge on an open, mergeable PR must be refused with 403. */
+/** Step 7: the merge probe on each served repo must be refused with 403. */
 function mergeProbe(p: Pass): boolean {
   const verdict = probeMerge(p.io, p.repos);
   switch (verdict.kind) {
     case "refused":
-      p.say("pass", `after-swap: a wrong-sha merge of ${verdict.where} was refused with 403: the token cannot merge`);
+      p.say("pass", `after-swap: the merge probe (creating ${PROBE_REF} at an all-zero sha) on ${verdict.where} was refused with 403: the token cannot merge`);
       return true;
     case "can-merge":
       p.say(
         "todo",
-        `after-swap: a wrong-sha merge of ${verdict.where} got ${verdict.code ?? "a success"}: the token can merge. Log it out now (gh auth logout --hostname ${HOST}) and check its permissions: Contents must be read`,
+        `after-swap: the merge probe on ${verdict.where} got ${verdict.code ?? "a success"}: the token has Contents write and can merge. Log it out now (gh auth logout --hostname ${HOST}) and check its permissions: Contents must be read`,
       );
       return false;
     case "inconclusive":
-      p.say("todo", `after-swap: the wrong-sha merge of ${verdict.where} was inconclusive (${verdict.answer}): rerun when an open PR is mergeable`);
+      p.say("todo", `after-swap: the merge probe on ${verdict.where} was inconclusive (${verdict.answer}): check that the token can read ${verdict.where}, then rerun`);
       return false;
   }
 }
 
-/** Step 7: one fine-grained login, a refused merge, and each repo's ruleset read back. */
+/** Step 7: one fine-grained login, the merge probe refused on each served repo, and each repo's ruleset read back. */
 function afterSwapChecks(p: Pass): boolean {
   if (p.dryRun) {
     p.say(
       "would",
-      `after-swap checks: gh auth status shows one ${HOST} login, with a fine-grained token; a wrong-sha merge on an open, mergeable PR is refused with 403; each served repo's ${RULESET} reads back as set`,
+      `after-swap checks: gh auth status shows one ${HOST} login, with a fine-grained token; the merge probe on each served repo (a ref creation at an all-zero sha) is refused with 403; each served repo's ${RULESET} reads back as set`,
     );
     return true;
   }
