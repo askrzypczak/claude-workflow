@@ -166,11 +166,12 @@ check_dig() {
   local out code
   out=$(as_node dig +time=3 +tries=1 @1.1.1.1 example.com 2>&1)
   code=$?
-  if [ "$code" -ne 0 ]; then
+  # Exit 9 is dig's "no reply from the server"; anything else, such as a missing dig, is a failure.
+  if [ "$code" -eq 9 ] || printf '%s\n' "$out" | grep -q 'no servers could be reached'; then
     detail="dig exit $code ($(lastline "$out"))"
     return 0
   fi
-  detail="dig @1.1.1.1 answered: $(oneline "$out")"
+  detail="dig @1.1.1.1 did not fail for want of a reply: exit $code: $(oneline "$out")"
   return 1
 }
 
@@ -324,10 +325,11 @@ member_timeout() {
 check_entry_timeout() {
   # 12 times the 5 s refresh interval the containers here start with.
   local max=60 addr first second
-  # Root, because only root can list the allowlist: one of api.github.com's current addresses.
-  addr=$(docker exec "$main" sh -c 'dig +short A api.github.com | grep -E "^[0-9.]+$" | head -n 1')
+  # Root, because only root can list the allowlist: its first member that is a single address.
+  addr=$(docker exec "$main" ipset list fw-https 2>/dev/null \
+    | awk '/^Members:/ { members = 1; next } members && !found && $1 !~ /\// { print $1; found = 1 }')
   if [ -z "$addr" ]; then
-    detail="api.github.com did not resolve in the container"
+    detail="fw-https has no member that is a single address"
     return 1
   fi
   first=$(member_timeout "$addr")
@@ -392,17 +394,21 @@ check_not_writable() {
   # shellcheck disable=SC2086 # $path_dirs is a list of words
   out=$(as_node sh -c 'for p; do if [ ! -e "$p" ]; then echo "missing $p"; elif [ -w "$p" ]; then echo "writable $p"; fi; done' sh \
     /usr/local/bin/entrypoint.sh /usr/local/bin/init-firewall.sh /usr/local/bin/claude \
-    /usr/local/libexec/claude-code /usr/local/libexec $path_dirs "$cwd" /run /run/init-firewall 2>&1)
+    /usr/local/libexec/claude-code /usr/local/libexec $path_dirs "$cwd" /run /run/init-firewall /root 2>&1)
   if [ -n "$out" ]; then
     detail=$(oneline "$out")
     return 1
   fi
-  detail="not writable: entrypoint.sh, init-firewall.sh, claude and the binary it runs, PATH ($path_dirs), working directory $cwd, the firewall's state directory /run/init-firewall and /run"
+  detail="not writable: entrypoint.sh, init-firewall.sh, claude and the binary it runs, PATH ($path_dirs), working directory $cwd, the firewall's state directory /run/init-firewall and /run, the refresher's HOME /root"
 }
 
+# claude started as root must run as uid 1000 with empty effective and bounding capability sets,
+# NoNewPrivs set and HOME /home/node.
 check_claude_guard() {
   local c=$prefix-claude-guard out want
-  start "$c" "${run_flags[@]}" || { detail="docker run failed"; return 1; }
+  # Without --security-opt no-new-privileges: docker applies it to every exec, so NoNewPrivs would
+  # read 1 even if the wrapper did not set it.
+  start "$c" --init --cap-add=NET_ADMIN --cap-add=NET_RAW || { detail="docker run failed"; return 1; }
   if ! wait_applied "$c" 1; then
     detail="the container did not start: $(lastline "$(docker logs "$c" 2>&1)")"
     return 1
@@ -412,6 +418,8 @@ check_claude_guard() {
 #!/bin/sh
 id -u
 awk '$1 == "CapEff:" { print $2 }' /proc/$$/status
+awk '$1 == "CapBnd:" { print $2 }' /proc/$$/status
+awk '$1 == "NoNewPrivs:" { print $2 }' /proc/$$/status
 echo "$HOME"
 PROBE
   then
@@ -419,8 +427,8 @@ PROBE
     return 1
   fi
   out=$(docker exec "$c" claude 2>&1)
-  want=$(printf '1000\n0000000000000000\n/home/node')
-  detail="claude as root printed: $(oneline "$out")"
+  want=$(printf '1000\n0000000000000000\n0000000000000000\n1\n/home/node')
+  detail="claude as root printed uid, CapEff, CapBnd, NoNewPrivs and HOME: $(oneline "$out")"
   [ "$out" = "$want" ]
 }
 
