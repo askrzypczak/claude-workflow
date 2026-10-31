@@ -69,7 +69,7 @@ A consuming project needs:
 
 The maintainer runs these in a terminal in the main clone, never from an agent session. [Onboarding a repo](../dispatch/README.md#onboarding-a-repo) has the detail of each phase.
 
-1. Before starting: Node 24 and `npm ci` in the clone. Colima started with `colima start --cpu 4 --memory 4 --disk 40 --mount none`; `docker context show` prints `colima`, and `colima ssh -- mount` shows no `virtiofs`, `9p` or `sshfs` mount. An admin `gh` login. The dispatch config, with `/home/node/<name>` dirs. In a served repo, an open, mergeable PR for the wrong-sha merge probes, and an open PR with a `test` check run, an open issue and a completed workflow run for the pre-swap test ([Verify](agent-credentials.md#verify)).
+1. Before starting: Node 24 and `npm ci` in the clone. Colima started with `colima start --cpu 4 --memory 4 --disk 40 --mount none`; `docker context show` prints `colima`, and `colima ssh -- mount` shows no `virtiofs`, `9p` or `sshfs` mount. An admin `gh` login. The dispatch config, with `/home/node/<name>` dirs. In a served repo, an open PR with a `test` check run, an open issue and a completed workflow run for the pre-swap test ([Verify](agent-credentials.md#verify)).
 2. `dispatch/setup-agents.sh --dry-run`: every step it would take, changing nothing.
 3. With every Claude Code session closed, on the host and in the agent container: `dispatch/setup-agents.sh`, the full run of `credentials`, `host`, `container` and `check`. It stops at the first step that needs the maintainer: do what it prints and rerun.
 4. `dispatch/install-launchd.sh install`, which starts polling.

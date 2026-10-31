@@ -13,7 +13,7 @@
 // - stray-token to-dos name what was found: the variable, the file, "keychain".
 import { describe, expect, it, vi } from "vitest";
 import { credentials, judgePrChecks, judgeRollup } from "./credentials.ts";
-import { FAKE_LOGIN, FAKE_REPO, FAKE_TOKEN, fakeIo, parseGhApi, protectMain, restrictUpdates, writeCalls } from "./fake-io.ts";
+import { FAKE_LOGIN, FAKE_REPO, FAKE_TOKEN, fakeIo, isMergeProbe, parseGhApi, protectMain, restrictUpdates, writeCalls } from "./fake-io.ts";
 import type { FakeCall, FakeWorld } from "./fake-io.ts";
 import type { RunResult } from "./io.ts";
 import type { SetupContext } from "./main.ts";
@@ -242,7 +242,7 @@ describe("credentials phase", () => {
       for (const value of values) expect(report.text).not.toContain(value);
     }
     // The after-swap checks still run in the same pass.
-    expect(calls.some((c) => api(c)?.method === "PUT" && /\/pulls\/\d+\/merge$/.test(api(c)!.endpoint))).toBe(true);
+    expect(calls.some(isMergeProbe)).toBe(true);
   });
 
   it("under the fine-grained login the ruleset step writes nothing and reports protect-main, enforcement, bypass as exempt and auto-merge as it could check them, with a note to check protect-main's bypass list in the browser", () => {
