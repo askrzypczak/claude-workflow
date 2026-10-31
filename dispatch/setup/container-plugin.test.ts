@@ -26,7 +26,7 @@ function setup(docker: FakeDocker = {}, dispatch: "paused" | "running" = "paused
     files: { [ENV_PATH]: "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-fake-token-for-tests\n" },
     docker: { ghLogin: "fine-grained", ...docker },
   });
-  const ctx: SetupContext = { io: fake.io, dryRun: false, clone: CLONE, home: FAKE_HOME, repos: [{ repo: FAKE_REPO, dir: CLONE }] };
+  const ctx: SetupContext = { io: fake.io, dryRun: false, clone: CLONE, home: FAKE_HOME, repos: [{ repo: FAKE_REPO }] };
   return { ...fake, run: () => container.run(ctx) };
 }
 

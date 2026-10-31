@@ -40,8 +40,8 @@ function setup(w: FakeWorld, opts: { dryRun?: boolean } = {}) {
     clone: CLONE,
     home: FAKE_HOME,
     repos: [
-      { repo: FAKE_REPO, dir: CLONE },
-      { repo: OTHER_REPO, dir: OTHER },
+      { repo: FAKE_REPO },
+      { repo: OTHER_REPO },
     ],
   };
   return { ...fake, ctx, run: (more: Partial<SetupContext> = {}) => container.run({ ...ctx, ...more }) };
@@ -205,7 +205,7 @@ describe("container phase", () => {
     const from = calls.length;
     expect(run({ rebuild: true })).toBe("ok");
     const second = calls.slice(from);
-    const builds = second.filter((c) => isDocker(c, "build") || (c.args[0] === "buildx" && c.args[1] === "build"));
+    const builds = second.filter((c) => isDocker(c, "build"));
     expect(builds.length).toBeGreaterThan(0);
     expect(builds.some((c) => c.args.includes("--pull") && c.args.includes("--no-cache"))).toBe(true);
     const runs = second.filter((c) => isDocker(c, "run"));

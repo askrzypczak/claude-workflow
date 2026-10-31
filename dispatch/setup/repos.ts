@@ -6,8 +6,6 @@ import type { SetupIo } from "./io.ts";
 export interface ServedRepo {
   /** owner/name */
   repo: string;
-  /** This repo's host clone; any other repo's clone in the agent container. */
-  dir: string;
 }
 
 const REMOTES = [
@@ -34,7 +32,7 @@ export function parseRemote(url: string): string | undefined {
  */
 export function servedRepos(
   io: SetupIo,
-  opts: { clone: string; configPath: string; home: string },
+  opts: { clone: string; configPath: string },
 ): ServedRepo[] {
   const origin = io.run("git", ["-C", opts.clone, "remote", "get-url", "origin"]);
   if (origin.status !== 0) {
@@ -43,7 +41,7 @@ export function servedRepos(
   const url = origin.stdout.trim();
   const own = parseRemote(url);
   if (own === undefined) throw new Error(`origin remote '${url}' of ${opts.clone} is not a github.com repo`);
-  const repos: ServedRepo[] = [{ repo: own, dir: opts.clone }];
+  const repos: ServedRepo[] = [{ repo: own }];
 
   const text = io.readFile(opts.configPath);
   if (text === undefined) {
@@ -60,7 +58,7 @@ export function servedRepos(
         `config ${opts.configPath}: dir '${entry.dir}' (repo ${entry.repo}) is not the container clone: the poller runs in ${CONTAINER}, so set it to "${clone}"`,
       );
     }
-    if (served === undefined) repos.push({ repo: entry.repo, dir: entry.dir });
+    if (served === undefined) repos.push({ repo: entry.repo });
   }
   return repos;
 }

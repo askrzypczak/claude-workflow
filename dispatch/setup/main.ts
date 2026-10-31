@@ -14,7 +14,7 @@ import type { SetupIo } from "./io.ts";
 import { servedRepos } from "./repos.ts";
 import type { ServedRepo } from "./repos.ts";
 
-export type PhaseResult = "ok" | "stop";
+type PhaseResult = "ok" | "stop";
 
 export interface SetupContext {
   io: SetupIo;
@@ -82,7 +82,7 @@ export function runSetup(
     return 2;
   }
   try {
-    const repos = servedRepos(base.io, base);
+    const repos = servedRepos(base.io, { clone: base.clone, configPath: base.configPath });
     const ctx: SetupContext = {
       io: base.io,
       dryRun: args.dryRun,

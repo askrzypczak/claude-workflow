@@ -20,7 +20,7 @@ function run(world: FakeWorld) {
     dryRun: false,
     clone: CLONE,
     home: HOME,
-    repos: [{ repo: FAKE_REPO, dir: CLONE }],
+    repos: [{ repo: FAKE_REPO }],
   });
   return { ...fake, result };
 }

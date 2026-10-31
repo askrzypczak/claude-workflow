@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { FAKE_REPO, fakeIo } from "./fake-io.ts";
 import { servedRepos } from "./repos.ts";
 
-const opts = { clone: "/clone", configPath: "/config/repos.json", home: "/home/example" };
+const opts = { clone: "/clone", configPath: "/config/repos.json" };
 
 describe("servedRepos", () => {
   it("reads this repo from an https, ssh or ssh-alias origin", () => {
@@ -15,7 +15,7 @@ describe("servedRepos", () => {
     ]) {
       const { io } = fakeIo({ origin });
 
-      expect(servedRepos(io, opts), origin).toEqual([{ repo: FAKE_REPO, dir: "/clone" }]);
+      expect(servedRepos(io, opts), origin).toEqual([{ repo: FAKE_REPO }]);
     }
   });
 
@@ -28,7 +28,7 @@ describe("servedRepos", () => {
   it("serves only this repo when the config file is missing, and says so", () => {
     const { io, reports } = fakeIo();
 
-    expect(servedRepos(io, opts)).toEqual([{ repo: FAKE_REPO, dir: "/clone" }]);
+    expect(servedRepos(io, opts)).toEqual([{ repo: FAKE_REPO }]);
     expect(reports.filter((r) => r.status === "note")).toHaveLength(1);
   });
 
@@ -40,8 +40,8 @@ describe("servedRepos", () => {
     const { io } = fakeIo({ files: { [opts.configPath]: config } });
 
     expect(servedRepos(io, opts)).toEqual([
-      { repo: FAKE_REPO, dir: "/clone" },
-      { repo: "example-owner/example-app", dir: "/home/node/example-app" },
+      { repo: FAKE_REPO },
+      { repo: "example-owner/example-app" },
     ]);
   });
 
@@ -53,9 +53,9 @@ describe("servedRepos", () => {
     const { io, fileOps } = fakeIo({ files: { [opts.configPath]: config } });
 
     expect(servedRepos(io, opts)).toEqual([
-      { repo: FAKE_REPO, dir: "/clone" },
-      { repo: "example-owner/example-app", dir: "/home/node/example-app" },
-      { repo: "example-owner/example-site", dir: "/home/node/example-site" },
+      { repo: FAKE_REPO },
+      { repo: "example-owner/example-app" },
+      { repo: "example-owner/example-site" },
     ]);
     // The config's dirs are container paths: nothing on the host is read for them.
     expect(fileOps.filter((op) => op.path.startsWith("/home/node"))).toEqual([]);

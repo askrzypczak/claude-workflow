@@ -33,7 +33,6 @@ import type { ServedRepo } from "./repos.ts";
 
 /** The Claude token's env file, under the home directory. */
 export const ENV_FILE = ".config/claude-workflow/claude-agent.env";
-export { CONFIG_LABEL };
 
 /** Colima with no host directory mounted into its VM (dispatch/container/README.md, Verify). */
 const COLIMA_START = `colima ${COLIMA_ARGS.join(" ")}`;
@@ -72,7 +71,7 @@ function lastAnswer(result: RunResult): string {
 }
 
 /** The `docker run` arguments, with the env file and the config label's value. */
-export function runArgs(envFile: string, config: string): string[] {
+function runArgs(envFile: string, config: string): string[] {
   return [
     "run", "-d", "--name", CONTAINER, "--init",
     "--cap-add=NET_ADMIN", "--cap-add=NET_RAW", "--security-opt", "no-new-privileges",
@@ -91,7 +90,7 @@ function configDigest(envFile: string, envText: string): string {
 }
 
 /** The container's ~/.ssh/config: one alias per repo, each naming only that repo's deploy key. */
-export function sshConfig(repos: readonly { repo: string }[]): string {
+function sshConfig(repos: readonly { repo: string }[]): string {
   const blocks = repos.map(({ repo }) => {
     const name = repoName(repo);
     return [`Host github.com-${name}`, "  HostName github.com", "  User git", `  IdentityFile ~/.ssh/deploy-${name}`, "  IdentitiesOnly yes", ""].join("\n");

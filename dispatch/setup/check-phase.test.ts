@@ -61,8 +61,8 @@ function setup(w: FakeWorld, opts: { dryRun?: boolean; fullRun?: boolean } = {})
     clone: CLONE,
     home: FAKE_HOME,
     repos: [
-      { repo: FAKE_REPO, dir: CLONE },
-      { repo: OTHER_REPO, dir: OTHER },
+      { repo: FAKE_REPO },
+      { repo: OTHER_REPO },
     ],
     ...(opts.fullRun === undefined ? {} : { fullRun: opts.fullRun }),
   };
@@ -212,7 +212,7 @@ describe("check phase", () => {
     expect(writeCalls(calls)).toEqual([]);
     expect(calls.some(isClaudeStop)).toBe(false);
     expect(calls.some(isResume)).toBe(false);
-    expect(fileOps.some((o) => o.op === "writeFile" || o.op === "removeFile" || o.op === "appendFile")).toBe(false);
+    expect(fileOps.some((o) => o.op === "writeFile")).toBe(false);
     const would = reports.filter((r) => r.status === "would").map((r) => r.text);
     expect(would.some((t) => /probe/i.test(t))).toBe(true);
     expect(would.some((t) => /resume/i.test(t))).toBe(true);

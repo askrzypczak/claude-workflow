@@ -64,7 +64,7 @@ export function probeItems(): string[] {
 }
 
 /** One probe item's outcome. */
-export interface ProbeVerdict {
+interface ProbeVerdict {
   item: string;
   pass: boolean;
   detail: string;

@@ -12,8 +12,8 @@ const OTHER_REPO = "example-owner/example-other";
 const ENV_PATH = `${FAKE_HOME}/${ENV_FILE}`;
 const CLAUDE_TOKEN = "sk-ant-oat01-fake-token-for-tests";
 const REPOS: ServedRepo[] = [
-  { repo: FAKE_REPO, dir: CLONE },
-  { repo: OTHER_REPO, dir: OTHER },
+  { repo: FAKE_REPO },
+  { repo: OTHER_REPO },
 ];
 
 /** A Claude token in the env file and no gh login in the container. */

@@ -42,13 +42,13 @@
 //   [--since <StartedAt>]`: each start logs `startLog`; a start whose log has the failure line
 //   leaves the container exited. Ready lines go to stdout, failure lines to stderr.
 // - `docker exec [-i] [-t] [-u user] [-w dir] [-e K=V] <container> <command…>` runs in the
-//   running container: cat, test, ls, find, grep, head, stat -c %a, install -d, mkdir, chmod, rm,
-//   mv, printenv, `sh -c '…cat > "$1.tmp"…' <$0> <path>` (writes stdin to the last argument,
-//   mode 0600), ssh-keygen (-t creates a key, refusing an existing one; -y; -l), curl (only
+//   running container: cat, test, grep, stat -c %a, install -d, mkdir, rm, printenv,
+//   `sh -c '…cat > "$1.tmp"…' <$0> <path>` (writes stdin to the last argument,
+//   mode 0600), ssh-keygen (-t creates a key, refusing an existing one), curl (only
 //   `reach` hosts answer; /meta gives `metaKeys` as ssh_keys), git (ls-remote and clone through a
 //   `github.com-<name>` alias reach GitHub only with ~/.ssh/deploy-<name>, an ssh config block for
 //   the alias naming that key, a github.com line in known_hosts and the repo in `deployKeys`;
-//   `-C <dir> remote get-url origin`; `config --global`; fetch), gh (auth status|login|logout;
+//   `-C <dir> remote get-url origin`; `config --global`; fetch), gh (auth status|login;
 //   `auth token`, which prints the stored login's token only as node: FAKE_CONTAINER_TOKEN for a
 //   seeded fine-grained login, else the token logged in with; repo view in a clone) and claude (agents --json --all; --bg --name <n> …, which starts a
 //   session with a fresh id, records it in `launches` and writes `probe`'s text to
@@ -91,7 +91,7 @@ export interface FakePrompt {
 
 /** A file-system call on the fake: `path` is the file read or written (for copyFile, `from`). */
 export interface FakeFileOp {
-  op: "readFile" | "appendFile" | "copyFile" | "writeFile" | "removeFile";
+  op: "readFile" | "copyFile" | "writeFile";
   path: string;
   to?: string;
   text?: string;
@@ -236,10 +236,10 @@ export interface FakeWorld {
 /** The token of a container login the world seeds as `ghLogin: "fine-grained"`. */
 export const FAKE_CONTAINER_TOKEN = "github_pat_FAKE_CONTAINER_TOKEN_FOR_TESTS";
 /** The token of a container login the world seeds as `ghLogin: "classic"`. */
-export const FAKE_CONTAINER_CLASSIC_TOKEN = "gho_fakeContainerClassicTokenForTests";
+const FAKE_CONTAINER_CLASSIC_TOKEN = "gho_fakeContainerClassicTokenForTests";
 
 /** The image id `docker build` gives unless the world says otherwise. */
-export const FAKE_IMAGE_ID = `sha256:${"1".repeat(64)}`;
+const FAKE_IMAGE_ID = `sha256:${"1".repeat(64)}`;
 /** GitHub's meta `ssh_keys` unless the world says otherwise. */
 export const FAKE_META_KEYS = [
   "ssh-ed25519 AAAAC3FAKEMETAKEYFORTESTSed25519",
@@ -439,24 +439,20 @@ export function isMergeProbe(call: FakeCall): boolean {
  * Whether a call changes state. This is the definition of "write command" the setup tests
  * use: `install-launchd.sh` pause or resume; `gh api` with a POST, PUT, PATCH or DELETE
  * (explicit, or implied by a body) except the wrong-sha merge probe; `gh issue comment`;
- * `gh issue edit`; `gh pr edit`; `gh auth logout`; `gh auth login`; `open`; `ssh-keygen -t`
- * (generating a key); `pbcopy`; `ssh-add -d` or `-D`; `git ... remote set-url`; `git config`
- * setting a value; `chmod`; `mkdir`; every `sudo` call; a claude call that stops or starts a
- * session or installs, updates or removes a plugin or marketplace; and every docker call that
- * changes state: build, run, create, start, stop, restart, rm, kill, volume create or rm, and a
+ * `gh issue edit`; `gh pr edit`; `gh auth logout`; `gh auth login`; `open`; `pbcopy`;
+ * `git ... remote set-url`; `git config` setting a value; `chmod`; `mkdir`; and every docker
+ * call that changes state: build, run, create, start, stop, restart, rm, kill, volume create or rm, and a
  * `docker exec` whose command writes (install, mkdir, chmod, rm, mv, cp, tee, touch, a `sh -c`
  * redirect, `ssh-keygen -t`, git clone or config set, gh auth login or logout, and the claude
- * writes above).
+ * writes: stopping or starting a session, or installing, updating or removing a plugin or
+ * marketplace).
  */
-export function isWrite(call: FakeCall): boolean {
+function isWrite(call: FakeCall): boolean {
   const [a0, a1] = call.args;
   if (call.cmd.endsWith("install-launchd.sh")) return a0 === "pause" || a0 === "resume";
-  if (call.cmd === "open" || call.cmd === "pbcopy" || call.cmd === "sudo") return true;
+  if (call.cmd === "open" || call.cmd === "pbcopy") return true;
   if (call.cmd === "chmod" || call.cmd === "mkdir") return true;
   if (call.cmd === "docker") return isDockerWrite(call.args);
-  if (call.cmd === "claude") return isClaudeWrite(call.args);
-  if (call.cmd === "ssh-keygen") return call.args.includes("-t");
-  if (call.cmd.endsWith("ssh-add")) return call.args.includes("-d") || call.args.includes("-D");
   if (call.cmd === "git") {
     const i = call.args.indexOf("remote");
     if (i >= 0 && call.args[i + 1] === "set-url") return true;
@@ -478,11 +474,9 @@ export function writeCalls(calls: readonly FakeCall[]): FakeCall[] {
   return calls.filter(isWrite);
 }
 
-/** The file writes among `ops`: appendFile, copyFile, writeFile and removeFile. */
+/** The file writes among `ops`: copyFile and writeFile. */
 export function fileWrites(ops: readonly FakeFileOp[]): FakeFileOp[] {
-  return ops.filter(
-    (o) => o.op === "appendFile" || o.op === "copyFile" || o.op === "writeFile" || o.op === "removeFile",
-  );
+  return ops.filter((o) => o.op === "copyFile" || o.op === "writeFile");
 }
 
 const ok = (stdout = ""): RunResult => ({ status: 0, stdout, stderr: "" });
@@ -825,32 +819,17 @@ function createDocker(
     switch (a0) {
       case "info":
         return ok("Server Version: 28.3.0\nOperating System: colima\n");
-      case "version":
-        return ok("Client: 28.3.0\nServer: 28.3.0\n");
       case "build":
         return build(args);
       case "image":
         if (a1 === "build") return build(args.slice(1));
         if (a1 === "inspect") return inspectImage(args[args.length - 1] ?? "");
         break;
-      case "buildx":
-        if (a1 === "build") return build(args.slice(1));
-        break;
       case "container":
         if (a1 === "inspect") return inspect(args.slice(1), "container");
-        if (a1 !== undefined && ["run", "start", "stop", "rm", "logs", "exec", "ls"].includes(a1)) {
-          return run({ ...call, args: args.slice(1) });
-        }
         break;
       case "inspect":
         return inspect(args, undefined);
-      case "ps":
-      case "ls": {
-        const all = args.includes("-a") || args.includes("--all");
-        const shown = container !== undefined && (all || container.running);
-        if (!shown) return ok();
-        return ok(args.includes("-q") || args.includes("--quiet") ? `${container!.id}\n` : `${DOCKER_NAME}\n`);
-      }
       case "volume":
         return volume(args);
       case "run":
@@ -1044,56 +1023,6 @@ function createDocker(
           : false;
         return { status: holds !== negate ? 0 : 1, stdout: "", stderr: "" };
       }
-      case "ls": {
-        const flags = args.filter((a) => a.startsWith("-")).join("");
-        const dots = flags.includes("a") || flags.includes("A");
-        const paths = args.filter((a) => !a.startsWith("-")).map(abs);
-        let out = "";
-        for (const p of paths.length === 0 ? [at.cwd] : paths) {
-          if (home.files.has(p)) {
-            out += `${p}\n`;
-            continue;
-          }
-          if (!isDir(home, p)) return failed(`ls: cannot access '${p}': No such file or directory`, 2);
-          const names = entriesUnder(home, p)
-            .filter((e) => e.depth === 1)
-            .map((e) => e.path.slice(p.length + 1))
-            .filter((n) => dots || !n.startsWith("."));
-          out += names.map((n) => `${n}\n`).join("");
-        }
-        return ok(out);
-      }
-      case "find": {
-        const roots: string[] = [];
-        let i = 0;
-        while (i < args.length && !args[i]!.startsWith("-")) roots.push(abs(args[i++]!));
-        let maxDepth = Infinity;
-        let minDepth = 0;
-        let type: string | undefined;
-        let pattern: RegExp | undefined;
-        for (; i < args.length; i++) {
-          const a = args[i]!;
-          if (a === "-maxdepth") maxDepth = Number(args[++i]);
-          else if (a === "-mindepth") minDepth = Number(args[++i]);
-          else if (a === "-type") type = args[++i];
-          else if (a === "-name") {
-            const glob = args[++i] ?? "*";
-            pattern = new RegExp(`^${glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`);
-          }
-        }
-        let out = "";
-        for (const root of roots) {
-          if (!home.files.has(root) && !isDir(home, root)) return failed(`find: '${root}': No such file or directory`);
-          const all = [{ path: root, depth: 0, kind: (home.files.has(root) ? "f" : "d") as "f" | "d" }, ...entriesUnder(home, root)];
-          for (const e of all) {
-            if (e.depth > maxDepth || e.depth < minDepth) continue;
-            if (type !== undefined && e.kind !== type) continue;
-            if (pattern !== undefined && !pattern.test(e.path.slice(e.path.lastIndexOf("/") + 1))) continue;
-            out += `${e.path}\n`;
-          }
-        }
-        return ok(out);
-      }
       case "grep": {
         const flags = new Set<string>();
         let pattern: string | undefined;
@@ -1132,20 +1061,6 @@ function createDocker(
         }
         return { status: matched ? 0 : error ? 2 : 1, stdout: flags.has("q") ? "" : out, stderr: "" };
       }
-      case "head": {
-        let n = 10;
-        const paths: string[] = [];
-        for (let i = 0; i < args.length; i++) {
-          const a = args[i]!;
-          if (a === "-n") n = Number(args[++i]);
-          else if (/^-\d+$/.test(a)) n = Number(a.slice(1));
-          else if (!a.startsWith("-")) paths.push(abs(a));
-        }
-        const f = home.files.get(paths[0] ?? "");
-        if (f === undefined) return missing("head", paths[0] ?? "");
-        const lines = f.text.split("\n").slice(0, n);
-        return ok(lines.join("\n") + (f.text.split("\n").length > n ? "\n" : ""));
-      }
       case "stat": {
         const format = flagValue(args, "-c") ?? flagValue(args, "--format") ?? "%a";
         const p = abs(args[args.length - 1] ?? "");
@@ -1162,18 +1077,6 @@ function createDocker(
         for (const dir of dirs) {
           if (cmd === "mkdir" && !args.includes("-p") && !isDir(home, parentOf(dir))) return missing("mkdir", dir);
           home.dirs.set(dir, isDir(home, dir) && cmd === "mkdir" ? (home.dirs.get(dir) ?? mode) : mode);
-        }
-        return ok();
-      }
-      case "chmod": {
-        const [modeArg, ...paths] = args.filter((a) => !a.startsWith("-"));
-        const mode = Number.parseInt(modeArg ?? "", 8);
-        if (Number.isNaN(mode)) return unscripted();
-        for (const p of paths.map(abs)) {
-          const f = home.files.get(p);
-          if (f !== undefined) f.mode = mode;
-          else if (isDir(home, p)) home.dirs.set(p, mode);
-          else return failed(`chmod: cannot access '${p}': No such file or directory`);
         }
         return ok();
       }
@@ -1194,16 +1097,7 @@ function createDocker(
         }
         return ok();
       }
-      case "mv": {
-        const [from, to] = args.filter((a) => !a.startsWith("-")).map(abs);
-        const f = from === undefined ? undefined : home.files.get(from);
-        if (f === undefined || to === undefined) return missing("mv", from ?? "");
-        home.files.delete(from!);
-        home.files.set(to, f);
-        return ok();
-      }
-      case "sh":
-      case "bash": {
+      case "sh": {
         const i = args.indexOf("-c");
         const script = args[i + 1] ?? "";
         const positional = args.slice(i + 2);
@@ -1218,8 +1112,6 @@ function createDocker(
         const values = args.map((a) => at.env[a]);
         return values.every((v) => v !== undefined) ? ok(values.map((v) => `${v}\n`).join("")) : { status: 1, stdout: "", stderr: "" };
       }
-      case "env":
-        return args.length === 0 ? ok(Object.entries(at.env).map(([k, v]) => `${k}=${v}\n`).join("")) : unscripted();
       case "ssh-keygen":
         return keygen(home, args, abs);
       case "curl":
@@ -1252,8 +1144,6 @@ function createDocker(
     }
     const key = home.files.get(path);
     if (key === undefined) return failed(`${path}: No such file or directory`, 255);
-    if (args.includes("-y")) return ok(home.files.get(`${path}.pub`)?.text ?? `ssh-ed25519 AAAAFAKECONTAINER${base} ${comment}\n`);
-    if (args.some((a) => /^-[a-z]*l/.test(a))) return ok(`256 SHA256:FAKE${base} ${comment} (ED25519)\n`);
     return failed(`unscripted: ssh-keygen ${args.join(" ")}`, 127);
   };
 
@@ -1385,12 +1275,6 @@ function createDocker(
       home.token = token;
       return ok();
     }
-    if (a0 === "auth" && a1 === "logout") {
-      home.login = undefined;
-      home.token = undefined;
-      return ok();
-    }
-    if (a0 === "auth" && a1 === "setup-git") return ok();
     if (a0 === "repo" && a1 === "view") {
       if (home.login === undefined) return failed("To get started with GitHub CLI, please run:  gh auth login", 4);
       const named = args[2] !== undefined && !args[2].startsWith("-") ? args[2] : undefined;

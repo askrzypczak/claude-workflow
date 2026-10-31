@@ -26,8 +26,8 @@ const OTHER_REPO = "example-owner/example-other";
 const ENV_PATH = `${FAKE_HOME}/${ENV_FILE}`;
 const SSH = "/home/node/.ssh";
 const REPOS: ServedRepo[] = [
-  { repo: FAKE_REPO, dir: CLONE },
-  { repo: OTHER_REPO, dir: OTHER },
+  { repo: FAKE_REPO },
+  { repo: OTHER_REPO },
 ];
 
 /** A Claude token in the env file and a gh login in the container, so no step prompts. */
@@ -167,8 +167,8 @@ describe("container phase repo steps", () => {
 
   it("two repos with the same name part stop the phase before any key is generated", () => {
     const { result, calls, reports } = run(world(), [
-      { repo: "example-owner/tools", dir: CLONE },
-      { repo: "other-owner/tools", dir: OTHER },
+      { repo: "example-owner/tools" },
+      { repo: "other-owner/tools" },
     ]);
 
     expect(result).toBe("stop");
@@ -177,7 +177,7 @@ describe("container phase repo steps", () => {
   });
 
   it("a repo whose protect-main check fails stops the phase before its deploy key is generated", () => {
-    const { result, calls, reports } = run(world({}, { rulesets: [restrictUpdates()] }), [{ repo: FAKE_REPO, dir: CLONE }]);
+    const { result, calls, reports } = run(world({}, { rulesets: [restrictUpdates()] }), [{ repo: FAKE_REPO }]);
 
     expect(result).toBe("stop");
     expect(reports.some((r) => r.status === "todo" && /protect-main/i.test(r.text) && r.text.includes(FAKE_REPO))).toBe(true);

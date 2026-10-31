@@ -38,7 +38,7 @@ function fullRun(w: FakeWorld) {
     fullRun: true,
     clone: CLONE,
     home: FAKE_HOME,
-    repos: [{ repo: FAKE_REPO, dir: CLONE }],
+    repos: [{ repo: FAKE_REPO }],
   };
   return { ...fake, result: check.run(ctx) };
 }

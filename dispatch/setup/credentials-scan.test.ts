@@ -14,7 +14,7 @@ function scan(files: Record<string, string>) {
     dryRun: false,
     clone: "/clone",
     home: HOME,
-    repos: [{ repo: FAKE_REPO, dir: "/clone" }],
+    repos: [{ repo: FAKE_REPO }],
   });
   return { ...fake, result, todos: fake.reports.filter((r) => r.status === "todo").map((r) => r.text) };
 }
@@ -69,8 +69,8 @@ describe("stray-token scan of .mcp.json files", () => {
       clone: "/clone",
       home: HOME,
       repos: [
-        { repo: FAKE_REPO, dir: "/clone" },
-        { repo: APP, dir: APP_CLONE },
+        { repo: FAKE_REPO },
+        { repo: APP },
       ],
     });
     return {
