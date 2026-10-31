@@ -219,11 +219,7 @@ export function quiesce(
 ): boolean {
   const p = { ...ctx, say };
   const script = join(p.clone, LAUNCHD);
-  const status = p.io.run(script, ["status"]);
-  if (status.status !== 0) throw new Error(`${LAUNCHD} status failed: ${answer(status)}`);
-  const loaded = /^Loaded:\s*yes/m.test(status.stdout);
-  const disabled = /^Disabled:\s*yes/m.test(status.stdout);
-  if (disabled && !loaded) {
+  if (dispatchPaused(p.io, p.clone)) {
     p.say("already", "dispatch is paused");
   } else if (p.dryRun) {
     p.say("would", `pause dispatch: ${LAUNCHD} pause`);
@@ -821,46 +817,28 @@ function scanStrayTokens(p: Pass): number {
   return found;
 }
 
-/** What a wrong-sha merge showed about a token. */
+/** What the merge probe showed about a token. */
 export type MergeVerdict =
   | { kind: "refused"; where: string }
   | { kind: "can-merge"; where: string; code: string | undefined }
-  | { kind: "inconclusive"; where: string; answer: string }
-  | { kind: "no-pr"; computing: boolean };
+  | { kind: "inconclusive"; where: string; answer: string };
 
 /**
- * The wrong-sha merge on the first served repo's open, mergeable PR, run with `opts` (the token
- * as GH_TOKEN, when given). A draft is used only when no other open PR is mergeable: GitHub may
- * refuse a draft (405) before it checks the token.
+ * The merge probe on every served repo, in order, run with `opts` (the token as GH_TOKEN, when
+ * given): a ref create at the all-zero sha, which GitHub never makes.
  */
-export function wrongShaMerge(io: SetupIo, repos: readonly ServedRepo[], opts?: RunOptions): MergeVerdict {
-  let computing = false;
-  for (const { repo } of repos) {
-    const prs = ghJson({ io }, PrList, [
-      "pr", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", "number,mergeable,isDraft",
-    ], opts);
-    const mergeable = prs.filter((x) => x.mergeable === "MERGEABLE");
-    const pr = mergeable.find((x) => x.isDraft !== true) ?? mergeable[0];
-    if (pr === undefined) {
-      computing ||= prs.some((x) => x.mergeable === "UNKNOWN");
-      continue;
-    }
-    // A head sha that never matches, so GitHub never merges, whatever the token can do.
-    const result = io.run("gh", [
-      "api", "-X", "PUT", `repos/${repo}/pulls/${pr.number}/merge`, "-f", `sha=${"0".repeat(40)}`,
-    ], opts);
-    const code = /HTTP (\d{3})/.exec(result.stderr)?.[1];
-    const where = `${repo} PR #${pr.number}`;
-    if (result.status !== 0 && code === "403") return { kind: "refused", where };
-    if (result.status === 0 || code === "409") return { kind: "can-merge", where, code };
-    return { kind: "inconclusive", where, answer: answer(result) };
-  }
-  return { kind: "no-pr", computing };
+export function probeMerge(io: SetupIo, repos: readonly ServedRepo[], opts?: RunOptions): MergeVerdict {
+  throw new Error("not implemented");
+}
+
+/** True when install-launchd.sh status shows dispatch disabled and not loaded; throws when the status read fails. */
+export function dispatchPaused(io: SetupIo, clone: string): boolean {
+  throw new Error("not implemented");
 }
 
 /** Step 7: the wrong-sha merge on an open, mergeable PR must be refused with 403. */
 function mergeProbe(p: Pass): boolean {
-  const verdict = wrongShaMerge(p.io, p.repos);
+  const verdict = probeMerge(p.io, p.repos);
   switch (verdict.kind) {
     case "refused":
       p.say("pass", `after-swap: a wrong-sha merge of ${verdict.where} was refused with 403: the token cannot merge`);
@@ -873,14 +851,6 @@ function mergeProbe(p: Pass): boolean {
       return false;
     case "inconclusive":
       p.say("todo", `after-swap: the wrong-sha merge of ${verdict.where} was inconclusive (${verdict.answer}): rerun when an open PR is mergeable`);
-      return false;
-    case "no-pr":
-      p.say(
-        "todo",
-        verdict.computing
-          ? "after-swap: GitHub is still computing whether the open PRs can be merged (mergeable is UNKNOWN), so the wrong-sha merge has no PR yet: rerun in a minute"
-          : "after-swap: no served repo has an open, mergeable PR for the wrong-sha merge: open one, or resolve an open PR's conflicts, then rerun",
-      );
       return false;
   }
 }

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { probeItems } from "./check.ts";
-import { FAKE_REPO, fakeIo, fileWrites, writeCalls } from "./fake-io.ts";
-import type { FakeDocker } from "./fake-io.ts";
+import { FAKE_REPO, fakeIo, fileWrites, isMergeProbe, parseGhApi, writeCalls } from "./fake-io.ts";
+import type { FakeCall, FakeDocker } from "./fake-io.ts";
 import type { SetupIo } from "./io.ts";
 import { runSetup } from "./main.ts";
 
@@ -22,6 +22,14 @@ const readyContainer = (): FakeDocker => ({
   ghLogin: "fine-grained",
   probe: () => [...probeItems().map((i) => `SETUP-PROBE PASS ${i}: ok`), "SETUP-PROBE END", ""].join("\n"),
 });
+
+const PAUSED_LINE =
+  "Dispatch stays paused until a full run of dispatch/setup-agents.sh passes every phase, or until dispatch/install-launchd.sh resume.";
+const isStopLine = (line: string) => line.startsWith("Stopped in credentials:");
+const liveSession = [{ name: "tools-3", state: "running" as const, startedAt: 1 }];
+/** No served repo has an open PR. */
+const noPrs = (c: FakeCall) =>
+  c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "list" ? { status: 0, stdout: "[]\n", stderr: "" } : undefined;
 
 describe("runSetup", () => {
   beforeEach(() => {
@@ -93,5 +101,47 @@ describe("runSetup", () => {
 
     expect(runSetup(["credentials"], base(io))).toBe(1);
     expect(console.error).toHaveBeenCalledTimes(1);
+  });
+
+  it("a full run with no open PR in any served repo probes the login's token and goes on past credentials to the later phases", () => {
+    const { io, calls } = fakeIo({ login: "fine-grained", deployKeys: [FAKE_REPO], docker: readyContainer(), respond: noPrs });
+
+    runSetup([], base(io));
+    const headers = printed()
+      .map((line) => /^--- (\S+)/.exec(line)?.[1])
+      .filter((name) => name !== undefined);
+    expect(headers).toEqual(expect.arrayContaining(["credentials", "host", "container"]));
+    expect(printed().some(isStopLine)).toBe(false);
+    expect(console.error).not.toHaveBeenCalled();
+    const loginProbes = calls.filter((c) => isMergeProbe(c) && c.env.GH_TOKEN === undefined);
+    expect(loginProbes.map((c) => parseGhApi(c)!.endpoint)).toEqual([`repos/${FAKE_REPO}/git/refs`]);
+  });
+
+  it("a phase that stops while dispatch is paused says after the stop line that dispatch stays paused and how to resume it", () => {
+    const { io } = fakeIo({ dispatch: "paused", sessions: liveSession });
+
+    expect(runSetup(["credentials"], base(io))).toBe(1);
+    const lines = printed();
+    const stop = lines.findIndex(isStopLine);
+    expect(stop).toBeGreaterThanOrEqual(0);
+    expect(lines.slice(stop + 1)).toEqual([PAUSED_LINE]);
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("a phase that stops while dispatch runs prints nothing about pausing", () => {
+    const { io, calls } = fakeIo({
+      dispatch: "running",
+      respond: (c) =>
+        c.cmd.endsWith("install-launchd.sh") && c.args[0] === "pause"
+          ? { status: 1, stdout: "", stderr: "launchctl: permission denied" }
+          : undefined,
+    });
+
+    expect(runSetup(["credentials"], base(io))).toBe(1);
+    expect(calls.some((c) => c.cmd.endsWith("install-launchd.sh") && c.args[0] === "pause")).toBe(true);
+    const lines = printed();
+    expect(lines.findIndex(isStopLine)).toBe(lines.length - 1);
+    expect(lines.some((line) => /paused/i.test(line))).toBe(false);
+    expect(console.error).not.toHaveBeenCalled();
   });
 });

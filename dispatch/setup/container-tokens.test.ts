@@ -2,7 +2,7 @@
 // token for the container's login, the Claude token's env file, and the seeded ~/.claude.json.
 import { describe, expect, it } from "vitest";
 import { container, ENV_FILE, seedClaudeJson } from "./container.ts";
-import { FAKE_CONTAINER_TOKEN, FAKE_HOME, FAKE_REPO, FAKE_TOKEN, fakeIo, isMergeProbe, parseDockerExec } from "./fake-io.ts";
+import { FAKE_CONTAINER_TOKEN, FAKE_HOME, FAKE_REPO, FAKE_TOKEN, fakeIo, isMergeProbe, parseDockerExec, parseGhApi } from "./fake-io.ts";
 import type { FakeCall, FakeDocker, FakeWorld } from "./fake-io.ts";
 import type { ServedRepo } from "./repos.ts";
 
@@ -38,15 +38,34 @@ const isLogin = (c: FakeCall) => {
   const command = parseDockerExec(c)?.command ?? [];
   return command[0] === "gh" && command[1] === "auth" && command[2] === "login";
 };
-/** The wrong-sha merge answered with 409 when it runs as `token`. */
-const mergeable = (token: string) => (c: FakeCall) =>
-  isMergeProbe(c) && c.env.GH_TOKEN === token
-    ? { status: 1, stdout: "", stderr: "gh: Head branch was modified. Review and try the merge again. (HTTP 409)" }
-    : undefined;
+/** No served repo has an open PR. */
+const noPrs = (c: FakeCall) =>
+  c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "list" ? { status: 0, stdout: "[]\n", stderr: "" } : undefined;
+/** The repos the merge probe ran on as `token`, in order. */
+const probedAs = (calls: readonly FakeCall[], token: string) =>
+  calls
+    .filter((c) => isMergeProbe(c) && c.env.GH_TOKEN === token)
+    .map((c) => parseGhApi(c)!.endpoint);
+const EVERY_REPO_REFS = REPOS.map((r) => `repos/${r.repo}/git/refs`);
+const isPluginCommand = (c: FakeCall) => {
+  const command = parseDockerExec(c)?.command ?? [];
+  return command[0] === "claude" && command[1] === "plugin";
+};
 
 describe("container phase secrets", () => {
-  it("a pasted token whose wrong-sha merge gets 409 is refused and never reaches the container", () => {
-    const { result, calls, reports, fileOps, docker } = run(world({}, { secret: FAKE_TOKEN, respond: mergeable(FAKE_TOKEN) }));
+  it("with no open PR in any served repo, a pasted token refused with 403 on every served repo is stored in the container", () => {
+    const { result, calls, reports, docker } = run(world({}, { secret: FAKE_TOKEN, respond: noPrs }));
+
+    expect(result).toBe("ok");
+    expect(probedAs(calls, FAKE_TOKEN)).toEqual(EVERY_REPO_REFS);
+    expect(reports.some((r) => r.status === "todo")).toBe(false);
+    expect(calls.filter(isLogin)).toHaveLength(1);
+    expect(docker.login()).toBe("fine-grained");
+    expect(reports.some((r) => r.text.includes(FAKE_TOKEN))).toBe(false);
+  });
+
+  it("a pasted token whose merge probe gets 422 is refused and never reaches the container", () => {
+    const { result, calls, reports, fileOps, docker } = run(world({}, { secret: FAKE_TOKEN, merges: [FAKE_TOKEN] }));
 
     expect(result).toBe("stop");
     expect(calls.some((c) => isMergeProbe(c) && c.env.GH_TOKEN === FAKE_TOKEN)).toBe(true);
@@ -117,20 +136,14 @@ describe("container phase secrets", () => {
     expect(calls.some((c) => c.args.some((a) => a.includes(FAKE_CONTAINER_TOKEN)))).toBe(false);
   });
 
-  it("an existing container login with no open mergeable PR gets a note and the phase goes on to the plugin step", () => {
-    const noPrs = (c: FakeCall) =>
-      c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "list" ? { status: 0, stdout: "[]\n", stderr: "" } : undefined;
+  it("with no open PR in any served repo, an existing container login is probed and the phase goes on", () => {
     const { result, calls, reports, docker } = run(world({ ghLogin: "fine-grained" }, { respond: noPrs }));
 
     expect(result).toBe("ok");
-    expect(calls.some((c) => noPrs(c) !== undefined && c.env.GH_TOKEN === FAKE_CONTAINER_TOKEN)).toBe(true);
-    expect(reports.some((r) => r.status === "note" && /container/i.test(r.text) && /login/i.test(r.text))).toBe(true);
+    expect(probedAs(calls, FAKE_CONTAINER_TOKEN)).toEqual(EVERY_REPO_REFS);
     expect(reports.some((r) => r.status === "todo")).toBe(false);
     expect(docker.file("/home/node/.claude.json")).toBeDefined();
-    expect(calls.some((c) => {
-      const command = parseDockerExec(c)?.command ?? [];
-      return command[0] === "claude" && command[1] === "plugin";
-    })).toBe(true);
+    expect(calls.some(isPluginCommand)).toBe(true);
     expect(reports.some((r) => r.text.includes(FAKE_CONTAINER_TOKEN))).toBe(false);
     expect(calls.some((c) => c.args.some((a) => a.includes(FAKE_CONTAINER_TOKEN)))).toBe(false);
   });

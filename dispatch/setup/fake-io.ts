@@ -7,7 +7,8 @@
 // and `restrict-updates` in exempt mode in place, auto-merge off, an open mergeable PR with a
 // `test` CheckRun, an open issue, a run, labels, every pre-swap command passing, the
 // pasted token FAKE_TOKEN, a swap that leaves one fine-grained login, no stray tokens, and a
-// wrong-sha merge probe refused with HTTP 403 (409 for a GH_TOKEN listed in `merges`).
+// merge probe (a ref create at the all-zero sha) refused with HTTP 403 (422 for a GH_TOKEN
+// listed in `merges`).
 //
 // The ruleset model: a ruleset read gives `current_user_can_bypass` from the Repository admin
 // role's bypass mode, for every login (always, pull_requests_only, exempt, or never when the role
@@ -221,8 +222,8 @@ export interface FakeWorld {
   /** The host's global git config. Default FAKE_GIT_IDENTITY. */
   hostGit?: Record<string, string>;
   /**
-   * GH_TOKEN values whose wrong-sha merge GitHub answers with 409 (the token can merge). Every
-   * other merge probe gets 403. Default none.
+   * GH_TOKEN values whose merge probe GitHub answers with 422 (the token has Contents write, so
+   * it can merge). Every other merge probe gets 403. Default none.
    */
   merges?: string[];
   /** The docker world. Default none: the docker daemon is unreachable. */
@@ -423,13 +424,20 @@ export function parseGhApi(call: FakeCall): { method: string; endpoint: string }
   return { method: method ?? (hasBody ? "POST" : "GET"), endpoint };
 }
 
-/** The wrong-sha merge probe: a PUT on a PR's merge endpoint with sha forty zeros. */
+/** The ref the merge probe asks GitHub to create. */
+const PROBE_REF = "refs/claude-workflow-probe/cannot-merge";
+
+/**
+ * The merge probe: a POST on a repo's `git/refs` endpoint creating PROBE_REF at sha forty zeros,
+ * which GitHub never creates, whatever the token can do.
+ */
 export function isMergeProbe(call: FakeCall): boolean {
   const api = parseGhApi(call);
   return (
     api !== undefined &&
-    api.method === "PUT" &&
-    /\/pulls\/\d+\/merge$/.test(api.endpoint) &&
+    api.method === "POST" &&
+    /^repos\/[^/]+\/[^/]+\/git\/refs$/.test(api.endpoint) &&
+    call.args.some((a) => a === `ref=${PROBE_REF}`) &&
     call.args.some((a) => a === `sha=${"0".repeat(40)}`)
   );
 }
@@ -437,7 +445,7 @@ export function isMergeProbe(call: FakeCall): boolean {
 /**
  * Whether a call changes state. This is the definition of "write command" the setup tests
  * use: `install-launchd.sh` pause or resume; `gh api` with a POST, PUT, PATCH or DELETE
- * (explicit, or implied by a body) except the wrong-sha merge probe; `gh issue comment`;
+ * (explicit, or implied by a body) except the merge probe; `gh issue comment`;
  * `gh issue edit`; `gh pr edit`; `gh auth logout`; `gh auth login`; `open`; `pbcopy`;
  * `git ... remote set-url`; `git config` setting a value; `chmod`; `mkdir`; and every docker
  * call that changes state: build, run, create, start, stop, restart, rm, kill, volume create or rm, and a
@@ -1506,9 +1514,9 @@ export function fakeIo(world: FakeWorld = {}) {
           ),
       );
     }
-    if (rest[0] === "pulls" && rest[2] === "merge" && method === "PUT") {
+    if (isMergeProbe(call)) {
       if (call.env.GH_TOKEN !== undefined && world.merges?.includes(call.env.GH_TOKEN)) {
-        return failed("gh: Head branch was modified. Review and try the merge again. (HTTP 409)");
+        return failed("gh: Object does not exist (HTTP 422)");
       }
       return failed("gh: Resource not accessible by personal access token (HTTP 403)");
     }

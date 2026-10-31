@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { check } from "./check.ts";
 import { container } from "./container.ts";
-import { credentials } from "./credentials.ts";
+import { credentials, dispatchPaused } from "./credentials.ts";
 import { host } from "./host.ts";
 import { createIo } from "./io.ts";
 import type { SetupIo } from "./io.ts";
@@ -96,6 +96,7 @@ export function runSetup(
       console.log(`--- ${phase.name}${args.dryRun ? " (dry run)" : ""} ---`);
       if (phase.run(ctx) === "stop") {
         console.log(`Stopped in ${phase.name}: do the to-dos above, then rerun dispatch/setup-agents.sh.`);
+        dispatchPaused(base.io, base.clone);
         return 1;
       }
     }
