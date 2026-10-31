@@ -7,7 +7,6 @@ import type { FakeCall, FakeDocker, FakeWorld } from "./fake-io.ts";
 import type { ServedRepo } from "./repos.ts";
 
 const CLONE = "/clone";
-const OTHER = "/work/example-other";
 const OTHER_REPO = "example-owner/example-other";
 const ENV_PATH = `${FAKE_HOME}/${ENV_FILE}`;
 const CLAUDE_TOKEN = "sk-ant-oat01-fake-token-for-tests";

@@ -365,7 +365,6 @@ function isDockerWrite(args: readonly string[]): boolean {
   if (a0 === "container") return isDockerWrite(args.slice(1));
   if (a0 === "volume") return a1 === "create" || a1 === "rm" || a1 === "remove" || a1 === "prune";
   if (a0 === "image") return a1 === "build" || a1 === "rm" || a1 === "prune" || a1 === "pull" || a1 === "tag";
-  if (a0 === "buildx") return a1 === "build";
   return DOCKER_WRITES.has(a0 ?? "");
 }
 

@@ -11,7 +11,6 @@ import type { FakeCall, FakeDocker, FakeWorld } from "./fake-io.ts";
 import type { SetupContext } from "./main.ts";
 
 const CLONE = "/clone";
-const OTHER = "/work/example-other";
 const OTHER_REPO = "example-owner/example-other";
 const FIRST = "/home/node/example-tools";
 const INSTALL_LAUNCHD = `${CLONE}/dispatch/install-launchd.sh`;
