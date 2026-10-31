@@ -23,6 +23,7 @@ docker run -d --name claude-workflow-agent --init \
 - The entrypoint runs as root, with `NET_ADMIN` and `NET_RAW`, only to apply the firewall and refresh it. Sessions run as `node`, which holds no capabilities and cannot change the rules or signal the entrypoint.
 - `claude-workflow-home` is a named volume holding `/home/node`, so clones, logins and Claude Code's state survive a restart or a rebuild.
 - Add no bind mounts and do not mount the Docker socket.
+- The `container` phase of `dispatch/setup-agents.sh` runs it with these flags plus `--env-file ~/.config/claude-workflow/claude-agent.env` (the Claude token), `-e FORCE_AUTOUPDATE_PLUGINS=1` and a `claude-workflow.config` label, whose change makes the phase replace the container.
 - The entrypoint takes no arguments. It re-resolves the allowlist every `FIREWALL_REFRESH_SECONDS` (default 300; set it with `-e`). GitHub's address ranges come from `api.github.com/meta`, which allows 60 unauthenticated requests an hour per IP address, so they are fetched on every start but at most hourly on a refresh.
 
 Wait for the readiness line before the first `docker exec`:
@@ -54,7 +55,7 @@ docker exec -it -w /home/node/<repo> claude-workflow-agent claude agents
 
 ## Allowlist
 
-The allowlist is in `init-firewall.sh`.
+The allowlist is in `init-firewall.sh`. [The allowlist](../../docs/containers.md#the-allowlist) gives the reason for each host and the firewall's limits.
 
 ## Verify
 
