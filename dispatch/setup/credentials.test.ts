@@ -5,8 +5,10 @@
 //   "token" (the token form and prompt), "pre-swap" (the pre-swap test), "login" (the swap),
 //   "after-swap" (the after-swap checks);
 // - `already` lines: "restrict-updates" and "auto-merge";
-// - readable ruleset checks: `pass` lines naming "enforcement" and "bypass"; auto-merge left
-//   unchecked is a line naming "auto-merge" and "unchecked";
+// - the protect-main check: lines naming "protect-main" (and, for its to-dos, the repo); under
+//   the fine-grained login, a `note` naming "protect-main", "bypass" and "browser";
+// - readable ruleset checks: `pass` lines naming "enforcement" and "bypass" (with "exempt");
+//   auto-merge left unchecked is a line naming "auto-merge" and "unchecked";
 // - a live session's to-do names its fix, `claude stop <name>`;
 // - stray-token to-dos name what was found: the variable, the file, "keychain".
 import { describe, expect, it, vi } from "vitest";
@@ -48,7 +50,7 @@ const settingWrites = (calls: readonly FakeCall[]) =>
   });
 
 describe("credentials phase", () => {
-  it('runSetup(["credentials", "--dry-run"]) reports a would line for every step and runs no write command', () => {
+  it('runSetup(["credentials", "--dry-run"]) reports a would line for every step and a protect-main check line, and runs no write command', () => {
     const { io, calls, reports, prompts } = fakeIo({ dispatch: "running", rulesets: [protectMain()] });
 
     runSetup(["credentials", "--dry-run"], {
@@ -64,6 +66,7 @@ describe("credentials phase", () => {
     for (const keyword of [/pause/i, /restrict-updates/i, /token/i, /pre-swap/i, /login/i, /after-swap/i]) {
       expect(would.some((t) => keyword.test(t)), `a would line matching ${keyword}`).toBe(true);
     }
+    expect(reports.some((r) => r.status === "pass" && /protect-main/i.test(r.text) && r.text.includes(FAKE_REPO))).toBe(true);
   });
 
   it("a re-run under an admin login with restrict-updates in place and auto-merge off makes no ruleset or auto-merge write", () => {
@@ -158,7 +161,7 @@ describe("credentials phase", () => {
     expect(judgePrChecks({ status: 1, stdout: `lint\tfail\t5s\t${url}\n`, stderr: "" })).toBe(false);
   });
 
-  it("a missing ruleset is created as restrict-updates with only an update rule and the Repository admin role bypassing in pull_request mode", () => {
+  it("a missing ruleset is created as restrict-updates with only an update rule and the Repository admin role as the only bypass actor, in exempt mode", () => {
     const { calls, ctx } = setup({ rulesets: [protectMain()] });
 
     credentials.run(ctx);
@@ -173,7 +176,7 @@ describe("credentials phase", () => {
     const conditions = body.conditions as { ref_name: { include: string[] } };
     expect(conditions.ref_name.include).toContain("~DEFAULT_BRANCH");
     expect(body.rules).toEqual([{ type: "update" }]);
-    expect(body.bypass_actors).toEqual([{ actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "pull_request" }]);
+    expect(body.bypass_actors).toEqual([{ actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "exempt" }]);
     const touchesOther = calls.filter((c) => {
       const a = api(c);
       return (
@@ -242,7 +245,7 @@ describe("credentials phase", () => {
     expect(calls.some((c) => api(c)?.method === "PUT" && /\/pulls\/\d+\/merge$/.test(api(c)!.endpoint))).toBe(true);
   });
 
-  it("under the fine-grained login the ruleset step writes nothing and reports enforcement, bypass and auto-merge as it could check them", () => {
+  it("under the fine-grained login the ruleset step writes nothing and reports protect-main, enforcement, bypass as exempt and auto-merge as it could check them, with a note to check protect-main's bypass list in the browser", () => {
     const { calls, reports, ctx } = setup({
       login: "fine-grained",
       confirm: false,
@@ -254,7 +257,10 @@ describe("credentials phase", () => {
     expect(settingWrites(calls)).toEqual([]);
     const passes = reports.filter((r) => r.status === "pass").map((r) => r.text);
     expect(passes.some((t) => /enforcement/i.test(t))).toBe(true);
-    expect(passes.some((t) => /bypass/i.test(t))).toBe(true);
+    expect(passes.some((t) => /protect-main/i.test(t) && t.includes(FAKE_REPO))).toBe(true);
+    expect(passes.some((t) => /bypass/i.test(t) && /exempt/i.test(t))).toBe(true);
+    const notes = reports.filter((r) => r.status === "note").map((r) => r.text);
+    expect(notes.some((t) => /protect-main/i.test(t) && /bypass/i.test(t) && /browser/i.test(t))).toBe(true);
     const autoMerge = reports.filter((r) => /auto-merge/i.test(r.text) && /unchecked/i.test(r.text));
     expect(autoMerge.length).toBeGreaterThan(0);
     for (const r of autoMerge) expect(["todo", "fail"]).not.toContain(r.status);

@@ -3,10 +3,17 @@
 // and every call, report and prompt is recorded.
 //
 // The happy path: dispatch already paused, no live sessions, origin example-owner/example-tools,
-// a classic admin login, `restrict-updates` in place and auto-merge off, an open mergeable PR
-// with a `test` CheckRun, an open issue, a run, labels, every pre-swap command passing, the
+// a classic admin login, `protect-main` (active, with a pull_request rule and no bypass actors)
+// and `restrict-updates` in exempt mode in place, auto-merge off, an open mergeable PR with a
+// `test` CheckRun, an open issue, a run, labels, every pre-swap command passing, the
 // pasted token FAKE_TOKEN, a swap that leaves one fine-grained login, no stray tokens, and a
 // wrong-sha merge probe refused with HTTP 403.
+//
+// The ruleset model: a ruleset read gives `current_user_can_bypass` from the Repository admin
+// role's bypass mode, for every login (always, pull_requests_only, exempt, or never when the role
+// is not a bypass actor), and `bypass_actors` only to the admin login. `rules/branches/<branch>`
+// returns the rules of every active branch ruleset whose include names `~DEFAULT_BRANCH`, `~ALL`
+// or `refs/heads/<branch>`, each tagged with its ruleset's id and source.
 //
 // The ssh model lives under FAKE_HOME: `files` is a mutable in-memory file system (read by
 // readFile, readFirstLine and listDir; written by appendFile, copyFile and the fake ssh-keygen),
@@ -153,13 +160,13 @@ export function restrictUpdates(overrides: Partial<FakeRuleset> = {}): FakeRules
     enforcement: "active",
     conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
     rules: [{ type: "update" }],
-    bypass_actors: [{ actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "pull_request" }],
+    bypass_actors: [{ actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "exempt" }],
     ...overrides,
   };
 }
 
 /** Another ruleset on the repo, which the credentials phase must leave alone. */
-export function protectMain(): FakeRuleset {
+export function protectMain(overrides: Partial<FakeRuleset> = {}): FakeRuleset {
   return {
     id: 100,
     name: "protect-main",
@@ -168,6 +175,7 @@ export function protectMain(): FakeRuleset {
     conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
     rules: [{ type: "deletion" }, { type: "non_fast_forward" }, { type: "pull_request" }],
     bypass_actors: [],
+    ...overrides,
   };
 }
 
@@ -305,18 +313,24 @@ export function fakeIo(world: FakeWorld = {}) {
       : accounts.some((a) => a.fineGrained);
 
   const rulesetView = (r: FakeRuleset, call: FakeCall) => {
-    const adminBypass = (r.bypass_actors ?? []).some(
-      (b) =>
+    const admin = (r.bypass_actors ?? []).find(
+      (b): b is Record<string, unknown> =>
         typeof b === "object" && b !== null &&
         (b as Record<string, unknown>).actor_type === "RepositoryRole" &&
         (b as Record<string, unknown>).actor_id === 5,
     );
+    const canBypass =
+      admin === undefined ? "never"
+      : admin.bypass_mode === "always" ? "always"
+      : admin.bypass_mode === "pull_request" ? "pull_requests_only"
+      : admin.bypass_mode === "exempt" ? "exempt"
+      : "never";
     const view: Record<string, unknown> = {
       ...r,
       source_type: "Repository",
       source: FAKE_REPO,
       node_id: `RRS_${r.id}`,
-      current_user_can_bypass: adminBypass ? "pull_requests_only" : "never",
+      current_user_can_bypass: canBypass,
       created_at: "2026-10-01T00:00:00Z",
       updated_at: "2026-10-01T00:00:00Z",
     };
@@ -372,6 +386,25 @@ export function fakeIo(world: FakeWorld = {}) {
         rulesets = rulesets.map((r) => (r.id === id ? updated : r));
         return json(rulesetView(updated, call));
       }
+    }
+    if (rest[0] === "rules" && rest[1] === "branches" && rest.length >= 3 && method === "GET") {
+      const branch = rest.slice(2).join("/");
+      const applies = (r: FakeRuleset) => {
+        const include = (r.conditions as { ref_name?: { include?: string[] } } | undefined)?.ref_name?.include ?? [];
+        return include.some((i) => i === "~DEFAULT_BRANCH" || i === "~ALL" || i === `refs/heads/${branch}`);
+      };
+      return json(
+        rulesets
+          .filter((r) => r.target === "branch" && r.enforcement === "active" && applies(r))
+          .flatMap((r) =>
+            (r.rules ?? []).map((rule) => ({
+              ...(rule as Record<string, unknown>),
+              ruleset_id: r.id,
+              ruleset_source_type: "Repository",
+              ruleset_source: repo,
+            })),
+          ),
+      );
     }
     if (rest[0] === "pulls" && rest[2] === "merge" && method === "PUT") {
       return failed("gh: Resource not accessible by personal access token (HTTP 403)");
