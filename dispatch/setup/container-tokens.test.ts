@@ -118,6 +118,24 @@ describe("container phase secrets", () => {
     expect(calls.some((c) => c.args.some((a) => a.includes(FAKE_CONTAINER_TOKEN)))).toBe(false);
   });
 
+  it("an existing container login with no open mergeable PR gets a note and the phase goes on to the plugin step", () => {
+    const noPrs = (c: FakeCall) =>
+      c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "list" ? { status: 0, stdout: "[]\n", stderr: "" } : undefined;
+    const { result, calls, reports, docker } = run(world({ ghLogin: "fine-grained" }, { respond: noPrs }));
+
+    expect(result).toBe("ok");
+    expect(calls.some((c) => noPrs(c) !== undefined && c.env.GH_TOKEN === FAKE_CONTAINER_TOKEN)).toBe(true);
+    expect(reports.some((r) => r.status === "note" && /container/i.test(r.text) && /login/i.test(r.text))).toBe(true);
+    expect(reports.some((r) => r.status === "todo")).toBe(false);
+    expect(docker.file("/home/node/.claude.json")).toBeDefined();
+    expect(calls.some((c) => {
+      const command = parseDockerExec(c)?.command ?? [];
+      return command[0] === "claude" && command[1] === "plugin";
+    })).toBe(true);
+    expect(reports.some((r) => r.text.includes(FAKE_CONTAINER_TOKEN))).toBe(false);
+    expect(calls.some((c) => c.args.some((a) => a.includes(FAKE_CONTAINER_TOKEN)))).toBe(false);
+  });
+
   it("the Claude token goes to the env file as CLAUDE_CODE_OAUTH_TOKEN with mode 0600, and no report holds it", () => {
     const { result, files, modes, reports, calls, prompts } = run(
       world({ ghLogin: "fine-grained" }, { files: {}, secret: CLAUDE_TOKEN }),
