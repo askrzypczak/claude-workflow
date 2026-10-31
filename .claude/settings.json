@@ -1,12 +1,4 @@
 {
-  "extraKnownMarketplaces": {
-    "askrzypczak-plugins": {
-      "source": { "source": "github", "repo": "askrzypczak/claude-workflow" }
-    }
-  },
-  "enabledPlugins": {
-    "ticket-workflow@askrzypczak-plugins": true
-  },
   "permissions": {
     "allow": [
       "Bash(gh issue view *)",

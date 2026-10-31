@@ -12,7 +12,7 @@ In Claude Code:
 From a shell:
 
     claude plugin marketplace add askrzypczak/claude-workflow
-    claude plugin install ticket-workflow@askrzypczak-plugins --scope project
+    claude plugin install ticket-workflow@askrzypczak-plugins --scope user
 
 Local development:
 
@@ -30,7 +30,7 @@ A consuming project needs:
 - Ticket labels, created with `plugins/ticket-workflow/scripts/setup-labels.sh [owner/repo]` (idempotent: existing labels are left untouched; `--update` overwrites their colour and description). See [Ticket conventions](../README.md#ticket-conventions).
 - `gh` and `jq` on PATH, and an SSH remote. `gh` starts with an admin login (`gh auth login`): the `credentials` phase of `dispatch/setup-agents.sh` uses it for the rulesets, then replaces it with a fine-grained token that cannot merge ([Agent credentials](agent-credentials.md)). After that, change the token by rerunning `dispatch/setup-agents.sh credentials`, never with plain `gh auth login`, which would store a token that can merge.
 - For dispatch: Node 24, Colima and Docker (`brew install colima docker`).
-- The plugin enabled in `.claude/settings.json`: `enabledPlugins` with `ticket-workflow@askrzypczak-plugins`, plus an `extraKnownMarketplaces` entry for `askrzypczak/claude-workflow`.
+- The plugin installed at user scope ([Install](#install)), once per machine; in the agent container the `container` phase installs it. The project's `.claude/settings.json` does not enable it: the poll and the `container` phase update only the user-scope install, so a project-scope one would go stale (#187). The trade-off: a fresh clone no longer prompts to install the plugin.
 - Deny rules in `.claude/settings.json`. The agents' tokens enforce "humans merge": they cannot merge ([Agent credentials](agent-credentials.md)). The deny rules are the backstop for pushes to `main`/`master` and for force, delete and mirror pushes. The plugin ships the comment guard (`hooks/hooks.json`), which enforces the [trust rule](../README.md#trust-rule-for-public-repos). The project adds the deny rules:
 
         "permissions": {
