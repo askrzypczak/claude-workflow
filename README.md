@@ -19,7 +19,7 @@ Plugin `ticket-workflow`:
 - Subagents: `contract-writer` (opus, medium) writes stubs and failing tests first; `implementer` (haiku, xhigh; opus medium or opus xhigh per the approved plan) builds the code that makes them pass; `reviewer` (opus, xhigh, read-only) reviews complex diffs; `spec-auditor` (opus, medium, read-only; sonnet, medium for a `simple` ticket plan) audits epics, and each ticket's plan, for necessity; `first-reviewer` (fable, xhigh, read-only) reviews each orchestrate-epic child PR for the maintainer. Dispatched sessions run on opus at xhigh; orchestrate-epic children on opus at xhigh, or sonnet at medium for docs-only or single-adapter children; the orchestrate-epic session and its per-PR `first-reviewer` on fable at xhigh, because they stand in for the human reviewer (plan gates, gate questions, first PR review). Effort rule for any retune: never `high`; opus at `medium` or `xhigh`; sonnet only at `medium`, with opus `medium` wherever more than that is wanted.
 - Hooks: a comment guard (see [Trust rule](#trust-rule-for-public-repos)).
 
-Outside the plugin, `dispatch/` holds `agent-poller.sh`, a multi-repo poller that starts background sessions for `ready` + `agent-ok` tickets. It runs from this clone. See [Dispatch](#dispatch-automatic-ticket-pickup) and `dispatch/README.md`.
+Outside the plugin, `dispatch/` holds `agent-poller.sh`, a multi-repo poller that starts background sessions for `ready` + `agent-ok` tickets, the agent container the poller and its sessions run in (`dispatch/container/`), and the setup script (`dispatch/setup-agents.sh`). A LaunchAgent starts each poll from this clone. See [Dispatch](#dispatch-automatic-ticket-pickup) and `dispatch/README.md`.
 
 Also outside the plugin, `statusline/` holds the custom status line (model, effort, context bar, plan usage) and its subagent variant, installed by hand. See `statusline/README.md`.
 
@@ -34,10 +34,11 @@ Local development, what a consuming project needs (`npm run check`, labels, deny
 
 ## Running agents safely
 
-Agents act with the maintainer's own credentials, so the setup limits what those credentials can do:
+Agents act for the maintainer, so the setup limits what their credentials and their sessions can do:
 
-- [Agent credentials](docs/agent-credentials.md): the machine's only GitHub API credential is a fine-grained token that cannot merge a PR, and the maintainer merges in the browser.
-- [Sandboxing agent sessions](docs/sandboxing.md): Bash runs in Claude Code's sandbox with credential files denied and a host allowlist, git pushes through per-repo deploy keys, and Claude in Chrome stays off unless asked for.
+- [Agent credentials](docs/agent-credentials.md): no GitHub token a session holds has Contents write, so none can merge a PR, and the maintainer merges in the browser.
+- [Agent container](docs/containers.md): unattended sessions, the poller and orchestration run in a Colima container behind a default-deny egress firewall, with a GitHub token of their own, per-repo deploy keys and a Claude token that only makes model requests.
+- [Sessions on the host](docs/containers.md#sessions-on-the-host): interactive sessions keep the fine-grained login and the host's deny rules, with no sandbox; Claude in Chrome stays off unless asked for, and runs only in a Chrome profile that is not signed in to GitHub.
 - Deny rules in each project's `.claude/settings.json` are the backstop for pushes to `main`/`master` and for force, delete and mirror pushes ([Requirements](docs/setup.md#requirements)).
 
 ## Ticket conventions
@@ -68,7 +69,7 @@ Write `Part of #N` in a child ticket's body to link it to its epic; the epic bod
 
 Use `orchestrate-epic` (`/ticket-workflow:orchestrate-epic E`) instead of the poller when an epic's dependency chain makes the human's attention the bottleneck. One session works the children as `work-ticket` sub-agents, stands in at their plan gates and reviews each PR as first reviewer through a fresh `first-reviewer` sub-agent whose report it judges, keeping the final call, escalating only product questions (a recorded maintainer decision, or user-visible behaviour) to the human. The children read standing decisions and sibling ownership from a brief, a local file outside git deleted at the end, instead of long launch prompts. It swaps `agent-ok` for `orchestrate-epic-run` on the children and labels the run's PRs, so the poller leaves them alone. The children do not need `ready`: running the skill hands their readiness to the orchestrator, which judges them and the follow-ups it adds. The rule that only the maintainer adds `ready` is unchanged elsewhere.
 
-The children's PRs target an `epic-E` branch, not `main`. After its review, with CI green and the PR mergeable, the orchestrator merges each child into `epic-E` with `plugins/ticket-workflow/scripts/integrate-child.sh merge`, pushes `epic-E` with a plain `git push`, then closes the child issue with `integrate-child.sh close`, which refuses until the merge is on `origin/epic-E`. The fetch and the push run outside the script as plain commands, which the sandbox's git exclusions match ([Sandboxing agent sessions](docs/sandboxing.md)). The human still merges every PR that reaches `main`: one epic PR, read by its merge commits and the child PRs' review maps. Spike children are not run inside an epic: the orchestrator leaves them out, and the human works each on its own with `work-ticket`; children blocked by one wait until it closes.
+The children's PRs target an `epic-E` branch, not `main`. After its review, with CI green and the PR mergeable, the orchestrator merges each child into `epic-E` with `plugins/ticket-workflow/scripts/integrate-child.sh merge`, pushes `epic-E` with a plain `git push`, then closes the child issue with `integrate-child.sh close`, which refuses until the merge is on `origin/epic-E`. The fetch and the push run outside the script, as plain commands. The human still merges every PR that reaches `main`: one epic PR, read by its merge commits and the child PRs' review maps. Spike children are not run inside an epic: the orchestrator leaves them out, and the human works each on its own with `work-ticket`; children blocked by one wait until it closes.
 
 ### Architecture rules
 
