@@ -245,6 +245,18 @@ describe("container phase", () => {
     }
   });
 
+  it("a live host session does not stop the container phase", () => {
+    const { run, calls, reports, docker } = setup(world({}, {
+      sessions: [{ id: "host-live-1", name: "tools-3", state: "running", startedAt: 1 }],
+    }));
+
+    expect(run()).toBe("ok");
+    expect(calls.filter((c) => isDocker(c, "run"))).toHaveLength(1);
+    expect(docker.container()?.state).toBe("running");
+    expect(reports.some((r) => r.status === "todo")).toBe(false);
+    expect(reports.some((r) => r.text.includes("host-live-1") || r.text.includes("tools-3"))).toBe(false);
+  });
+
   it("a container on the current image and label is left running", () => {
     const { run, calls, docker } = setup(world());
     expect(run()).toBe("ok");

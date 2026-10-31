@@ -7,7 +7,7 @@
 // and `restrict-updates` in exempt mode in place, auto-merge off, an open mergeable PR with a
 // `test` CheckRun, an open issue, a run, labels, every pre-swap command passing, the
 // pasted token FAKE_TOKEN, a swap that leaves one fine-grained login, no stray tokens, and a
-// wrong-sha merge probe refused with HTTP 403.
+// wrong-sha merge probe refused with HTTP 403 (409 for a GH_TOKEN listed in `merges`).
 //
 // The ruleset model: a ruleset read gives `current_user_can_bypass` from the Repository admin
 // role's bypass mode, for every login (always, pull_requests_only, exempt, or never when the role
@@ -48,8 +48,9 @@
 //   `reach` hosts answer; /meta gives `metaKeys` as ssh_keys), git (ls-remote and clone through a
 //   `github.com-<name>` alias reach GitHub only with ~/.ssh/deploy-<name>, an ssh config block for
 //   the alias naming that key, a github.com line in known_hosts and the repo in `deployKeys`;
-//   `-C <dir> remote get-url origin`; `config --global`; fetch), gh (auth status|login|logout,
-//   repo view in a clone) and claude (agents --json --all; --bg --name <n> …, which starts a
+//   `-C <dir> remote get-url origin`; `config --global`; fetch), gh (auth status|login|logout;
+//   `auth token`, which prints the stored login's token only as node: FAKE_CONTAINER_TOKEN for a
+//   seeded fine-grained login, else the token logged in with; repo view in a clone) and claude (agents --json --all; --bg --name <n> …, which starts a
 //   session with a fresh id, records it in `launches` and writes `probe`'s text to
 //   `<dir>/.<n>.txt`; stop <id>, by id only; plugin list|install|update and marketplace
 //   list|add|update). Paths are taken literally: nothing expands `~`.
@@ -219,6 +220,11 @@ export interface FakeWorld {
   modes?: Record<string, number>;
   /** The host's global git config. Default FAKE_GIT_IDENTITY. */
   hostGit?: Record<string, string>;
+  /**
+   * GH_TOKEN values whose wrong-sha merge GitHub answers with 409 (the token can merge). Every
+   * other merge probe gets 403. Default none.
+   */
+  merges?: string[];
   /** The docker world. Default none: the docker daemon is unreachable. */
   docker?: FakeDocker;
   /** Calls for which this returns true exit 1 with "HTTP 500" on stderr. */
@@ -226,6 +232,11 @@ export interface FakeWorld {
   /** First say on every call; undefined falls through to the scripted world. */
   respond?: (call: FakeCall) => RunResult | undefined;
 }
+
+/** The token of a container login the world seeds as `ghLogin: "fine-grained"`. */
+export const FAKE_CONTAINER_TOKEN = "github_pat_FAKE_CONTAINER_TOKEN_FOR_TESTS";
+/** The token of a container login the world seeds as `ghLogin: "classic"`. */
+export const FAKE_CONTAINER_CLASSIC_TOKEN = "gho_fakeContainerClassicTokenForTests";
 
 /** The image id `docker build` gives unless the world says otherwise. */
 export const FAKE_IMAGE_ID = `sha256:${"1".repeat(64)}`;
@@ -548,6 +559,8 @@ interface Home {
   clones: Map<string, string>;
   git: Record<string, string>;
   login: "fine-grained" | "classic" | undefined;
+  /** The stored login's token, which `gh auth token` prints. */
+  token: string | undefined;
   sessions: Session[];
   plugins: FakePlugin[];
   marketplaces: string[];
@@ -658,6 +671,10 @@ function newHome(seed: FakeDocker = {}): Home {
     clones: new Map(),
     git: { ...seed.gitConfig },
     login: seed.ghLogin,
+    token:
+      seed.ghLogin === "fine-grained" ? FAKE_CONTAINER_TOKEN
+      : seed.ghLogin === "classic" ? FAKE_CONTAINER_CLASSIC_TOKEN
+      : undefined,
     sessions: structuredClone(seed.sessions ?? []),
     plugins: structuredClone(seed.plugins ?? []),
     marketplaces: [...(seed.marketplaces ?? [])],
@@ -978,14 +995,19 @@ function createDocker(
       const eq = kv.indexOf("=");
       if (eq > 0) env[kv.slice(0, eq)] = kv.slice(eq + 1);
     }
-    return inContainer(c.home, x.command, { cwd: x.workdir ?? NODE_HOME, input: x.interactive ? call.input : undefined, env });
+    return inContainer(c.home, x.command, {
+      cwd: x.workdir ?? NODE_HOME,
+      input: x.interactive ? call.input : undefined,
+      env,
+      user: x.user ?? "root",
+    });
   };
 
   /** A command run in the container's home. */
   const inContainer = (
     home: Home,
     command: readonly string[],
-    at: { cwd: string; input: string | undefined; env: Record<string, string> },
+    at: { cwd: string; input: string | undefined; env: Record<string, string>; user: string },
   ): RunResult => {
     const [cmd, ...args] = command;
     const abs = (p: string) => (p.startsWith("/") ? p : `${at.cwd}/${p}`).replace(/\/+$/, "") || "/";
@@ -1205,7 +1227,7 @@ function createDocker(
       case "git":
         return git(home, args, at.cwd, abs);
       case "gh":
-        return ghIn(home, args, at.cwd, at.input);
+        return ghIn(home, args, at.cwd, at.input, at.user);
       case "claude":
         return claudeIn(home, args, at.cwd);
     }
@@ -1329,8 +1351,13 @@ function createDocker(
     return failed(`unscripted: git ${rawArgs.join(" ")}`, 127);
   };
 
-  const ghIn = (home: Home, args: readonly string[], cwd: string, input: string | undefined): RunResult => {
+  const ghIn = (home: Home, args: readonly string[], cwd: string, input: string | undefined, user: string): RunResult => {
     const [a0, a1] = args;
+    if (a0 === "auth" && a1 === "token") {
+      // node's login lives in node's home; root's gh config (under /root) holds none.
+      if (user !== "node" || home.token === undefined) return failed("no oauth token found for github.com");
+      return ok(`${home.token}\n`);
+    }
     if (a0 === "auth" && a1 === "status") {
       if (args.includes("--json")) {
         return json({
@@ -1355,10 +1382,12 @@ function createDocker(
       const token = (input ?? "").trim();
       if (token === "") return failed("error validating token: missing token");
       home.login = token.startsWith("github_pat_") ? "fine-grained" : "classic";
+      home.token = token;
       return ok();
     }
     if (a0 === "auth" && a1 === "logout") {
       home.login = undefined;
+      home.token = undefined;
       return ok();
     }
     if (a0 === "auth" && a1 === "setup-git") return ok();
@@ -1595,6 +1624,9 @@ export function fakeIo(world: FakeWorld = {}) {
       );
     }
     if (rest[0] === "pulls" && rest[2] === "merge" && method === "PUT") {
+      if (call.env.GH_TOKEN !== undefined && world.merges?.includes(call.env.GH_TOKEN)) {
+        return failed("gh: Head branch was modified. Review and try the merge again. (HTTP 409)");
+      }
       return failed("gh: Resource not accessible by personal access token (HTTP 403)");
     }
     if (rest[0] === "pulls" && method === "GET") return json({ number: Number(rest[1]), author_association: "OWNER" });

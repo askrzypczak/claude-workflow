@@ -69,6 +69,14 @@ describe("host phase", () => {
     expect(new Set(after.permissions?.deny).size).toBe(after.permissions?.deny?.length);
   });
 
+  it("the merged deny rules include reads of the container's Claude token file", () => {
+    const { result, files } = run({ files: { [SETTINGS]: text({ model: "opus" }) } });
+
+    expect(result).toBe("ok");
+    const after = JSON.parse(files[SETTINGS]!) as { permissions?: { deny?: string[] } };
+    expect(after.permissions?.deny).toContain("Read(~/.config/claude-workflow/claude-agent.env)");
+  });
+
   it("settings already holding them are reported already and not written", () => {
     const { result, reports, fileOps, calls } = run({ files: { [SETTINGS]: text(complete({ model: "opus" })) } });
 

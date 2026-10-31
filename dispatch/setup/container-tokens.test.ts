@@ -2,7 +2,7 @@
 // token for the container's login, the Claude token's env file, and the seeded ~/.claude.json.
 import { describe, expect, it } from "vitest";
 import { container, ENV_FILE, seedClaudeJson } from "./container.ts";
-import { FAKE_HOME, FAKE_REPO, FAKE_TOKEN, fakeIo, isMergeProbe, parseDockerExec } from "./fake-io.ts";
+import { FAKE_CONTAINER_TOKEN, FAKE_HOME, FAKE_REPO, FAKE_TOKEN, fakeIo, isMergeProbe, parseDockerExec } from "./fake-io.ts";
 import type { FakeCall, FakeDocker, FakeWorld } from "./fake-io.ts";
 import type { ServedRepo } from "./repos.ts";
 
@@ -89,6 +89,33 @@ describe("container phase secrets", () => {
     expect(calls.some((c) => c.args.some((a) => a.includes(FAKE_TOKEN)))).toBe(false);
     expect(reports.some((r) => r.text.includes(FAKE_TOKEN))).toBe(false);
     expect(docker.login()).toBe("fine-grained");
+  });
+
+  it("an existing container login whose wrong-sha merge is not refused stops the phase", () => {
+    const { result, calls, reports, docker } = run(
+      world({ ghLogin: "fine-grained" }, { merges: [FAKE_CONTAINER_TOKEN] }),
+    );
+
+    expect(result).toBe("stop");
+    const read = calls.map(parseDockerExec).filter(
+      (x) => x?.command[0] === "gh" && x.command[1] === "auth" && x.command[2] === "token",
+    );
+    expect(read.length).toBeGreaterThan(0);
+    expect(read.every((x) => x!.user === "node")).toBe(true);
+    const probes = calls.filter(isMergeProbe);
+    expect(probes.length).toBeGreaterThan(0);
+    expect(probes.every((c) => c.cmd === "gh" && c.env.GH_TOKEN === FAKE_CONTAINER_TOKEN)).toBe(true);
+    const todos = reports.filter((r) => r.status === "todo").map((r) => r.text);
+    expect(todos.some((t) => /container/i.test(t) && /login/i.test(t))).toBe(true);
+    // No later step runs: no ~/.claude.json write, no plugin command.
+    expect(docker.file("/home/node/.claude.json")).toBeUndefined();
+    expect(calls.some((c) => parseDockerExec(c)?.command.includes("/home/node/.claude.json"))).toBe(false);
+    expect(calls.some((c) => {
+      const command = parseDockerExec(c)?.command ?? [];
+      return command[0] === "claude" && command[1] === "plugin";
+    })).toBe(false);
+    expect(reports.some((r) => r.text.includes(FAKE_CONTAINER_TOKEN))).toBe(false);
+    expect(calls.some((c) => c.args.some((a) => a.includes(FAKE_CONTAINER_TOKEN)))).toBe(false);
   });
 
   it("the Claude token goes to the env file as CLAUDE_CODE_OAUTH_TOKEN with mode 0600, and no report holds it", () => {
