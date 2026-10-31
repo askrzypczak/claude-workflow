@@ -1,6 +1,6 @@
-// The poller's side effects: gh, claude, state files, the run lock and the log.
+// The poller's side effects: gh, claude, curl, state files, the run lock and the log.
 // pollRepo only sees the PollerIo interface, so tests can drive it with a fake.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { z } from "zod";
@@ -64,8 +64,9 @@ function ghJson<T extends z.ZodType>(schema: T, args: string[]): z.output<T> {
 
 /** Whether `curl` reaches `url` (exit 0); its output is discarded. */
 export function reachable(url: string): boolean {
-  void url;
-  throw new Error("not implemented");
+  // -q first: no ~/.curlrc changes what is fetched.
+  const result = spawnSync("curl", ["-q", "-sS", "-o", "/dev/null", "--max-time", "10", url], { stdio: "ignore" });
+  return result.status === 0;
 }
 
 /** `claude agents --json --all`, fetched once per run. */

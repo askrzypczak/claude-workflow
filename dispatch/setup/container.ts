@@ -14,6 +14,7 @@ import type { MergeVerdict } from "./credentials.ts";
 import {
   claudeExec,
   cloneDir,
+  COLIMA_ARGS,
   CONFIG_LABEL,
   CONTAINER,
   CONTAINER_HOME,
@@ -35,7 +36,7 @@ export const ENV_FILE = ".config/claude-workflow/claude-agent.env";
 export { CONFIG_LABEL };
 
 /** Colima with no host directory mounted into its VM (dispatch/container/README.md, Verify). */
-const COLIMA_START = "colima start --cpu 4 --memory 4 --disk 40 --mount none";
+const COLIMA_START = `colima ${COLIMA_ARGS.join(" ")}`;
 const READY_TIMEOUT_MS = 3 * 60 * 1000;
 const GH_HOST = "github.com";
 const FINE_GRAINED = "github_pat_";

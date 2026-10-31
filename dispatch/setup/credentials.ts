@@ -8,7 +8,7 @@ import { ENDED } from "../poller/decide.ts";
 import { timestamp } from "../poller/io.ts";
 import { parseJson } from "../poller/schemas.ts";
 import type { Session } from "../poller/schemas.ts";
-import { CONTAINER, containerSessions } from "./docker.ts";
+import { cloneDir, CONTAINER, containerSessions, containerState, readInContainer } from "./docker.ts";
 import type { RunOptions, RunResult, SetupIo, StepStatus } from "./io.ts";
 import type { Phase, SetupContext } from "./main.ts";
 import type { ServedRepo } from "./repos.ts";
@@ -746,8 +746,7 @@ function scanStrayTokens(p: Pass): number {
   });
 
   /** A JSON file's top-level object, or undefined when it is missing (a note when it is not JSON). */
-  const jsonObject = (path: string, shown: string): Record<string, unknown> | undefined => {
-    const text = p.io.readFile(path);
+  const jsonObject = (text: string | undefined, shown: string): Record<string, unknown> | undefined => {
     if (text === undefined) return undefined;
     let value: unknown;
     try {
@@ -759,7 +758,7 @@ function scanStrayTokens(p: Pass): number {
     return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
   };
 
-  const settings = jsonObject(join(p.home, ".claude/settings.json"), "~/.claude/settings.json");
+  const settings = jsonObject(p.io.readFile(join(p.home, ".claude/settings.json")), "~/.claude/settings.json");
   const env = settings?.env;
   if (typeof env === "object" && env !== null) {
     for (const name of TOKEN_VARS.filter((v) => v in env)) {
@@ -767,8 +766,8 @@ function scanStrayTokens(p: Pass): number {
     }
   }
 
-  const mcp = (path: string, shown: string, scopes: (config: Record<string, unknown>) => [string, unknown][]) => {
-    const config = jsonObject(path, shown);
+  const mcp = (text: string | undefined, shown: string, scopes: (config: Record<string, unknown>) => [string, unknown][]) => {
+    const config = jsonObject(text, shown);
     if (config === undefined) return;
     for (const [scope, servers] of scopes(config)) {
       for (const name of githubServers(servers)) {
@@ -776,7 +775,8 @@ function scanStrayTokens(p: Pass): number {
       }
     }
   };
-  mcp(join(p.home, ".claude.json"), "~/.claude.json", (config) => {
+  const servers = (config: Record<string, unknown>): [string, unknown][] => [["", config.mcpServers]];
+  mcp(p.io.readFile(join(p.home, ".claude.json")), "~/.claude.json", (config) => {
     const projects = typeof config.projects === "object" && config.projects !== null ? config.projects : {};
     return [
       ["", config.mcpServers],
@@ -786,8 +786,35 @@ function scanStrayTokens(p: Pass): number {
       ]),
     ];
   });
-  for (const { repo, dir } of p.repos) {
-    mcp(join(dir, ".mcp.json"), `${repo}'s .mcp.json`, (config) => [["", config.mcpServers]]);
+  // This clone's file on the host; every served repo's clone in the agent container, where the
+  // unattended sessions load it. The config's dirs are container paths, never read on the host.
+  const hostMcp = join(p.clone, ".mcp.json");
+  mcp(p.io.readFile(hostMcp), `this clone's .mcp.json (${hostMcp})`, servers);
+  // Quiesce, earlier in this phase, refuses a running container that has not logged its
+  // readiness line, so a running container here is ready for an exec.
+  const state = containerState(p.io);
+  if (state.kind === "running") {
+    for (const { repo } of p.repos) {
+      const path = `${cloneDir(repo)}/.mcp.json`;
+      const shown = `${repo}'s .mcp.json in the agent container (${path})`;
+      let text: string | undefined;
+      try {
+        text = readInContainer(p.io, path);
+      } catch (err) {
+        p.say("note", `stray token: ${err instanceof Error ? err.message : String(err)}: check ${shown} for GitHub tokens by hand`);
+        continue;
+      }
+      mcp(text, shown, servers);
+    }
+  } else {
+    const why =
+      state.kind === "no-docker" ? `docker does not answer (${state.detail})`
+      : state.kind === "absent" ? `there is no container ${CONTAINER}`
+      : `${CONTAINER} is stopped`;
+    p.say(
+      "note",
+      `stray token: ${why}, so the .mcp.json files of ${p.repos.map((r) => r.repo).join(", ")} in the agent container were not scanned: rerun dispatch/setup-agents.sh once the container runs`,
+    );
   }
 
   if (found === 0) p.say("pass", "stray-token scan: no other GitHub token found");

@@ -99,7 +99,7 @@ Agents follow the `work-ticket` skill with an explicit issue number, run manuall
 
 ## Dispatch (automatic ticket pickup)
 
-`dispatch/agent-poller.sh` runs every 3 minutes from a macOS LaunchAgent and starts one background Claude Code session per `ready` + `agent-ok` ticket, across all configured repos; it also starts conflict-resolution and CI-fix sessions for agent PRs. Read [What this can do on your machine](dispatch/README.md#what-this-can-do-on-your-machine) before enabling it. Onboarding, daily use, operations and options: [dispatch/README.md](dispatch/README.md).
+`dispatch/agent-poller.sh` runs every 3 minutes from a macOS LaunchAgent and starts one background Claude Code session per `ready` + `agent-ok` ticket, across all configured repos; it also starts conflict-resolution and CI-fix sessions for agent PRs. The poller and its sessions run in the agent container, so you approve plans and answer sessions from a host terminal with `docker exec -it -w /home/node/claude-workflow claude-workflow-agent claude agents`. Read [What this can do on your machine](dispatch/README.md#what-this-can-do-on-your-machine) before enabling it. Onboarding, daily use, operations and options: [dispatch/README.md](dispatch/README.md).
 
 ## Workflow
 

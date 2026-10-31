@@ -270,8 +270,7 @@ function judgeProbe(ctx: SetupContext, name: string, text: string | undefined, i
 function probe(ctx: SetupContext, repo: string, dir: string): boolean {
   const name = `setup-probe-${stamp(new Date())}`;
   const result = `${dir}/.${name}.txt`;
-  // A session started with a setup token stops at its first Bash call without the mode flag.
-  const flags = LAUNCH_FLAGS.includes("--permission-mode") ? [...LAUNCH_FLAGS] : [...LAUNCH_FLAGS, "--permission-mode", "auto"];
+  const flags = [...LAUNCH_FLAGS];
   const items = probeItems();
   const command = `docker exec -w ${dir} ${CONTAINER} claude --bg --name ${name} ${flags.join(" ")} <the probe prompt>`;
 

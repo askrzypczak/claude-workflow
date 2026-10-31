@@ -1,12 +1,12 @@
 // The repos setup serves: this clone's repo first, then the dispatch config's repos.
-import { statSync } from "node:fs";
 import { parseConfig } from "../poller/config.ts";
+import { cloneDir, CONTAINER, CONTAINER_HOME } from "./docker.ts";
 import type { SetupIo } from "./io.ts";
 
 export interface ServedRepo {
   /** owner/name */
   repo: string;
-  /** The local checkout. */
+  /** This repo's host clone; any other repo's clone in the agent container. */
   dir: string;
 }
 
@@ -25,11 +25,12 @@ export function parseRemote(url: string): string | undefined {
   return undefined;
 }
 
-const isDir = (dir: string) => statSync(dir, { throwIfNoEntry: false })?.isDirectory() ?? false;
-
 /**
  * This clone's repo (from its `origin` remote), then the repos in the dispatch config,
  * once each. A missing config file adds none, with a note; an invalid one throws.
+ * The poller runs in the agent container, so each config `dir` is a container path (`~` is
+ * node's home there): it must be the repo's clone, cloneDir(repo). Nothing on the host is
+ * read for it.
  */
 export function servedRepos(
   io: SetupIo,
@@ -49,11 +50,17 @@ export function servedRepos(
     io.report("note", `no dispatch config at ${opts.configPath}: serving only ${own}`);
     return repos;
   }
-  const config = parseConfig(text, { path: opts.configPath, home: opts.home, dirExists: isDir });
+  const config = parseConfig(text, { path: opts.configPath, home: CONTAINER_HOME, dirExists: () => true });
   for (const entry of config) {
-    if (!repos.some((r) => r.repo.toLowerCase() === entry.repo.toLowerCase())) {
-      repos.push({ repo: entry.repo, dir: entry.dir });
+    const served = repos.find((r) => r.repo.toLowerCase() === entry.repo.toLowerCase());
+    // A repo listed twice (in any case) is cloned once, under the name it was first served as.
+    const clone = cloneDir(served?.repo ?? entry.repo);
+    if (entry.dir !== clone) {
+      throw new Error(
+        `config ${opts.configPath}: dir '${entry.dir}' (repo ${entry.repo}) is not the container clone: the poller runs in ${CONTAINER}, so set it to "${clone}"`,
+      );
     }
+    if (served === undefined) repos.push({ repo: entry.repo, dir: entry.dir });
   }
   return repos;
 }

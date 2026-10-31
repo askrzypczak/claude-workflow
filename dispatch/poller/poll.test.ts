@@ -203,7 +203,7 @@ describe("pollRepo: a ticket failed by reconcile is not relaunched in the same p
     const ctx = run({ sessions: [session("app-5", "failed")] });
     pollRepo(repo(), failedTicket(), ctx, f.io);
     expect(f.effects.filter((e) => e.startsWith("launch"))).toEqual([
-      "launch app-6 in /work/app: --model opus --effort xhigh /ticket-workflow:work-ticket 6",
+      "launch app-6 in /work/app: --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 6",
     ]);
     expect(f.logs).toContain("[app] #5: failed earlier in this poll; not relaunching");
     expect(ctx.live.get("app")).toBe(1);
@@ -235,13 +235,13 @@ describe("pollRepo: launch tickets", () => {
     const ctx = run({ live: new Map([["other", 4]]) });
     pollRepo(repo(), state, ctx, f.io);
     expect(f.effects).toEqual([
-      "launch app-1 in /work/app: --model opus --effort xhigh /ticket-workflow:work-ticket 1",
-      "launch app-2 in /work/app: --model opus --effort xhigh /ticket-workflow:work-ticket 2 auto",
+      "launch app-1 in /work/app: --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 1",
+      "launch app-2 in /work/app: --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 2 auto",
     ]);
     expect(state.launched).toEqual({ 1: { name: "app-1", at: NOW }, 2: { name: "app-2", at: NOW } });
     expect(f.saved).toHaveLength(2);
     expect(ctx.live).toEqual(new Map([["other", 4], ["app", 2]]));
-    expect(f.logs).toContain("[app] #1: launching app-1 (flags: --model opus --effort xhigh)");
+    expect(f.logs).toContain("[app] #1: launching app-1 (flags: --model opus --effort xhigh --permission-mode auto)");
     expect(f.logs).toContain("[app] #3: author eve is not me; skipping");
   });
 
@@ -249,7 +249,7 @@ describe("pollRepo: launch tickets", () => {
     const f = fakeIo({ issues: [ready(1), ready(2)] });
     const state = empty();
     pollRepo(repo(), state, run({ maxSessions: 3, live: new Map([["other", 2]]) }), f.io);
-    expect(f.effects).toEqual(["launch app-1 in /work/app: --model opus --effort xhigh /ticket-workflow:work-ticket 1"]);
+    expect(f.effects).toEqual(["launch app-1 in /work/app: --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 1"]);
     expect(f.logs).toContain("[app] deferred #2: at session cap");
     expect(Object.keys(state.launched)).toEqual(["1"]);
   });
@@ -274,10 +274,10 @@ describe("pollRepo: resolve conflicts", () => {
     const f = fakeIo({ prs: [conflictPr(9, 5)], issueViews: { 5: openIssue }, sha: "sha1" });
     const state = empty();
     pollRepo(repo(), state, run(), f.io);
-    expect(f.effects).toEqual(["launch app-5-conflict in /work/app: --model opus --effort xhigh /ticket-workflow:resolve-conflicts 5"]);
+    expect(f.effects).toEqual(["launch app-5-conflict in /work/app: --model opus --effort xhigh --permission-mode auto /ticket-workflow:resolve-conflicts 5"]);
     expect(state.launched).toEqual({ "conflict-5": { name: "app-5-conflict", at: NOW, pr: "9", mainSha: "sha1" } });
     expect(state.attempts).toEqual({ 5: { pr: "9", mainSha: "sha1" } });
-    expect(f.logs).toContain("[app] #5: PR #9 conflicts with main; launching app-5-conflict (flags: --model opus --effort xhigh)");
+    expect(f.logs).toContain("[app] #5: PR #9 conflicts with main; launching app-5-conflict (flags: --model opus --effort xhigh --permission-mode auto)");
   });
 
   it("does not read the issue for a PR that fails the PR checks", () => {
@@ -295,7 +295,7 @@ describe("pollRepo: resolve conflicts", () => {
     pollRepo(repo(), empty(), run(), f.io);
     expect(f.logs).toContain("[app] #4: cannot read issue; skipping");
     expect(f.logs).toContain("[app] #5: issue is not open; skipping conflict resolution");
-    expect(f.effects).toEqual(["launch app-6-conflict in /work/app: --model opus --effort xhigh /ticket-workflow:resolve-conflicts 6"]);
+    expect(f.effects).toEqual(["launch app-6-conflict in /work/app: --model opus --effort xhigh --permission-mode auto /ticket-workflow:resolve-conflicts 6"]);
   });
 
   it("does not repeat an attempt against the same main SHA, but retries once main moves", () => {
@@ -323,7 +323,7 @@ describe("pollRepo: resolve conflicts", () => {
     const f = fakeIo({ issues: [ready(1)], prs: [conflictPr(9, 5)], issueViews: { 5: openIssue } });
     const state = empty();
     pollRepo(repo(), state, run({ maxSessions: 1 }), f.io);
-    expect(f.effects).toEqual(["launch app-1 in /work/app: --model opus --effort xhigh /ticket-workflow:work-ticket 1"]);
+    expect(f.effects).toEqual(["launch app-1 in /work/app: --model opus --effort xhigh --permission-mode auto /ticket-workflow:work-ticket 1"]);
     expect(f.logs).toContain("[app] deferred #5: at session cap (conflict resolution for PR #9)");
     expect(state.attempts).toEqual({});
   });
@@ -336,7 +336,7 @@ describe("pollRepo: resolve conflicts", () => {
 });
 
 describe("pollRepo: fix CI", () => {
-  const CI_LAUNCH = "launch app-5-ci in /work/app: --model opus --effort xhigh /ticket-workflow:fix-ci 5";
+  const CI_LAUNCH = "launch app-5-ci in /work/app: --model opus --effort xhigh --permission-mode auto /ticket-workflow:fix-ci 5";
   const launches = (effects: string[]) => effects.filter((e) => e.startsWith("launch"));
 
   it("launches `app-N-ci` with `/ticket-workflow:fix-ci N`, tracks `ci-N`, records head SHA and count 1 (AC1)", () => {
@@ -385,8 +385,8 @@ describe("pollRepo: fix CI", () => {
     const state = empty();
     pollRepo(repo(), state, run(), f.io);
     expect(f.effects).toEqual([
-      "launch app-6-conflict in /work/app: --model opus --effort xhigh /ticket-workflow:resolve-conflicts 6",
-      "launch app-7-ci in /work/app: --model opus --effort xhigh /ticket-workflow:fix-ci 7",
+      "launch app-6-conflict in /work/app: --model opus --effort xhigh --permission-mode auto /ticket-workflow:resolve-conflicts 6",
+      "launch app-7-ci in /work/app: --model opus --effort xhigh --permission-mode auto /ticket-workflow:fix-ci 7",
     ]);
     expect(Object.keys(state.launched).sort()).toEqual(["ci-7", "conflict-6"]);
     expect(state.ciAttempts).toEqual({ 11: { headSha: "head1", count: 1 } });

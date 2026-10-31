@@ -320,7 +320,7 @@ describe("halt", () => {
     const pkill = calls.map(execOf).filter((x) => x?.command[0] === "pkill");
     expect(pkill).toHaveLength(1);
     expect(pkill[0]!.user).toBe("node");
-    expect(pkill[0]!.command).toEqual(["pkill", "-f", "dispatch/poller/main.ts"]);
+    expect(pkill[0]!.command).toEqual(["pkill", "-f", `${CLONE_DIR}/dispatch/poller/main.ts`]);
     expect(output()).toContain(`docker exec ${CONTAINER} claude stop fake-live-1`);
     expect(output()).toContain(`docker exec ${CONTAINER} claude stop fake-live-2`);
     expect(output()).not.toContain("fake-ended-3");

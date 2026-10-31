@@ -33,16 +33,15 @@ describe("servedRepos", () => {
   });
 
   it("adds the config's repos after this one, each once", () => {
-    const dir = tmpdir();
     const config = JSON.stringify([
-      { repo: "example-owner/example-app", dir, sessionPrefix: "app", owner: "example-owner" },
-      { repo: "Example-Owner/Example-Tools", dir, sessionPrefix: "tools", owner: "example-owner" },
+      { repo: "example-owner/example-app", dir: "/home/node/example-app", sessionPrefix: "app", owner: "example-owner" },
+      { repo: "Example-Owner/Example-Tools", dir: "/home/node/example-tools", sessionPrefix: "tools", owner: "example-owner" },
     ]);
     const { io } = fakeIo({ files: { [opts.configPath]: config } });
 
     expect(servedRepos(io, opts)).toEqual([
       { repo: FAKE_REPO, dir: "/clone" },
-      { repo: "example-owner/example-app", dir },
+      { repo: "example-owner/example-app", dir: "/home/node/example-app" },
     ]);
   });
 

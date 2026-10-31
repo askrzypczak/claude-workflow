@@ -42,6 +42,7 @@ export function nodeExec(
     "-u",
     "node",
     ...(opts.cwd === undefined ? [] : ["-w", opts.cwd]),
+    ...Object.entries(opts.env ?? {}).flatMap(([name, value]) => ["-e", `${name}=${value}`]),
   ];
   return io.run("docker", ["exec", ...flags, CONTAINER, ...args], opts.input === undefined ? {} : { input: opts.input });
 }

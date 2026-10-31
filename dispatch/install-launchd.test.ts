@@ -11,7 +11,6 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,12 +33,6 @@ beforeEach(() => {
       `if [ -f "${p("launchctl-fail-")}$1" ]; then echo "launchctl $1 failed" >&2; exit 5; fi\n`,
   );
   chmodSync(p("launchctl"), 0o755);
-  // Fake poller: records its args, prints a recognisable line, fails if poller-fail exists.
-  writeFileSync(
-    p("poller"),
-    `#!/usr/bin/env bash\necho "poller $*" >>"${p("order.log")}"\necho "WOULD LAUNCH app-1"\necho "ENV max=\${CLAUDE_MAX_SESSIONS-unset} keep=\${KEEP_ME-unset}"\n[ -f "${p("poller-busy")}" ] && echo "another run is active (pid 1); exiting"\n[ -f "${p("poller-fail")}" ] && exit 3\nexit 0\n`,
-  );
-  chmodSync(p("poller"), 0o755);
   // Fake job (dispatch/launchd/job.sh): records its args; deps and halt fail if job-fail-<step>
   // exists; a poll behaves as the fake poller does.
   writeFileSync(
@@ -89,7 +82,6 @@ const runWith = (opts: RunOpts, ...args: string[]) =>
       LOG_DIR: p("logs"),
       STATE_DIR: p("state"),
       CLAUDE_WORKFLOW_CONFIG: p("cfg", "repos.json"),
-      POLLER: p("poller"),
       JOB: p("job"),
       NPM: p("npm"),
       ...opts.env,
@@ -110,7 +102,7 @@ describe("install-launchd.sh", () => {
     expect(r.status, r.stderr).toBe(0);
     const plist = readFileSync(p("agents", `${LABEL}.plist`), "utf8");
     expect(plist).not.toMatch(/__CLONE__|__HOME__/);
-    expect(plist).toMatch(/dispatch\/agent-poller\.sh/);
+    expect(plist).toMatch(/dispatch\/launchd\/job\.sh/);
     expect(plist).toMatch(/claude-workflow-poller\.log/);
     expect(calls().some((c) => /^bootstrap gui\/\d+ .*\.plist$/.test(c))).toBe(true);
   });
@@ -136,18 +128,6 @@ describe("install-launchd.sh", () => {
       c.findIndex((l) => l.includes("com.old.job")) <
         c.findIndex((l) => l.startsWith("bootstrap")),
     ).toBe(true);
-  });
-
-  it("migrates state without overwriting existing files", () => {
-    mkdirSync(p("old"));
-    writeFileSync(p("old", "launched.json"), '{"7":{"name":"app-7","at":1}}');
-    writeFileSync(p("old", "conflicts.json"), '{"7":{"pr":"9","mainSha":"a"}}');
-    mkdirSync(p("state", "repos", "app"), { recursive: true });
-    writeFileSync(p("state", "repos", "app", "conflicts.json"), "{}");
-    const r = run("install", "--yes", "--migrate-state", p("old"), "app");
-    expect(r.status, r.stderr).toBe(0);
-    expect(readFileSync(p("state", "repos", "app", "launched.json"), "utf8")).toBe('{"7":{"name":"app-7","at":1}}');
-    expect(readFileSync(p("state", "repos", "app", "conflicts.json"), "utf8")).toBe("{}");
   });
 
   it("uninstall boots out, removes the plist and legacy plists", () => {
@@ -194,7 +174,7 @@ describe("install-launchd.sh", () => {
       expect(r.stdout).toMatch(/WOULD LAUNCH app-1/);
       expect(r.stdout).toMatch(/Install and start polling\? \[y\/N\]/);
       const o = order();
-      expect(o.slice(0, 2)).toStrictEqual(["npm ci", "poller --dry-run"]);
+      expect(o.slice(0, 3)).toStrictEqual(["npm ci", "job deps", "job --dry-run"]);
       expect(o.findIndex((l) => l.startsWith("launchctl bootstrap")) > 0).toBe(true);
       expect(existsSync(p("agents", `${LABEL}.plist`))).toBe(true);
     });
@@ -227,7 +207,7 @@ describe("install-launchd.sh", () => {
       const r = run("install", "--yes");
       expect(r.status).toBe(1);
       expect(r.stderr).toMatch(/npm ci failed/);
-      expect(!order().some((l) => l.startsWith("poller"))).toBe(true);
+      expect(!order().some((l) => l.startsWith("job"))).toBe(true);
       notInstalled();
     });
 
@@ -241,7 +221,7 @@ describe("install-launchd.sh", () => {
       expect(r.status, r.stderr).toBe(0);
       expect(r.stdout).toMatch(/WOULD LAUNCH app-1/);
       expect(r.stdout).not.toMatch(/\[y\/N\]/);
-      expect(order().slice(0, 2)).toStrictEqual(["npm ci", "poller --dry-run"]);
+      expect(order().slice(0, 3)).toStrictEqual(["npm ci", "job deps", "job --dry-run"]);
       expect(order().some((l) => l.startsWith("launchctl bootstrap"))).toBe(true);
     });
 
@@ -280,16 +260,11 @@ describe("install-launchd.sh", () => {
       expect(runWith({ input: "y\n" }, "install", "--yes").status).toBe(1);
     });
 
-    it("notes that migration has not happened before the dry run", () => {
-      const r = runWith({ input: "n\n" }, "install", "--migrate-state", p("old"), "app");
-      expect(r.stdout).toMatch(/have not been applied yet/);
-      expect(run("install", "--yes").stdout).not.toMatch(/have not been applied/);
-    });
-
     it("uninstall needs no confirmation or dry run", () => {
       const r = run("uninstall");
       expect(r.status, r.stderr).toBe(0);
-      expect(!order().some((l) => l.startsWith("poller"))).toBe(true);
+      expect(r.stdout).not.toMatch(/\[y\/N\]/);
+      expect(!order().some((l) => l.includes("--dry-run"))).toBe(true);
     });
   });
 
@@ -312,27 +287,9 @@ describe("install-launchd.sh", () => {
       }
     }
 
-    it("rejects a --migrate-state PREFIX that is not a plain session prefix", () => {
-      for (const bad of ["../x", "a/b", "a b", ""]) {
-        const r = run("install", "--yes", "--migrate-state", p("old"), bad);
-        expect(r.status, bad).toBe(2);
-        expect(r.stderr).toMatch(/Invalid --migrate-state PREFIX/);
-      }
-      expect(calls()).toStrictEqual([]);
-      expect(existsSync(p("state"))).toBe(false);
-    });
-
-    it("still accepts dotted labels and prefixes with dashes and underscores", () => {
+    it("still accepts dotted labels with dashes and underscores", () => {
       writeFileSync(p("agents", "com.old-job_2.plist"), "x");
-      const r = run(
-        "install",
-        "--yes",
-        "--legacy-label",
-        "com.old-job_2",
-        "--migrate-state",
-        p("old"),
-        "my_app-1",
-      );
+      const r = run("install", "--yes", "--legacy-label", "com.old-job_2");
       expect(r.status, r.stderr).toBe(0);
       expect(existsSync(p("agents", "com.old-job_2.plist"))).toBe(false);
     });
@@ -374,7 +331,7 @@ describe("install-launchd.sh", () => {
             LOG_DIR: p("logs"),
             STATE_DIR: p("state"),
             CLAUDE_WORKFLOW_CONFIG: p("cfg", "repos.json"),
-            POLLER: p("poller"),
+            JOB: p("job"),
             NPM: p("npm"),
             ...env,
           },
@@ -388,9 +345,9 @@ describe("install-launchd.sh", () => {
       expect(r.status, r.stderr).toBe(0);
       const plist = readFileSync(pl(), "utf8");
       expect(plist).not.toMatch(/__CLONE__|__HOME__/);
-      const m = plist.match(/<string>([^<]*agent-poller\.sh)<\/string>/);
+      const m = plist.match(/<string>([^<]*launchd\/job\.sh)<\/string>/);
       expect(m, plist).toBeTruthy();
-      expect(unescape(m![1])).toBe(`${clone}/dispatch/agent-poller.sh`);
+      expect(unescape(m![1])).toBe(`${clone}/dispatch/launchd/job.sh`);
       const lint = spawnSync("plutil", ["-lint", pl()], { encoding: "utf8" });
       if (!lint.error) expect(lint.status, lint.stdout + lint.stderr).toBe(0);
       expect(calls().some((c) => c.startsWith("bootstrap"))).toBe(true);
@@ -446,15 +403,13 @@ describe("install-launchd.sh", () => {
       writeFileSync(p("logs", "claude-workflow-poller.log"), "log");
     };
 
-    it("lists state, config, log, sessions and plugin commands and keeps the files", () => {
+    it("lists state, config, log and plugin commands and keeps the files", () => {
       seed();
       const r = run("uninstall");
       expect(r.status, r.stderr).toBe(0);
       expect(r.stdout.includes(p("state"))).toBe(true);
       expect(r.stdout.includes(p("cfg", "repos.json"))).toBe(true);
       expect(r.stdout.includes(p("logs", "claude-workflow-poller.log"))).toBe(true);
-      for (const n of ["app-7", "app-9", "web-3"])
-        expect(r.stdout).toMatch(new RegExp(`claude stop ${n}\\b`));
       expect(r.stdout).toMatch(/claude plugin uninstall ticket-workflow/);
       expect(r.stdout).toMatch(/claude plugin marketplace remove askrzypczak-plugins/);
       expect(existsSync(p("state", "repos", "app", "launched.json"))).toBe(true);
@@ -462,29 +417,13 @@ describe("install-launchd.sh", () => {
       expect(existsSync(p("logs", "claude-workflow-poller.log"))).toBe(true);
     });
 
-    it("says so when jq is missing instead of silently skipping sessions", () => {
-      seed();
-      mkdirSync(p("nojq"));
-      for (const t of ["bash", "dirname", "id", "rm", "cat", "mkdir"]) {
-        const found = spawnSync("sh", ["-c", `command -v ${t}`], {
-          encoding: "utf8",
-        }).stdout.trim();
-        symlinkSync(found, p("nojq", t));
-      }
-      const r = runWith({ env: { PATH: p("nojq") } }, "uninstall");
-      expect(r.status, r.stderr).toBe(0);
-      expect(r.stdout).toMatch(/jq not found; check .*launched\.json/);
-      expect(r.stdout).not.toMatch(/claude stop/);
-    });
-
     it("works with no state at all", () => {
       const r = run("uninstall");
       expect(r.status, r.stderr).toBe(0);
-      expect(r.stdout).not.toMatch(/claude stop/);
       expect(r.stdout).toMatch(/claude plugin uninstall/);
     });
 
-    it("--purge removes state, config and log, still lists sessions and plugin commands", () => {
+    it("--purge removes state, config and log, and prints the commands for the container's state and the plugin", () => {
       seed();
       writeFileSync(p("agents", `${LABEL}.plist`), "x");
       const r = run("uninstall", "--purge");
@@ -494,7 +433,7 @@ describe("install-launchd.sh", () => {
       expect(existsSync(p("logs", "claude-workflow-poller.log"))).toBe(false);
       expect(existsSync(p("agents", `${LABEL}.plist`))).toBe(false);
       expect(r.stdout).toMatch(/Purged/);
-      expect(r.stdout).toMatch(/claude stop app-7\b/);
+      expect(r.stdout).toContain("docker exec -u node claude-workflow-agent rm -rf /home/node/.local/state/claude-workflow");
       expect(r.stdout).toMatch(/claude plugin uninstall ticket-workflow/);
     });
   });
@@ -532,23 +471,6 @@ describe("install-launchd.sh", () => {
       expect(calls()).toContain(`bootout ${job()}`);
     });
 
-    it("pause lists claude stop for each recorded session", () => {
-      installPlist();
-      mkdirSync(p("state", "repos", "app"), { recursive: true });
-      mkdirSync(p("state", "repos", "web"), { recursive: true });
-      const app = '{"7":{"name":"app-7","at":1},"9":{"name":"app-9","at":2}}';
-      const web = '{"3":{"name":"web-3","at":1}}';
-      writeFileSync(p("state", "repos", "app", "launched.json"), app);
-      writeFileSync(p("state", "repos", "web", "launched.json"), web);
-      const r = run("pause");
-      expect(r.status, r.stderr).toBe(0);
-      for (const n of ["app-7", "app-9", "web-3"])
-        expect(r.stdout).toMatch(new RegExp(`claude stop ${n}\\b`));
-      expect(calls()).toStrictEqual([`disable ${job()}`, `bootout ${job()}`]);
-      expect(readFileSync(p("state", "repos", "app", "launched.json"), "utf8")).toBe(app);
-      expect(readFileSync(p("state", "repos", "web", "launched.json"), "utf8")).toBe(web);
-    });
-
     it("resume enables then bootstraps the installed plist without npm ci or the dry run", () => {
       installPlist();
       const r = run("resume");
@@ -558,7 +480,7 @@ describe("install-launchd.sh", () => {
       const bootstrap = c.indexOf(`bootstrap gui/${uid()} ${plist()}`);
       expect(enable, c.join("\n")).toBeGreaterThanOrEqual(0);
       expect(bootstrap, c.join("\n")).toBeGreaterThan(enable);
-      expect(order().filter((l) => l.startsWith("npm") || l.startsWith("poller"))).toStrictEqual([]);
+      expect(order().filter((l) => l.startsWith("npm") || l.startsWith("job"))).toStrictEqual([]);
     });
 
     it("resume succeeds when the job is already loaded", () => {
@@ -611,13 +533,9 @@ describe("install-launchd.sh", () => {
       ]);
     });
 
-    it("pause, resume and status reject --purge, --legacy-label and --migrate-state with exit 2 before calling launchctl", () => {
+    it("pause, resume and status reject --purge and --legacy-label with exit 2 before calling launchctl", () => {
       installPlist();
-      const flags = [
-        ["--purge"],
-        ["--legacy-label", "com.old.job"],
-        ["--migrate-state", p("old"), "app"],
-      ];
+      const flags = [["--purge"], ["--legacy-label", "com.old.job"]];
       for (const cmd of ["pause", "resume", "status"]) {
         for (const f of flags) {
           rmSync(p("launchctl.log"), { force: true });

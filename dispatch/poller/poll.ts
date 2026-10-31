@@ -248,6 +248,13 @@ function start(p: RepoPoll, name: string, prompt: string): void {
   p.run.live.set(p.repo.sessionPrefix, (p.run.live.get(p.repo.sessionPrefix) ?? 0) + 1);
 }
 
+/**
+ * Where a failure comment points: sessions run in the agent container, so its output and the agent
+ * view are read with docker exec from the host (dispatch/README.md, Operations).
+ */
+const inspect = (name: string) =>
+  `See \`docker exec claude-workflow-agent claude logs ${name}\` or the agent view, \`docker exec -it -w /home/node/claude-workflow claude-workflow-agent claude agents\`.`;
+
 /** A best-effort step: a failure is logged and the reconcile carries on. */
 function tryTo(p: RepoPoll, what: string, step: () => void): void {
   try {
@@ -267,7 +274,7 @@ function failTicket(p: RepoPoll, n: number, name: string, reason: string): void 
   p.io.commentOnIssue(
     repo,
     n,
-    `Background session \`${name}\` ended without finishing: ${reason}. See \`claude logs ${name}\` or \`claude agents\`. To retry, remove \`agent-failed\` and add \`ready\`.`,
+    `Background session \`${name}\` ended without finishing: ${reason}. ${inspect(name)} To retry, remove \`agent-failed\` and add \`ready\`.`,
   );
 }
 
@@ -284,8 +291,8 @@ function failPrSession(
   p.log(`#${n}: ${reason} (PR #${pr}) -> agent-failed`);
   const body =
     kind === "conflict"
-      ? `Conflict-resolution session \`${name}\` ended without resolving the conflict on PR #${pr}: ${reason}. See \`claude logs ${name}\`. It will not be retried against the same main; remove \`agent-failed\` to allow a retry once main moves.`
-      : `CI-fix session \`${name}\` ended without getting CI green on PR #${pr}: ${reason}. See \`claude logs ${name}\`. It will not be retried against the same commit; remove \`agent-failed\` to allow a retry once the PR has a new commit.`;
+      ? `Conflict-resolution session \`${name}\` ended without resolving the conflict on PR #${pr}: ${reason}. ${inspect(name)} It will not be retried against the same main; remove \`agent-failed\` to allow a retry once main moves.`
+      : `CI-fix session \`${name}\` ended without getting CI green on PR #${pr}: ${reason}. ${inspect(name)} It will not be retried against the same commit; remove \`agent-failed\` to allow a retry once the PR has a new commit.`;
   tryTo(p, `label #${n}`, () => p.io.editLabels(repo, n, ["agent-failed"], []));
   tryTo(p, `comment on PR #${pr}`, () => p.io.commentOnPr(repo, pr, body));
   p.io.commentOnIssue(repo, n, body);
