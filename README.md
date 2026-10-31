@@ -21,6 +21,8 @@ Plugin `ticket-workflow`:
 
 Outside the plugin, `dispatch/` holds `agent-poller.sh`, a multi-repo poller that starts background sessions for `ready` + `agent-ok` tickets. It runs from this clone. See [Dispatch](#dispatch-automatic-ticket-pickup) and `dispatch/README.md`.
 
+Also outside the plugin, `statusline/` holds the custom status line (model, effort, context bar, plan usage) and its subagent variant, installed by hand. See `statusline/README.md`.
+
 ## Install
 
 In Claude Code:
