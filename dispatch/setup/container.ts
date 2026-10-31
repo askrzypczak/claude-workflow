@@ -14,6 +14,7 @@ import type { MergeVerdict } from "./credentials.ts";
 import {
   claudeExec,
   cloneDir,
+  COLIMA_ARGS,
   CONFIG_LABEL,
   CONTAINER,
   CONTAINER_HOME,
@@ -35,16 +36,16 @@ export const ENV_FILE = ".config/claude-workflow/claude-agent.env";
 export { CONFIG_LABEL };
 
 /** Colima with no host directory mounted into its VM (dispatch/container/README.md, Verify). */
-const COLIMA_START = "colima start --cpu 4 --memory 4 --disk 40 --mount none";
+const COLIMA_START = `colima ${COLIMA_ARGS.join(" ")}`;
 const READY_TIMEOUT_MS = 3 * 60 * 1000;
 const GH_HOST = "github.com";
 const FINE_GRAINED = "github_pat_";
 const SSH_DIR = `${CONTAINER_HOME}/.ssh`;
 const CLAUDE_JSON = `${CONTAINER_HOME}/.claude.json`;
 const USER_SETTINGS = `${CONTAINER_HOME}/.claude/settings.json`;
-const MARKETPLACE = "askrzypczak-plugins";
+export const MARKETPLACE = "askrzypczak-plugins";
 const MARKETPLACE_REPO = "askrzypczak/claude-workflow";
-const PLUGIN = `ticket-workflow@${MARKETPLACE}`;
+export const PLUGIN = `ticket-workflow@${MARKETPLACE}`;
 const IDENTITY = ["user.name", "user.email"] as const;
 /** In-container commands, as the to-dos name them. */
 const AS_NODE = `docker exec -u node ${CONTAINER}`;

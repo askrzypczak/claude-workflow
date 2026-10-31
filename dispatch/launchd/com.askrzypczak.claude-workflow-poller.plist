@@ -8,7 +8,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>__CLONE__/dispatch/agent-poller.sh</string>
+    <string>__CLONE__/dispatch/launchd/job.sh</string>
   </array>
   <key>StartInterval</key>
   <integer>180</integer>

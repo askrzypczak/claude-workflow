@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
-# Install, remove, pause or resume the LaunchAgent that runs dispatch/agent-poller.sh every 3 minutes
-# for every repo in the config. Run from the main clone, not a worktree. See dispatch/README.md.
-# Usage: dispatch/install-launchd.sh [install|uninstall|pause|resume|status] [--yes] [--purge] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]...
-#   pause                     stop polling until resume: disable and boot out the poller (also across logins and reboots).
-#                             The plist stays. Sessions already running are not stopped; they are listed with claude stop.
-#   resume                    enable and bootstrap the installed plist, so the poller runs now. No npm ci or dry run.
+# Install, remove, pause or resume the LaunchAgent that runs dispatch/launchd/job.sh every 3 minutes: one
+# poll of every repo in the config, run by dispatch/agent-poller.sh in the agent container.
+# Run from the main clone, not a worktree. See dispatch/README.md.
+# Usage: dispatch/install-launchd.sh [install|uninstall|pause|resume|status] [--yes] [--purge] [--legacy-label LABEL]...
+#   pause                     stop polling until resume: disable and boot out the job (also across logins and reboots),
+#                             then end a poll still running in the container. The plist stays. Sessions already
+#                             running are not stopped; they are listed with their stop commands.
+#   resume                    enable and bootstrap the installed plist, so the job runs now. No npm ci or dry run.
 #   status                    print whether the plist is installed and whether the job is loaded and disabled. Exits 0.
 #   --yes                     install without the confirmation prompt (the dry run is still shown, and a
-#                             failing dry run still aborts). Without it, install runs the poller with
+#                             failing dry run still aborts). Without it, install runs the job with
 #                             --dry-run, prints what it would launch and asks "Install and start polling? [y/N]".
-#   --purge                   uninstall only: also delete the state dir, the config file and the log file
+#   --purge                   uninstall only: also delete the host state dir, the config file and the log file, and
+#                             print the command that deletes the container's state dir
 #                             (never live sessions or the plugin; those are listed with the commands to remove them)
 #   --legacy-label LABEL      also boot out and remove an older LaunchAgent (e.g. a single-repo poller);
 #                             letters, digits, . _ - only
-#   --migrate-state DIR PREFIX  copy launched.json / conflicts.json from an older poller's state dir into
-#                             <state>/repos/PREFIX/ (never overwrites), so in-flight tickets are not relaunched;
-#                             PREFIX is letters, digits, _ - only
-# Before the dry run, install runs `npm ci` in the clone: the poller needs its runtime dependencies.
-# Test overrides: NPM, POLLER, LAUNCHCTL, LAUNCH_AGENTS_DIR, LOG_DIR, STATE_DIR, CLAUDE_WORKFLOW_CONFIG.
+# Before the dry run, install runs `npm ci` in the clone (the job needs its runtime dependencies), then the
+# job's deps step: the container's clone of this repo checked out at this clone's commit, and npm ci there.
+# Test overrides: NPM, JOB, LAUNCHCTL, LAUNCH_AGENTS_DIR, LOG_DIR, STATE_DIR, CLAUDE_WORKFLOW_CONFIG.
 set -euo pipefail
 
 LABEL=com.askrzypczak.claude-workflow-poller
@@ -27,18 +28,19 @@ AGENTS_DIR="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 LOG_DIR="${LOG_DIR:-$HOME/Library/Logs}"
 STATE_DIR="${STATE_DIR:-$HOME/.local/state/claude-workflow}"
 CONFIG="${CLAUDE_WORKFLOW_CONFIG:-$HOME/.config/claude-workflow/repos.json}"
-POLLER="${POLLER:-$CLONE/dispatch/agent-poller.sh}"
+JOB="${JOB:-$CLONE/dispatch/launchd/job.sh}"
 NPM="${NPM:-npm}"
 PLIST="$AGENTS_DIR/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
+# The poller's state in the agent container, in its home volume.
+CONTAINER=claude-workflow-agent
+CONTAINER_STATE_DIR=/home/node/.local/state/claude-workflow
 
 cmd="${1:-install}"
 [ $# -eq 0 ] || shift
 assume_yes=0
 purge=0
 legacy=()
-mig_dirs=()
-mig_prefixes=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --yes | -y) assume_yes=1; shift ;;
@@ -50,13 +52,7 @@ while [ $# -gt 0 ]; do
         echo "Invalid --legacy-label '$2': use letters, digits, '.', '_' and '-' only." >&2; exit 2
       fi
       legacy+=("$2"); shift 2 ;;
-    --migrate-state)
-      [ $# -ge 3 ] || { echo "--migrate-state needs DIR PREFIX" >&2; exit 2; }
-      if [[ ! "$3" =~ ^[A-Za-z0-9_-]+$ ]]; then
-        echo "Invalid --migrate-state PREFIX '$3': use letters, digits, '_' and '-' only (a sessionPrefix)." >&2; exit 2
-      fi
-      mig_dirs+=("$2"); mig_prefixes+=("$3"); shift 3 ;;
-    *) echo "Usage: $0 [install|uninstall|pause|resume|status] [--yes] [--purge] [--legacy-label LABEL]... [--migrate-state DIR PREFIX]..." >&2; exit 2 ;;
+    *) echo "Usage: $0 [install|uninstall|pause|resume|status] [--yes] [--purge] [--legacy-label LABEL]..." >&2; exit 2 ;;
   esac
 done
 if [ "$purge" = 1 ] && [ "$cmd" != uninstall ]; then
@@ -65,7 +61,6 @@ fi
 case "$cmd" in
   pause | resume | status)
     [ ${#legacy[@]} -eq 0 ] || { echo "--legacy-label does not apply to $cmd." >&2; exit 2; }
-    [ ${#mig_dirs[@]} -eq 0 ] || { echo "--migrate-state does not apply to $cmd." >&2; exit 2; }
     ;;
 esac
 
@@ -78,19 +73,9 @@ remove_legacy() {
   done
 }
 
-migrate_state() {
-  local i src dst f
-  for i in ${mig_dirs[@]+"${!mig_dirs[@]}"}; do
-    src="${mig_dirs[$i]/#\~/$HOME}"
-    dst="$STATE_DIR/repos/${mig_prefixes[$i]}"
-    mkdir -p "$dst"
-    for f in launched.json conflicts.json; do
-      if [ -f "$src/$f" ] && [ ! -e "$dst/$f" ]; then
-        cp "$src/$f" "$dst/$f"
-        echo "Migrated $src/$f -> $dst/$f"
-      fi
-    done
-  done
+# End a poll still running in the container and list its live sessions; a failure does not stop the caller.
+halt_job() {
+  "$JOB" halt || echo "The job's halt step failed (see above); check docker exec $CONTAINER claude agents --json --all for live sessions." >&2
 }
 
 # replace_all STRING PATTERN REPLACEMENT -> $REPLY, all literal. Not ${s//p/r}: a '&' in the
@@ -131,37 +116,16 @@ write_plist() {
   mv -f "$tmp" "$PLIST" || { rm -f "$tmp"; return 1; }
 }
 
-# Print the sessions recorded in each repo's launched.json, each with its stop command.
-list_sessions() {
-  local f names="" n found=0 nojq=0
-  for f in "$STATE_DIR"/repos/*/launched.json; do
-    [ -f "$f" ] || continue
-    if command -v jq >/dev/null 2>&1; then
-      names="$names$(jq -r '.[]? | .name? // empty' "$f" 2>/dev/null || true)"$'\n'
-    else
-      nojq=1
-    fi
-  done
-  while IFS= read -r n; do
-    [ -n "$n" ] || continue
-    if [ "$found" = 0 ]; then echo "  Sessions possibly still running (stop each if you want it gone):"; found=1; fi
-    echo "    claude stop $n"
-  done <<<"$names"
-  if [ "$nojq" = 1 ]; then
-    echo "  (jq not found; check $STATE_DIR/repos/*/launched.json for live sessions)"
-  fi
-}
-
 # Print what uninstall does not remove (and, with --purge, remove the files it owns).
 report_leftovers() {
-  local log="$LOG_DIR/claude-workflow-poller.log" sessions
-  # Sessions are read before a purge deletes the state dir.
-  sessions="$(list_sessions)"
+  local log="$LOG_DIR/claude-workflow-poller.log"
   if [ "$purge" = 1 ]; then
     rm -rf "${STATE_DIR:?}"
     rm -f "$CONFIG" "$log"
     echo "Purged: state dir $STATE_DIR, config $CONFIG, log $log"
     echo "Still to clean up by hand:"
+    echo "  The poller's state in the container:"
+    echo "    docker exec -u node $CONTAINER rm -rf $CONTAINER_STATE_DIR"
   else
     echo "Not removed by the LaunchAgent uninstall:"
     echo "  State dir: $STATE_DIR"
@@ -169,7 +133,6 @@ report_leftovers() {
     echo "  Log:       $log"
     echo "  (rerun with --purge to delete these three)"
   fi
-  if [ -n "$sessions" ]; then printf '%s\n' "$sessions"; fi
   echo "  Plugin (remove if you no longer want it):"
   echo "    claude plugin uninstall ticket-workflow"
   echo "    claude plugin marketplace remove askrzypczak-plugins"
@@ -189,12 +152,18 @@ case "$cmd" in
       echo "npm ci failed in $CLONE; fix it and retry. Nothing was installed." >&2
       exit 1
     fi
+    # The poller runs in the container's clone of this repo: the code it runs is this clone's commit.
+    echo "Installing the poller in the agent container (dispatch/launchd/job.sh deps):"
+    if ! "$JOB" deps; then
+      echo "The job's deps step failed; fix it as it says above and retry. Nothing was installed." >&2
+      exit 1
+    fi
     # Show what the poller would launch right now, and ask, before anything is written or started:
     # the LaunchAgent runs at load, so a real launch could otherwise precede the first look.
     # launchd gives the job only HOME and PATH, so the dry run drops the poller's settings from this shell.
     echo "Dry run (nothing is launched; run the way launchd will, without CLAUDE_MAX_SESSIONS from this shell):"
     dry_rc=0
-    dry_out=$(env -u CLAUDE_MAX_SESSIONS "$POLLER" --dry-run 2>&1) || dry_rc=$?
+    dry_out=$(env -u CLAUDE_MAX_SESSIONS "$JOB" --dry-run 2>&1) || dry_rc=$?
     printf '%s\n' "$dry_out"
     if [ "$dry_rc" -ne 0 ]; then
       echo "The dry run failed; fix the config or environment and retry. Nothing was installed." >&2
@@ -206,9 +175,6 @@ case "$cmd" in
         exit 1
         ;;
     esac
-    if [ ${#mig_dirs[@]} -gt 0 ] || [ ${#legacy[@]} -gt 0 ]; then
-      echo "Note: --migrate-state / --legacy-label have not been applied yet, so tickets still tracked only by the old poller may show above as launching; they are migrated after you confirm."
-    fi
     if [ "$assume_yes" != 1 ]; then
       printf 'Install and start polling? [y/N] '
       answer=""
@@ -219,9 +185,8 @@ case "$cmd" in
       esac
     fi
     mkdir -p "$AGENTS_DIR" "$LOG_DIR"
-    # Migrate state and drop the old job before the new one first runs, so nothing is relaunched.
+    # Drop the old job before the new one first runs.
     remove_legacy
-    migrate_state
     write_plist || exit 1
     "$LAUNCHCTL" bootout "$DOMAIN/$LABEL" 2>/dev/null || true
     # A label that pause disabled refuses bootstrap, so enable it first.
@@ -234,6 +199,7 @@ case "$cmd" in
     rm -f "$PLIST"
     remove_legacy
     echo "Removed."
+    halt_job
     report_leftovers
     ;;
   pause)
@@ -241,7 +207,7 @@ case "$cmd" in
     "$LAUNCHCTL" bootout "$DOMAIN/$LABEL" 2>/dev/null || true
     echo "Polling is paused: the poller is stopped and disabled, also across logins and reboots."
     echo "Sessions already running are not stopped."
-    list_sessions
+    halt_job
     echo "Resume with: dispatch/install-launchd.sh resume"
     ;;
   resume)

@@ -4,7 +4,13 @@ Local dispatch tooling that runs from this clone (it is not part of the plugin).
 
 ## Overview
 
-A poller runs every 3 minutes from a macOS LaunchAgent and starts one interactive background Claude Code session per eligible ticket, across all configured repos. Sessions show up in `claude agents`.
+A poller runs every 3 minutes from a macOS LaunchAgent and starts one interactive background Claude Code session per eligible ticket, across all configured repos. Sessions run in the agent container and show up in its agent view, which you open from a host terminal with `docker exec -it -w /home/node/claude-workflow claude-workflow-agent claude agents`. This shell function (for `~/.zshrc` or `~/.bashrc`) shortens that and the other session commands below:
+
+```sh
+# Claude Code in the agent container, from the clone of this repo. Alone it opens the agent view;
+# `agent-claude attach <id>`, `agent-claude logs <name>` and `agent-claude stop <id>` also work.
+agent-claude() { docker exec -it -w /home/node/claude-workflow claude-workflow-agent claude "${@:-agents}"; }
+```
 
 A ticket is picked up when it is open, authored by the repo's configured `owner`, and labelled `agent-ok` + `ready` (and not `in-progress`, `blocked`, `agent-failed` or `orchestrate-epic-run`). The session is named `<sessionPrefix>-<issue>` (e.g. `app-12`) and runs `work-ticket`.
 
@@ -71,7 +77,7 @@ Migrating from an older single-repo poller: pass `--legacy-label <its launchd la
 ### Daily use
 
 1. Write and review the ticket, then add `ready`. Within ~3 minutes a session starts.
-2. In `claude agents`, a `blocked` session is waiting for you: usually plan sign-off, also questions and permission prompts. Use `claude attach <prefix>-<issue>`, answer, and leave it running.
+2. In the container's agent view (`agent-claude`, or `docker exec -it -w /home/node/claude-workflow claude-workflow-agent claude agents`), a `blocked` session is waiting for you: usually plan sign-off, also questions and permission prompts. Open it there (or `agent-claude attach <id>`), answer, and leave it running.
 3. For easy tickets add `skip-plan`: the session runs `work-ticket N auto` and skips sign-off (it still asks if the ticket is ambiguous or risky).
 4. When it finishes, the ticket is `needs-review` with a PR (a spike: with a findings comment and no PR). Review, then use `address-feedback`.
 
@@ -96,7 +102,7 @@ After the conflict phase, the poller launches `claude --bg --name <prefix>-N-ci 
 
 ### When something fails
 
-If a session fails, is stopped, or ends without handing the ticket off, the poller adds `agent-failed` and comments with how to inspect it (`claude logs <prefix>-<issue>`). To retry, remove `agent-failed` and add `ready` again. Only `done` (checked for hand-off), `failed` and `stopped` end a tracked session; any other state (`working`, `blocked`, `waiting`, `idle`, unknown) counts as alive.
+If a session fails, is stopped, or ends without handing the ticket off, the poller adds `agent-failed` and comments with how to inspect it: `docker exec claude-workflow-agent claude logs <prefix>-<issue>` (or `agent-claude logs <prefix>-<issue>`) and the agent view. To retry, remove `agent-failed` and add `ready` again. Only `done` (checked for hand-off), `failed` and `stopped` end a tracked session; any other state (`working`, `blocked`, `waiting`, `idle`, unknown) counts as alive.
 
 ### Operations
 
@@ -104,9 +110,9 @@ If a session fails, is stopped, or ends without handing the ticket off, the poll
 |---|---|
 | Log | `tail -f ~/Library/Logs/claude-workflow-poller.log` |
 | Is it loaded? | `launchctl list \| grep claude-workflow` |
-| Sessions | `claude agents` (or `claude agents --json --all`) |
-| One session's output | `claude logs <prefix>-<issue>` |
-| Stop a session | `claude stop <prefix>-<issue>` |
+| Sessions | `agent-claude` or `docker exec -it -w /home/node/claude-workflow claude-workflow-agent claude agents` (as JSON: `docker exec claude-workflow-agent claude agents --json --all`) |
+| One session's output | `agent-claude logs <prefix>-<issue>` or `docker exec claude-workflow-agent claude logs <prefix>-<issue>` |
+| Stop a session | `agent-claude stop <id>` or `docker exec claude-workflow-agent claude stop <id>` (the id is in the JSON list) |
 | What would launch now | `dispatch/agent-poller.sh --dry-run` |
 | Pause everything | `dispatch/install-launchd.sh pause` |
 | Resume | `dispatch/install-launchd.sh resume` |
@@ -130,7 +136,7 @@ Per repo options are in `repos.json` (above). Global options are environment var
 
 ## agent-poller.sh
 
-Polls every configured GitHub repo for agent-ready tickets and starts one interactive background session per ticket (`claude --bg`, visible in `claude agents`). Intended to run every few minutes from a LaunchAgent. Per repo it:
+Polls every configured GitHub repo for agent-ready tickets and starts one interactive background session per ticket (`claude --bg`, visible in the agent container's agent view: `docker exec -it -w /home/node/claude-workflow claude-workflow-agent claude agents`, or `agent-claude`). Intended to run every few minutes from a LaunchAgent. Per repo it:
 
 1. Reconciles sessions it launched earlier (marks tickets `agent-failed` when a session failed, stopped, vanished, or finished without handing off).
 2. Launches `<prefix>-N` (`/ticket-workflow:work-ticket N`, or `N auto` with the `skip-plan` label) for each open issue authored by the repo's `owner` with `agent-ok` + `ready` and none of `in-progress`, `blocked`, `agent-failed`, `orchestrate-epic-run`.
