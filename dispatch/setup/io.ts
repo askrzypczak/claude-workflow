@@ -1,22 +1,8 @@
 // The setup script's side effects, behind one interface shared by every phase.
 // Phases only see SetupIo, so tests can drive them with the fake in fake-io.ts.
 import { spawnSync } from "node:child_process";
-import {
-  appendFileSync,
-  closeSync,
-  constants,
-  copyFileSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  readSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { createIo as createPollerIo, listSessions } from "../poller/io.ts";
+import { constants, copyFileSync, readFileSync, writeFileSync } from "node:fs";
+import { listSessions } from "../poller/io.ts";
 import type { Session } from "../poller/schemas.ts";
 
 /**
@@ -58,33 +44,12 @@ export interface SetupIo {
   /** This process's environment. */
   env(name: string): string | undefined;
   report(status: StepStatus, text: string): void;
-  /** The names of a directory's entries; undefined when it does not exist. */
-  listDir(path: string): string[] | undefined;
-  /**
-   * A regular file's first line without its newline, reading no byte past it (at most 256
-   * bytes); undefined when the path is missing or not a regular file.
-   */
-  readFirstLine(path: string): string | undefined;
-  /** Appends; creates the file with mode 0600 when missing. */
-  appendFile(path: string, text: string): void;
   /** Copies; throws when `to` exists. */
   copyFile(from: string, to: string): void;
   /** Waits for Enter at the terminal; throws without a terminal, as `confirm` does. */
   waitForEnter(prompt: string): void;
   /** Replaces a file's text; creates it with mode 0600 when missing. */
   writeFile(path: string, text: string): void;
-  /**
-   * Starts `claude --bg --name <name> <flags> <prompt>` in `dir`, as the poller does, with
-   * exactly `env` as the child's environment.
-   */
-  launch(dir: string, name: string, flags: readonly string[], prompt: string, env: Readonly<Record<string, string>>): void;
-  /**
-   * Polls a file until `done` holds for its text and returns that text; at the timeout, the
-   * last text read, or undefined when the file never appeared.
-   */
-  waitForFile(path: string, done: (text: string) => boolean, timeoutMs: number): string | undefined;
-  /** Removes a file; no error when it is missing. */
-  removeFile(path: string): void;
   /**
    * Calls `read` until `done` holds for its text and returns that text; at the timeout, the
    * last text read, or undefined when every read was undefined.
@@ -134,28 +99,8 @@ function readLine(script: string, prompt: string): string {
   return result.status === 0 ? result.stdout : "";
 }
 
-/** The most `readFirstLine` reads when no newline comes first. */
-const FIRST_LINE_MAX = 256;
-const NEWLINE = 0x0a;
-
-/** A missing path, or a path through something that is not a directory. */
-function isMissing(err: unknown): boolean {
-  const code = (err as NodeJS.ErrnoException).code;
-  return code === "ENOENT" || code === "ENOTDIR";
-}
-
-/** A file's text, or undefined when it does not exist. */
-function readIfPresent(path: string): string | undefined {
-  try {
-    return readFileSync(path, "utf8");
-  } catch (err) {
-    if (isMissing(err)) return undefined;
-    throw err;
-  }
-}
-
-/** How often `waitForFile` reads the file. */
-const WAIT_POLL_MS = 5000;
+/** How often `poll` calls `read`. */
+const POLL_MS = 5000;
 
 /** Blocks this thread for `ms` milliseconds. */
 function sleep(ms: number): void {
@@ -195,40 +140,6 @@ export function createIo(): SetupIo {
     report(status, text) {
       console.log(`${LABELS[status]}: ${text}`);
     },
-    listDir(path) {
-      try {
-        return readdirSync(path);
-      } catch (err) {
-        if (isMissing(err)) return undefined;
-        throw err;
-      }
-    },
-    readFirstLine(path) {
-      let stat;
-      try {
-        stat = statSync(path);
-      } catch (err) {
-        if (isMissing(err)) return undefined;
-        throw err;
-      }
-      // Only a regular file is opened, so a socket or a FIFO never blocks the read.
-      if (!stat.isFile()) return undefined;
-      const fd = openSync(path, "r");
-      try {
-        // One byte at a time, so nothing past the newline is ever read.
-        const line: number[] = [];
-        const byte = Buffer.alloc(1);
-        while (line.length < FIRST_LINE_MAX && readSync(fd, byte, 0, 1, null) === 1 && byte[0] !== NEWLINE) {
-          line.push(byte[0]!);
-        }
-        return Buffer.from(line).toString("utf8");
-      } finally {
-        closeSync(fd);
-      }
-    },
-    appendFile(path, text) {
-      appendFileSync(path, text, { mode: 0o600 });
-    },
     copyFile(from, to) {
       copyFileSync(from, to, constants.COPYFILE_EXCL);
     },
@@ -239,31 +150,19 @@ export function createIo(): SetupIo {
       // The mode applies only when the file is created; an existing file keeps its own.
       writeFileSync(path, text, { mode: 0o600 });
     },
-    launch(dir, name, flags, prompt, env) {
-      // The poller's own launch, so the probe starts the way ticket sessions do. launch never
-      // reads or writes the state dir; the poller's default under the home directory is given.
-      const poller = createPollerIo(join(homedir(), ".local", "state", "claude-workflow"), false);
-      poller.launch(dir, name, [...flags], prompt, env);
-    },
-    waitForFile(path, done, timeoutMs) {
+    poll(read, done, timeoutMs) {
       const deadline = Date.now() + timeoutMs;
       let last: string | undefined;
       for (;;) {
-        const text = readIfPresent(path);
+        const text = read();
         if (text !== undefined) {
           if (done(text)) return text;
           last = text;
         }
         const left = deadline - Date.now();
         if (left <= 0) return last;
-        sleep(Math.min(WAIT_POLL_MS, left));
+        sleep(Math.min(POLL_MS, left));
       }
-    },
-    removeFile(path) {
-      rmSync(path, { force: true });
-    },
-    poll() {
-      throw new Error("not implemented");
     },
   };
 }

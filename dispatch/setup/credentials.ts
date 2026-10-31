@@ -7,6 +7,8 @@ import { z } from "zod";
 import { ENDED } from "../poller/decide.ts";
 import { timestamp } from "../poller/io.ts";
 import { parseJson } from "../poller/schemas.ts";
+import type { Session } from "../poller/schemas.ts";
+import { CONTAINER, containerSessions } from "./docker.ts";
 import type { RunOptions, RunResult, SetupIo, StepStatus } from "./io.ts";
 import type { Phase, SetupContext } from "./main.ts";
 import type { ServedRepo } from "./repos.ts";
@@ -205,7 +207,7 @@ const isAdminBypass = (actor: z.infer<typeof BypassActor>) =>
   actor.actor_type === ADMIN_BYPASS.actor_type &&
   actor.bypass_mode === ADMIN_BYPASS.bypass_mode;
 
-/** Step 1: pause dispatch, then refuse to go on while a session is live. */
+/** Step 1: pause dispatch, then refuse to go on while a session is live on the host or in the agent container. */
 export function quiesce(ctx: SetupContext, say: (status: StepStatus, text: string) => void): boolean {
   const p = { ...ctx, say };
   const script = join(p.clone, LAUNCHD);
@@ -228,16 +230,30 @@ export function quiesce(ctx: SetupContext, say: (status: StepStatus, text: strin
   p.say("note", `dispatch stays paused until a full setup run passes every phase and resumes it, or until ${LAUNCHD} resume`);
 
   const live = p.io.listSessions().filter((s) => !ENDED.includes(s.state));
-  for (const s of live) {
-    p.say(
-      "todo",
-      s.name === undefined
-        ? `an unnamed session is ${s.state}: stop it from claude agents`
-        : `session ${s.name} is ${s.state}: stop it with claude stop ${s.name}`,
-    );
-  }
+  for (const s of live) p.say("todo", stopTodo(s, "claude agents", "claude"));
   if (live.length === 0) p.say("pass", "no live sessions in claude agents");
-  return live.length === 0 || p.dryRun;
+
+  // Throws when the container's list cannot be read: a wrong empty answer would let a write
+  // go ahead under a live session.
+  const inContainer = containerSessions(p.io);
+  const liveInContainer = (inContainer ?? []).filter((s) => !ENDED.includes(s.state));
+  if (inContainer === undefined) {
+    p.say("note", `docker does not answer or the agent container ${CONTAINER} is not running, so no container session can be live`);
+  } else if (liveInContainer.length === 0) {
+    p.say("pass", `no live sessions in the agent container ${CONTAINER}`);
+  }
+  const inDocker = `docker exec ${CONTAINER} claude`;
+  for (const s of liveInContainer) p.say("todo", stopTodo(s, `${inDocker} agents`, inDocker, `in the agent container ${CONTAINER}`));
+  return (live.length === 0 && liveInContainer.length === 0) || p.dryRun;
+}
+
+/** A live session's to-do: `claude stop <id>`, by name when the list gives no id. */
+function stopTodo(s: Session, list: string, claude: string, where = ""): string {
+  const at = where === "" ? "" : ` ${where}`;
+  const handle = s.id ?? s.name;
+  if (handle === undefined) return `an unnamed session${at} is ${s.state}: stop it from ${list}`;
+  const shown = s.name === undefined ? `session ${handle}` : `session ${s.name}${s.id === undefined ? "" : ` (${s.id})`}`;
+  return `${shown}${at} is ${s.state}: stop it with ${claude} stop ${handle}`;
 }
 
 /** The restrict-updates ruleset as GitHub returns it to this login, or undefined when there is none. */

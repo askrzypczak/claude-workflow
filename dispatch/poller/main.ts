@@ -1,10 +1,7 @@
 // Entry point, run by dispatch/agent-poller.sh: node dispatch/poller/main.ts [--dry-run]
-// Validates the config, checks the sandbox settings, takes the lock, fetches sessions once,
-// then polls each repo. A failure in one repo is logged and the others still run; the exit
-// code is then 1.
+// Validates the config, takes the lock, fetches sessions once, then polls each repo. A failure
+// in one repo is logged and the others still run; the exit code is then 1.
 import { parseArgs } from "node:util";
-import { createIo as createSetupIo } from "../setup/io.ts";
-import { judgeSandbox, MANAGED_SETTINGS } from "../setup/sandbox.ts";
 import { loadConfig, parseMaxSessions } from "./config.ts";
 import type { RepoConfig } from "./config.ts";
 import { liveByPrefix, liveCount } from "./decide.ts";
@@ -64,27 +61,6 @@ function pollAll(repos: RepoConfig[], opts: RunOptions): number {
   return failures === 0 ? 0 : 1;
 }
 
-const SANDBOX_FIX = "run dispatch/setup-agents.sh sandbox";
-
-/**
- * Judges the settings the sessions would run under (docs/sandboxing.md, Settings). On a
- * problem, or anything thrown, it logs one line and returns false; nothing may launch then.
- */
-function sandboxPreflight(home: string, managed: string, dryRun: boolean): boolean {
-  try {
-    const { file, missing } = judgeSandbox(createSetupIo(), home, managed);
-    if (missing.length > 0) {
-      log(`sandbox preflight failed (${file}): ${missing.join("; ")}; ${SANDBOX_FIX}; aborting`);
-      return false;
-    }
-    if (dryRun) log(`sandbox preflight passed (${file})`);
-    return true;
-  } catch (err) {
-    log(`sandbox preflight failed (${managed}, else ${home}/.claude/settings.json): ${message(err)}; ${SANDBOX_FIX}; aborting`);
-    return false;
-  }
-}
-
 function main(): number {
   const { values } = parseArgs({ options: { "dry-run": { type: "boolean", default: false } } });
   const env = process.env;
@@ -105,10 +81,6 @@ function main(): number {
     log(`config ${configPath} has no repos; nothing to do`);
     return 0;
   }
-  // Tests point the managed path elsewhere; under launchd the variable is unset.
-  const managed = env.CLAUDE_WORKFLOW_MANAGED_SETTINGS || MANAGED_SETTINGS;
-  if (!sandboxPreflight(home, managed, values["dry-run"])) return 1;
-
   // No signal handlers: a signal ends the run at once, and the next run takes over the lock
   // its gone pid left behind.
   const lock = acquireLock(stateDir);
