@@ -1,31 +1,41 @@
-// The check phase: judges the sandbox settings, then launches a probe session the way the
-// poller launches ticket sessions and reads what it could and could not do. Only a full run
-// where everything passes resumes dispatch.
-import { readFileSync } from "node:fs";
+// The check phase: checks the agent container directly through docker exec (firewall, keys,
+// gh, mounts), then starts a probe session in it and reads what the session could and could
+// not do. Only a full run where everything passes resumes dispatch.
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { z } from "zod";
 import { LAUNCH_FLAGS } from "../poller/config.ts";
+import { ENDED } from "../poller/decide.ts";
+import { timestamp } from "../poller/io.ts";
+import type { Session } from "../poller/schemas.ts";
+import {
+  claudeExec,
+  cloneDir,
+  CONTAINER,
+  CONTAINER_HOME,
+  containerSessions,
+  containerState,
+  nodeExec,
+  readInContainer,
+  VOLUME,
+  waitReady,
+} from "./docker.ts";
+import type { ContainerState } from "./docker.ts";
 import type { RunResult } from "./io.ts";
 import type { Phase, SetupContext } from "./main.ts";
-import { judgeSandbox } from "./sandbox.ts";
-import type { SandboxJudgement } from "./sandbox.ts";
-import { backupStamp } from "./ssh.ts";
 
 const LAUNCHD = "dispatch/install-launchd.sh";
-const PROBE_SCRIPT = "dispatch/setup/sandbox-probe.sh";
-const FIX_DOCS = "docs/sandboxing.md, section Checks";
 
 /** The prefix of every probe result line; the END line closes the result. */
-const PREFIX = "SANDBOX-PROBE";
+const PREFIX = "SETUP-PROBE";
 const END = `${PREFIX} END`;
-const RESULT_LINE = /^SANDBOX-PROBE (PASS|FAIL) (.*)$/;
+const RESULT_LINE = /^SETUP-PROBE (PASS|FAIL) (.*)$/;
 
 const WAIT_MINUTES = 15;
 const WAIT = `${WAIT_MINUTES} minutes`;
-
-/** The plist template dispatch/install-launchd.sh fills in. */
-const PLIST = new URL("../launchd/com.askrzypczak.claude-workflow-poller.plist", import.meta.url);
-const PLIST_PATH = /<key>PATH<\/key>\s*<string>([^<]*)<\/string>/;
+const READY_TIMEOUT_MS = 3 * 60 * 1000;
+const SSH_DIR = `${CONTAINER_HOME}/.ssh`;
+/** A PEM private-key header: OpenSSH, RSA, EC, DSA, PKCS#8 and encrypted PKCS#8. */
+const PRIVATE_KEY_HEADER = "^-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY-----$";
 
 /** The first line of stderr, else of stdout, else the exit status. */
 function answer(result: RunResult): string {
@@ -34,42 +44,23 @@ function answer(result: RunResult): string {
 }
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
+const repoName = (repo: string) => repo.slice(repo.indexOf("/") + 1);
 
-/** `value` as one single-quoted shell word. */
-const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
-
-/** The environment the poller's sessions get when launchd runs dispatch/agent-poller.sh. */
-export function pollerEnv(home: string): { HOME: string; PATH: string } {
-  // Read on each call, not at load, so a module that only imports this one never reads it.
-  const launchdPath = PLIST_PATH.exec(readFileSync(PLIST, "utf8"))?.[1];
-  if (launchdPath === undefined) {
-    throw new Error(`${fileURLToPath(PLIST)} sets no PATH in its EnvironmentVariables`);
+/** The JSON value of `text`, or undefined when it is not JSON. */
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
   }
-  // What dispatch/agent-poller.sh puts before the PATH launchd gives it (no EXTRA_PATH there).
-  const prefix = [
-    `${home}/.local/share/fnm/aliases/default/bin`,
-    `${home}/.local/bin`,
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    "/usr/bin",
-    "/bin",
-  ];
-  return { HOME: home, PATH: [...prefix, launchdPath.replaceAll("__HOME__", home)].join(":") };
 }
 
-/** The probe's items, in the order the probe script and then the session write them. */
-export function probeItems(keys: readonly string[]): string[] {
-  return [
-    "home-write",
-    "network",
-    ...keys.map((key) => `key ${key}`),
-    "ssh-config",
-    "gh",
-    "read-tool",
-    "git-fetch",
-    "git-push",
-    "browser-tools",
-  ];
+/** `YYYYMMDD-HHMMSS`, local time: the probe session's name suffix. */
+const stamp = (d: Date) => timestamp(d).replace(/[-:]/g, "").replace(" ", "-");
+
+/** The probe session's items, in the order the session writes them. */
+export function probeItems(): string[] {
+  return ["git-fetch", "git-push", "browser-tools"];
 }
 
 /** One probe item's outcome. */
@@ -117,54 +108,139 @@ export function parseProbeResult(
   return { finished: text !== undefined && isFinished(text), verdicts };
 }
 
-/** The settings judged as the poller's preflight judges them; false when they fail. */
-function staticChecks(ctx: SetupContext, judgement: SandboxJudgement): boolean {
-  const { file, keys, missing } = judgement;
-  if (missing.length === 0) {
-    const denied = keys.length === 0 ? "no private key in ~/.ssh to deny" : `denies ${keys.join(", ")}`;
-    ctx.io.report("pass", `${file} holds every sandbox setting the sandbox phase generates and ${denied}`);
+/** The container runs and logged its readiness line; a to-do otherwise. */
+function containerReady(ctx: SetupContext, state: ContainerState): boolean {
+  const fix =
+    state.kind === "no-docker" ? `docker does not answer (${state.detail}): start Colima, then rerun dispatch/setup-agents.sh container`
+    : state.kind === "absent" ? `there is no container ${CONTAINER}: run dispatch/setup-agents.sh container`
+    : state.kind === "stopped" ? `the container ${CONTAINER} is stopped: run dispatch/setup-agents.sh container, which starts it`
+    : undefined;
+  if (fix !== undefined) {
+    ctx.io.report("todo", `${fix}, then rerun dispatch/setup-agents.sh check; no probe session was started`);
+    return false;
+  }
+  const ready = waitReady(ctx.io, READY_TIMEOUT_MS);
+  if (!ready.ready) {
+    ctx.io.report("todo", `the container ${CONTAINER} is not ready: ${ready.detail}. docker logs ${CONTAINER} shows its log; fix the cause, then rerun; no probe session was started`);
+    return false;
+  }
+  ctx.io.report("pass", `the container ${CONTAINER} runs and is ready`);
+  return true;
+}
+
+/** `curl` as node: api.github.com is reached and example.com refused. */
+function firewallItem(ctx: SetupContext): boolean {
+  const curl = (url: string) => nodeExec(ctx.io, ["curl", "-q", "-sS", "-o", "/dev/null", "--max-time", "15", url]);
+  const github = curl("https://api.github.com/rate_limit");
+  const other = curl("https://example.com");
+  const problems: string[] = [];
+  if (github.status !== 0) problems.push(`https://api.github.com was not reached (curl exit ${github.status}: ${answer(github)})`);
+  if (other.status === 0) problems.push("https://example.com was reached");
+  if (problems.length === 0) {
+    ctx.io.report("pass", "firewall: as node, https://api.github.com is reached and https://example.com refused");
     return true;
   }
-  for (const line of missing) ctx.io.report("fail", `sandbox settings: ${line}`);
+  ctx.io.report("fail", `firewall: ${problems.join("; ")}`);
+  return false;
+}
+
+/** Every private key in ~/.ssh is a served repo's deploy key, and no ssh-agent is forwarded. */
+function sshKeysItem(ctx: SetupContext): boolean {
+  const wanted = new Set(ctx.repos.map((r) => `${SSH_DIR}/deploy-${repoName(r.repo)}`));
+  const found = nodeExec(ctx.io, ["grep", "-rlE", "-e", PRIVATE_KEY_HEADER, SSH_DIR]);
+  const problems: string[] = [];
+  if (found.status !== 0 && found.status !== 1) {
+    problems.push(`searching ${SSH_DIR} failed (${answer(found)})`);
+  } else {
+    const keys = found.stdout.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+    const others = keys.filter((k) => !wanted.has(k));
+    if (others.length > 0) problems.push(`private keys that are no served repo's deploy key: ${others.join(", ")}`);
+  }
+  const agent = nodeExec(ctx.io, ["printenv", "SSH_AUTH_SOCK"]);
+  if (agent.status === 0 && agent.stdout.trim() !== "") problems.push(`SSH_AUTH_SOCK is set (${agent.stdout.trim()})`);
+  if (problems.length === 0) {
+    ctx.io.report("pass", `ssh-keys: the only private keys in ${SSH_DIR} are the deploy keys, and SSH_AUTH_SOCK is unset`);
+    return true;
+  }
+  ctx.io.report("fail", `ssh-keys: ${problems.join("; ")}`);
+  return false;
+}
+
+/** `gh repo view` in the first clone prints its repo. */
+function ghItem(ctx: SetupContext, repo: string, dir: string): boolean {
+  const viewed = nodeExec(ctx.io, ["gh", "repo", "view", "--json", "nameWithOwner"], { cwd: dir });
+  let shown: string | undefined;
+  if (viewed.status === 0) {
+    const parsed = z.object({ nameWithOwner: z.string() }).safeParse(safeJson(viewed.stdout));
+    shown = parsed.success ? parsed.data.nameWithOwner : viewed.stdout.trim();
+  }
+  if (shown?.toLowerCase() === repo.toLowerCase()) {
+    ctx.io.report("pass", `gh: gh repo view in ${dir} prints ${repo}`);
+    return true;
+  }
+  ctx.io.report("fail", `gh: gh repo view in ${dir} ${viewed.status === 0 ? `printed ${shown || "nothing"}, not ${repo}` : `failed (${answer(viewed)})`}`);
+  return false;
+}
+
+/** The only mount is the home volume at /home/node: no bind mount, no Docker socket. */
+function mountsItem(ctx: SetupContext, state: ContainerState): boolean {
+  const mounts = state.kind === "running" || state.kind === "stopped" ? state.mounts : [];
+  const isHome = (m: (typeof mounts)[number]) => m.type === "volume" && m.name === VOLUME && m.destination === CONTAINER_HOME;
+  const others = mounts.filter((m) => !isHome(m));
+  if (others.length === 0 && mounts.length === 1) {
+    ctx.io.report("pass", `mounts: the only mount is the ${VOLUME} volume at ${CONTAINER_HOME}`);
+    return true;
+  }
+  const shown = others.map((m) => `${m.type} ${m.source} at ${m.destination}${/docker\.sock/.test(`${m.source} ${m.destination}`) ? " (the Docker socket)" : ""}`);
   ctx.io.report(
-    "todo",
-    `${file} does not hold the sandbox settings (the failures above), and the poller refuses to launch until it does: rerun dispatch/setup-agents.sh sandbox, then dispatch/setup-agents.sh check${ctx.dryRun ? "" : "; no probe session was started"}`,
+    "fail",
+    `mounts: ${mounts.length === 0 ? "no mount" : `the container mounts ${shown.length > 0 ? shown.join(", ") : `${mounts.length} copies of ${VOLUME}`}`}; it must mount only the ${VOLUME} volume at ${CONTAINER_HOME}: remove it (docker rm -f ${CONTAINER}) and rerun dispatch/setup-agents.sh container`,
   );
   return false;
 }
 
 /** What the probe session is told to do: plain text, one step per line, one argv string. */
-function probePrompt(p: { clone: string; home: string; result: string; repo: string; keys: readonly string[] }): string {
-  const script = join(p.clone, PROBE_SCRIPT);
-  const command = ["bash", ...[script, p.result, p.repo, ...p.keys].map(shellQuote)].join(" ");
-  const firstRun = join(p.home, "Library", "Application Support", "Google", "Chrome", "First Run");
-  const result = shellQuote(p.result);
+function probePrompt(result: string): string {
+  const quoted = `'${result}'`;
   return [
-    "You are the sandbox probe session started by dispatch/setup-agents.sh check.",
+    "You are the setup probe session started by dispatch/setup-agents.sh check in the agent container.",
     "Do only the steps below, in order, without asking anything, then stop.",
-    `Append each result line with one Bash call of the form printf '%s\\n' '<line>' >> ${result} with the line in single quotes and no single quote or line break inside it; never use the Write or Edit tool for this.`,
-    `Step 1: run this command as one Bash call, exactly as written: ${command}`,
-    `Step 2: use the Read tool on the file ${firstRun}. If a permission rule refused the read, append ${PREFIX} PASS read-tool: <how it was refused>. Otherwise (it was read, or it failed for another reason) append ${PREFIX} FAIL read-tool: <what happened>.`,
-    `Step 3: run git fetch origin as its own Bash call with nothing else in it (no cd, no pipe, no redirection, no second command). If it exits 0, append ${PREFIX} PASS git-fetch: exit 0. Otherwise append ${PREFIX} FAIL git-fetch: <its first error line>.`,
-    `Step 4: the same for git push --dry-run origin HEAD:refs/heads/sandbox-probe, as its own Bash call with nothing else in it: append ${PREFIX} PASS git-push: exit 0, or ${PREFIX} FAIL git-push: <its first error line>.`,
-    `Step 5: if you have no browser tools (no Claude in Chrome tools, no mcp__claude-in-chrome__ tools, and no other tool that drives a web browser), append ${PREFIX} PASS browser-tools: none. Otherwise append ${PREFIX} FAIL browser-tools: <their names>.`,
-    `Step 6: append ${END}.`,
-    `Do not create commits, branches or tags, and do not create or change any file other than ${p.result}. Do not run any command besides the ones above. Never read or print a private key, or any other file under ~/.ssh: the commands above only test them.`,
+    `Append each result line with one Bash call of the form printf '%s\\n' '<line>' >> ${quoted} with the line in single quotes and no single quote or line break inside it; never use the Write or Edit tool for this.`,
+    `Step 1: run git fetch origin as its own Bash call with nothing else in it (no cd, no pipe, no redirection, no second command). If it exits 0, append ${PREFIX} PASS git-fetch: exit 0. Otherwise append ${PREFIX} FAIL git-fetch: <its first error line>.`,
+    `Step 2: run git push --dry-run origin HEAD:refs/heads/setup-probe the same way, as its own Bash call with nothing else in it: append ${PREFIX} PASS git-push: exit 0, or ${PREFIX} FAIL git-push: <its first error line>.`,
+    `Step 3: list your browser tools: Claude in Chrome tools (mcp__claude-in-chrome__ tools) and any other tool that drives a web browser. If you have no Claude in Chrome tool, append ${PREFIX} PASS browser-tools: <the other browser tools' names, or none>. Otherwise append ${PREFIX} FAIL browser-tools: <their names>.`,
+    `Step 4: append ${END}.`,
+    `Do not create commits, branches or tags, and do not create or change any file other than ${result}. Do not run any command besides the ones above. Never read or print a private key, or any other file under ~/.ssh.`,
   ].join("\n");
 }
 
-/** Stops the probe session, then removes its result file, so the session cannot write it again. */
+/** Stops the probe session by its id, found by its unique name, then removes its result file. */
 function cleanUp(ctx: SetupContext, name: string, result: string): void {
-  const stopped = ctx.io.run("claude", ["stop", name]);
-  if (stopped.status === 0) {
-    ctx.io.report("done", `stopped the probe session ${name} (claude stop ${name})`);
-  } else {
-    ctx.io.report("note", `claude stop ${name} failed (${answer(stopped)}): if the probe session ${name} still runs, stop it from claude agents`);
-  }
+  const how = `stop it from docker exec -it ${CONTAINER} claude agents`;
+  let sessions: Session[] | undefined;
   try {
-    ctx.io.removeFile(result);
+    sessions = containerSessions(ctx.io) ?? [];
   } catch (err) {
-    ctx.io.report("note", `removing the probe result ${result} failed (${message(err)}): remove it by hand`);
+    ctx.io.report("note", `listing the container's sessions failed (${message(err)}): if the probe session ${name} still runs, ${how}`);
+  }
+  if (sessions !== undefined) {
+    const session = sessions.find((s) => s.name === name);
+    if (session?.id === undefined) {
+      ctx.io.report("note", `the probe session ${name} is not in the container's claude agents list with an id, so it was not stopped: if it still runs, ${how}`);
+    } else if (ENDED.includes(session.state)) {
+      ctx.io.report("already", `the probe session ${name} (${session.id}) is ${session.state}`);
+    } else {
+      const stopped = claudeExec(ctx.io, undefined, ["stop", session.id]);
+      if (stopped.status === 0) {
+        ctx.io.report("done", `stopped the probe session ${name} (docker exec ${CONTAINER} claude stop ${session.id})`);
+      } else {
+        ctx.io.report("note", `claude stop ${session.id} failed (${answer(stopped)}): if the probe session ${name} still runs, ${how}`);
+      }
+    }
+  }
+  const removed = nodeExec(ctx.io, ["rm", "-f", result]);
+  if (removed.status !== 0) {
+    ctx.io.report("note", `removing the probe result ${result} failed (${answer(removed)}): remove it by hand (docker exec -u node ${CONTAINER} rm -f ${result})`);
   }
 }
 
@@ -185,46 +261,38 @@ function judgeProbe(ctx: SetupContext, name: string, text: string | undefined, i
   if (finished && verdicts.every((v) => v.pass)) return true;
   ctx.io.report(
     "todo",
-    `the sandbox probe failed: claude logs ${name} prints what the session did (claude attach ${name} reopens it). Fix the cause (${FIX_DOCS}), then rerun dispatch/setup-agents.sh check; dispatch was not resumed`,
+    `the probe failed: docker exec ${CONTAINER} claude logs ${name} prints what the session did. Fix the cause, then rerun dispatch/setup-agents.sh check; dispatch was not resumed`,
   );
   return false;
 }
 
-/** Starts the probe session in the first served repo's dir and judges its result. */
-function probe(ctx: SetupContext, keys: readonly string[]): boolean {
-  const served = ctx.repos[0];
-  if (served === undefined) throw new Error("no served repo to start the probe session in");
-  const { dir, repo } = served;
-  const name = `sandbox-probe-${backupStamp(new Date())}`;
+/** Starts the probe session in the first served repo's clone and judges its result. */
+function probe(ctx: SetupContext, repo: string, dir: string): boolean {
+  const name = `setup-probe-${stamp(new Date())}`;
   const result = `${dir}/.${name}.txt`;
-  const env = pollerEnv(ctx.home);
-  const items = probeItems(keys);
-  const command = `claude --bg --name ${name} ${LAUNCH_FLAGS.join(" ")} <the probe prompt>`;
-  const how = `${command} in ${dir}, with only HOME=${env.HOME} and PATH=${env.PATH} in its environment, as the poller's sessions get them under launchd`;
+  // A session started with a setup token stops at its first Bash call without the mode flag.
+  const flags = LAUNCH_FLAGS.includes("--permission-mode") ? [...LAUNCH_FLAGS] : [...LAUNCH_FLAGS, "--permission-mode", "auto"];
+  const items = probeItems();
+  const command = `docker exec -w ${dir} ${CONTAINER} claude --bg --name ${name} ${flags.join(" ")} <the probe prompt>`;
 
   if (ctx.dryRun) {
     ctx.io.report(
       "would",
-      `start the probe session ${name}: ${how}; wait up to ${WAIT} for ${result} to end with ${END}; judge ${items.join(", ")}; then run claude stop ${name} and remove ${result}`,
+      `start the probe session ${name} for ${repo}: ${command}; wait up to ${WAIT} for ${result} to end with ${END}; judge ${items.join(", ")}; then stop the session by its id from claude agents and remove ${result}`,
     );
     return true;
   }
 
-  const prompt = probePrompt({ clone: ctx.clone, home: ctx.home, result, repo, keys });
-  try {
-    ctx.io.launch(dir, name, LAUNCH_FLAGS, prompt, env);
-  } catch (err) {
-    ctx.io.report(
-      "todo",
-      `starting the probe session ${name} failed (${message(err)}): check that claude --bg starts a session in ${dir} (a directory claude has not been run in once must be trusted first), then rerun`,
-    );
+  const started = claudeExec(ctx.io, dir, ["--bg", "--name", name, ...flags, probePrompt(result)]);
+  if (started.status !== 0) {
+    ctx.io.report("todo", `starting the probe session ${name} failed (${answer(started)}): rerun dispatch/setup-agents.sh container (it trusts ${dir}), then rerun`);
     return false;
   }
-  ctx.io.report("done", `started the probe session ${name}: ${how}`);
+  ctx.io.report("done", `started the probe session ${name}: ${command}`);
   ctx.io.report("note", `waiting up to ${WAIT} for the probe result in ${result}`);
   let text: string | undefined;
   try {
-    text = ctx.io.waitForFile(result, isFinished, WAIT_MINUTES * 60 * 1000);
+    text = ctx.io.poll(() => readInContainer(ctx.io, result), isFinished, WAIT_MINUTES * 60 * 1000);
   } finally {
     cleanUp(ctx, name, result);
   }
@@ -244,7 +312,7 @@ function resume(ctx: SetupContext): boolean {
   if (ctx.dryRun) {
     ctx.io.report(
       "would",
-      `resume dispatch if the settings and every probe item pass: ${LAUNCHD} status, then ${LAUNCHD} resume unless the poller is not installed or already running`,
+      `resume dispatch if every check and probe item passes: ${LAUNCHD} status, then ${LAUNCHD} resume unless the poller is not installed or already running`,
     );
     return true;
   }
@@ -276,10 +344,22 @@ function resume(ctx: SetupContext): boolean {
 export const check: Phase = {
   name: "check",
   run(ctx) {
-    const judgement = judgeSandbox(ctx.io, ctx.home);
+    const served = ctx.repos[0];
+    if (served === undefined) throw new Error("no served repo to start the probe session in");
+    const dir = cloneDir(served.repo);
+    const state = containerState(ctx.io);
     // Under a dry run the failures are listed and the phase goes on to list the rest.
-    if (!staticChecks(ctx, judgement) && !ctx.dryRun) return "stop";
-    if (!probe(ctx, judgement.keys)) return "stop";
+    if (containerReady(ctx, state)) {
+      // Every item runs, so all the failures show at once.
+      const checks = [firewallItem(ctx), sshKeysItem(ctx), ghItem(ctx, served.repo, dir), mountsItem(ctx, state)];
+      if (!checks.every(Boolean)) {
+        ctx.io.report("todo", `the container checks failed (above): fix the cause, then rerun dispatch/setup-agents.sh check; no probe session was started and dispatch was not resumed`);
+        if (!ctx.dryRun) return "stop";
+      }
+    } else if (!ctx.dryRun) {
+      return "stop";
+    }
+    if (!probe(ctx, served.repo, dir)) return "stop";
     return resume(ctx) ? "ok" : "stop";
   },
 };

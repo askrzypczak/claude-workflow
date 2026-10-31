@@ -7,8 +7,11 @@ import { z } from "zod";
 import { ENDED } from "../poller/decide.ts";
 import { timestamp } from "../poller/io.ts";
 import { parseJson } from "../poller/schemas.ts";
-import type { RunOptions, RunResult, StepStatus } from "./io.ts";
+import type { Session } from "../poller/schemas.ts";
+import { CONTAINER, containerSessions } from "./docker.ts";
+import type { RunOptions, RunResult, SetupIo, StepStatus } from "./io.ts";
 import type { Phase, SetupContext } from "./main.ts";
+import type { ServedRepo } from "./repos.ts";
 
 const HOST = "github.com";
 const LAUNCHD = "dispatch/install-launchd.sh";
@@ -163,7 +166,7 @@ function parseRead<T extends z.ZodType>(schema: T, args: string[], result: RunRe
 }
 
 /** Runs a read-only gh command and parses its JSON; throws when it fails. */
-function ghJson<T extends z.ZodType>(p: Pass, schema: T, args: string[], opts?: RunOptions): z.output<T> {
+function ghJson<T extends z.ZodType>(p: { io: SetupIo }, schema: T, args: string[], opts?: RunOptions): z.output<T> {
   return parseRead(schema, args, p.io.run("gh", args, opts));
 }
 
@@ -204,8 +207,17 @@ const isAdminBypass = (actor: z.infer<typeof BypassActor>) =>
   actor.actor_type === ADMIN_BYPASS.actor_type &&
   actor.bypass_mode === ADMIN_BYPASS.bypass_mode;
 
-/** Step 1: pause dispatch, then refuse to go on while a session is live. */
-function pauseDispatch(p: Pass): boolean {
+/**
+ * Step 1: pause dispatch, then refuse to go on while a session is live on the host or in the
+ * agent container. With `opts.host` false, host sessions are not checked: what the container
+ * phase changes never reaches them.
+ */
+export function quiesce(
+  ctx: SetupContext,
+  say: (status: StepStatus, text: string) => void,
+  opts?: { host?: boolean },
+): boolean {
+  const p = { ...ctx, say };
   const script = join(p.clone, LAUNCHD);
   const status = p.io.run(script, ["status"]);
   if (status.status !== 0) throw new Error(`${LAUNCHD} status failed: ${answer(status)}`);
@@ -225,17 +237,32 @@ function pauseDispatch(p: Pass): boolean {
   }
   p.say("note", `dispatch stays paused until a full setup run passes every phase and resumes it, or until ${LAUNCHD} resume`);
 
-  const live = p.io.listSessions().filter((s) => !ENDED.includes(s.state));
-  for (const s of live) {
-    p.say(
-      "todo",
-      s.name === undefined
-        ? `an unnamed session is ${s.state}: stop it from claude agents`
-        : `session ${s.name} is ${s.state}: stop it with claude stop ${s.name}`,
-    );
+  const host = opts?.host !== false;
+  const live = host ? p.io.listSessions().filter((s) => !ENDED.includes(s.state)) : [];
+  for (const s of live) p.say("todo", stopTodo(s, "claude agents", "claude"));
+  if (host && live.length === 0) p.say("pass", "no live sessions in claude agents");
+
+  // Throws when the container's list cannot be read: a wrong empty answer would let a write
+  // go ahead under a live session.
+  const inContainer = containerSessions(p.io);
+  const liveInContainer = (inContainer ?? []).filter((s) => !ENDED.includes(s.state));
+  if (inContainer === undefined) {
+    p.say("note", `docker does not answer or the agent container ${CONTAINER} is not running, so no container session can be live`);
+  } else if (liveInContainer.length === 0) {
+    p.say("pass", `no live sessions in the agent container ${CONTAINER}`);
   }
-  if (live.length === 0) p.say("pass", "no live sessions in claude agents");
-  return live.length === 0 || p.dryRun;
+  const inDocker = `docker exec ${CONTAINER} claude`;
+  for (const s of liveInContainer) p.say("todo", stopTodo(s, `${inDocker} agents`, inDocker, `in the agent container ${CONTAINER}`));
+  return (live.length === 0 && liveInContainer.length === 0) || p.dryRun;
+}
+
+/** A live session's to-do: `claude stop <id>`, by name when the list gives no id. */
+function stopTodo(s: Session, list: string, claude: string, where = ""): string {
+  const at = where === "" ? "" : ` ${where}`;
+  const handle = s.id ?? s.name;
+  if (handle === undefined) return `an unnamed session${at} is ${s.state}: stop it from ${list}`;
+  const shown = s.name === undefined ? `session ${handle}` : `session ${s.name}${s.id === undefined ? "" : ` (${s.id})`}`;
+  return `${shown}${at} is ${s.state}: stop it with ${claude} stop ${handle}`;
 }
 
 /** The restrict-updates ruleset as GitHub returns it to this login, or undefined when there is none. */
@@ -350,7 +377,11 @@ function checkRuleset(p: Pass, repo: string, r: Ruleset | undefined, prefix: str
  * rule, reads current_user_can_bypass never for this login and, where GitHub returns it, has an
  * empty bypass list. Reads only: a missing or bypassable ruleset is fixed in the browser.
  */
-function checkProtectMain(p: Pass, repo: string, branch: string): boolean {
+export function checkProtectMain(
+  p: { io: SetupIo; say: (status: StepStatus, text: string) => void },
+  repo: string,
+  branch: string,
+): boolean {
   const todo = (text: string) => {
     p.say("todo", `${repo}: ${PROTECT_MAIN}: ${text}: fix it in the browser (Settings > Rules > Rulesets), then rerun`);
     return false;
@@ -454,9 +485,9 @@ function skipRulesetStep(p: Pass, active: Account): void {
 }
 
 /** The token form, pre-filled with everything GitHub's URL parameters allow. */
-function tokenFormUrl(login: string | undefined): string {
+export function tokenFormUrl(login: string | undefined, name: string): string {
   const params: Record<string, string> = {
-    name: `claude-workflow-agents-${timestamp(new Date()).slice(0, 10)}`,
+    name,
     description: "Agent sessions and the dispatch poller (claude-workflow); cannot merge",
     ...(login === undefined ? {} : { target_name: login }),
     ...TOKEN_PERMISSIONS,
@@ -467,7 +498,7 @@ function tokenFormUrl(login: string | undefined): string {
 
 /** Step 3: open the pre-filled form and read the token; undefined under --dry-run or when none was pasted. */
 function readToken(p: Pass, active: Account | undefined): string | undefined {
-  const url = tokenFormUrl(active?.login);
+  const url = tokenFormUrl(active?.login, `claude-workflow-agents-${timestamp(new Date()).slice(0, 10)}`);
   const select = p.repos.map((r) => r.repo).join(", ");
   if (p.dryRun) {
     p.say("would", `token: open the pre-filled token form ${url}`);
@@ -763,16 +794,24 @@ function scanStrayTokens(p: Pass): number {
   return found;
 }
 
+/** What a wrong-sha merge showed about a token. */
+export type MergeVerdict =
+  | { kind: "refused"; where: string }
+  | { kind: "can-merge"; where: string; code: string | undefined }
+  | { kind: "inconclusive"; where: string; answer: string }
+  | { kind: "no-pr"; computing: boolean };
+
 /**
- * Step 7: the wrong-sha merge on an open, mergeable PR must be refused with 403. A draft is used
- * only when no other open PR is mergeable: GitHub may refuse a draft (405) before it checks the token.
+ * The wrong-sha merge on the first served repo's open, mergeable PR, run with `opts` (the token
+ * as GH_TOKEN, when given). A draft is used only when no other open PR is mergeable: GitHub may
+ * refuse a draft (405) before it checks the token.
  */
-function mergeProbe(p: Pass): boolean {
+export function wrongShaMerge(io: SetupIo, repos: readonly ServedRepo[], opts?: RunOptions): MergeVerdict {
   let computing = false;
-  for (const { repo } of p.repos) {
-    const prs = ghJson(p, PrList, [
+  for (const { repo } of repos) {
+    const prs = ghJson({ io }, PrList, [
       "pr", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", "number,mergeable,isDraft",
-    ]);
+    ], opts);
     const mergeable = prs.filter((x) => x.mergeable === "MERGEABLE");
     const pr = mergeable.find((x) => x.isDraft !== true) ?? mergeable[0];
     if (pr === undefined) {
@@ -780,32 +819,43 @@ function mergeProbe(p: Pass): boolean {
       continue;
     }
     // A head sha that never matches, so GitHub never merges, whatever the token can do.
-    const result = p.io.run("gh", [
+    const result = io.run("gh", [
       "api", "-X", "PUT", `repos/${repo}/pulls/${pr.number}/merge`, "-f", `sha=${"0".repeat(40)}`,
-    ]);
+    ], opts);
     const code = /HTTP (\d{3})/.exec(result.stderr)?.[1];
     const where = `${repo} PR #${pr.number}`;
-    if (result.status !== 0 && code === "403") {
-      p.say("pass", `after-swap: a wrong-sha merge of ${where} was refused with 403: the token cannot merge`);
+    if (result.status !== 0 && code === "403") return { kind: "refused", where };
+    if (result.status === 0 || code === "409") return { kind: "can-merge", where, code };
+    return { kind: "inconclusive", where, answer: answer(result) };
+  }
+  return { kind: "no-pr", computing };
+}
+
+/** Step 7: the wrong-sha merge on an open, mergeable PR must be refused with 403. */
+function mergeProbe(p: Pass): boolean {
+  const verdict = wrongShaMerge(p.io, p.repos);
+  switch (verdict.kind) {
+    case "refused":
+      p.say("pass", `after-swap: a wrong-sha merge of ${verdict.where} was refused with 403: the token cannot merge`);
       return true;
-    }
-    if (result.status === 0 || code === "409") {
+    case "can-merge":
       p.say(
         "todo",
-        `after-swap: a wrong-sha merge of ${where} got ${code ?? "a success"}: the token can merge. Log it out now (gh auth logout --hostname ${HOST}) and check its permissions: Contents must be read`,
+        `after-swap: a wrong-sha merge of ${verdict.where} got ${verdict.code ?? "a success"}: the token can merge. Log it out now (gh auth logout --hostname ${HOST}) and check its permissions: Contents must be read`,
       );
       return false;
-    }
-    p.say("todo", `after-swap: the wrong-sha merge of ${where} was inconclusive (${answer(result)}): rerun when an open PR is mergeable`);
-    return false;
+    case "inconclusive":
+      p.say("todo", `after-swap: the wrong-sha merge of ${verdict.where} was inconclusive (${verdict.answer}): rerun when an open PR is mergeable`);
+      return false;
+    case "no-pr":
+      p.say(
+        "todo",
+        verdict.computing
+          ? "after-swap: GitHub is still computing whether the open PRs can be merged (mergeable is UNKNOWN), so the wrong-sha merge has no PR yet: rerun in a minute"
+          : "after-swap: no served repo has an open, mergeable PR for the wrong-sha merge: open one, or resolve an open PR's conflicts, then rerun",
+      );
+      return false;
   }
-  p.say(
-    "todo",
-    computing
-      ? "after-swap: GitHub is still computing whether the open PRs can be merged (mergeable is UNKNOWN), so the wrong-sha merge has no PR yet: rerun in a minute"
-      : "after-swap: no served repo has an open, mergeable PR for the wrong-sha merge: open one, or resolve an open PR's conflicts, then rerun",
-  );
-  return false;
 }
 
 /** Step 7: one fine-grained login, a refused merge, and each repo's ruleset read back. */
@@ -846,7 +896,7 @@ export const credentials: Phase = {
       },
     };
 
-    if (!pauseDispatch(p)) return "stop";
+    if (!quiesce(ctx, (status, text) => p.say(status, text))) return "stop";
     const stored = accounts(p);
     const active = stored.find((a) => a.active) ?? stored[0];
     // GitHub refuses the stored login's token (expired or revoked): nothing can run as that login.

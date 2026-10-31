@@ -1,4 +1,4 @@
-// Entry point, run by dispatch/setup-agents.sh: node dispatch/setup/main.ts [phase] [--dry-run] [--no-managed]
+// Entry point, run by dispatch/setup-agents.sh: node dispatch/setup/main.ts [phase] [--dry-run] [--rebuild]
 // Runs the phases in order and stops at the first one that needs the maintainer.
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -6,13 +6,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { check } from "./check.ts";
+import { container } from "./container.ts";
 import { credentials } from "./credentials.ts";
+import { host } from "./host.ts";
 import { createIo } from "./io.ts";
 import type { SetupIo } from "./io.ts";
 import { servedRepos } from "./repos.ts";
 import type { ServedRepo } from "./repos.ts";
-import { MANAGED_SETTINGS, sandbox } from "./sandbox.ts";
-import { ssh } from "./ssh.ts";
 
 export type PhaseResult = "ok" | "stop";
 
@@ -22,8 +22,8 @@ export interface SetupContext {
   clone: string;
   home: string;
   repos: readonly ServedRepo[];
-  /** --no-managed: skip the managed settings copy. */
-  noManaged?: boolean;
+  /** --rebuild: container rebuilds the image with --pull --no-cache and replaces the container. */
+  rebuild?: boolean;
   /** A full run (no phase argument): only then may the check phase resume dispatch. */
   fullRun?: boolean;
 }
@@ -34,27 +34,28 @@ export interface Phase {
 }
 
 /** The phases, in the order a full run takes them. */
-const PHASES: readonly Phase[] = [credentials, ssh, sandbox, check];
+const PHASES: readonly Phase[] = [credentials, host, container, check];
 
-const USAGE = `Usage: dispatch/setup-agents.sh [${PHASES.map((p) => p.name).join("|")}] [--dry-run] [--no-managed]
+const USAGE = `Usage: dispatch/setup-agents.sh [${PHASES.map((p) => p.name).join("|")}] [--dry-run] [--rebuild]
   With no phase, runs every phase in order and stops at the first that needs the maintainer;
   when every phase passes, the last one (check) resumes dispatch. A single phase never does.
   --dry-run  run the reads and print what each step would do; change nothing.
-  --no-managed  sandbox: skip the managed settings copy (${MANAGED_SETTINGS}, written with sudo).`;
+  --rebuild  container: rebuild the image with --pull --no-cache and replace the container,
+             keeping its home volume; it refuses while a session is live.`;
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 /** The phases argv selects and its flags, or undefined on a usage error. */
 function parse(
   argv: readonly string[],
-): { phases: readonly Phase[]; full: boolean; dryRun: boolean; noManaged: boolean } | undefined {
+): { phases: readonly Phase[]; full: boolean; dryRun: boolean; rebuild: boolean } | undefined {
   let parsed;
   try {
     parsed = parseArgs({
       args: [...argv],
       options: {
         "dry-run": { type: "boolean", default: false },
-        "no-managed": { type: "boolean", default: false },
+        rebuild: { type: "boolean", default: false },
       },
       allowPositionals: true,
       strict: true,
@@ -67,7 +68,7 @@ function parse(
   const name = positionals[0];
   const phases = name === undefined ? PHASES : PHASES.filter((p) => p.name === name);
   if (phases.length === 0) return undefined;
-  return { phases, full: name === undefined, dryRun: values["dry-run"], noManaged: values["no-managed"] };
+  return { phases, full: name === undefined, dryRun: values["dry-run"], rebuild: values.rebuild };
 }
 
 /** 0 when every phase passed, 1 when one stopped or failed, 2 on a usage error. */
@@ -85,7 +86,7 @@ export function runSetup(
     const ctx: SetupContext = {
       io: base.io,
       dryRun: args.dryRun,
-      noManaged: args.noManaged,
+      rebuild: args.rebuild,
       fullRun: args.full,
       clone: base.clone,
       home: base.home,
