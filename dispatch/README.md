@@ -32,7 +32,7 @@ Labels on GitHub start unattended agent sessions locally:
 
 ### Onboarding a repo
 
-1. Meet the [requirements](../docs/setup.md#requirements) (`npm run check`, deny rules, plugin enabled).
+1. Meet the [requirements](../docs/setup.md#requirements) (`npm run check`, deny rules, the plugin at user scope).
 2. Create the labels: `setup-labels.sh owner/repo`.
 3. Optionally add the [label-cleanup caller](../docs/setup.md#label-cleanup-on-close).
 4. Add the repo to `~/.config/claude-workflow/repos.json` (`dispatch/repos.example.json` is a starting point; the installer refuses to run without the file):
