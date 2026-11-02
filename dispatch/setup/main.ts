@@ -1,4 +1,5 @@
-// Entry point, run by dispatch/setup-agents.sh: node dispatch/setup/main.ts [phase] [--dry-run] [--rebuild] [--add-repo owner/name]
+// Entry point, run by dispatch/setup-agents.sh: node dispatch/setup/main.ts [phase] [--dry-run]
+// [--rebuild] [--add-repo owner/name]
 // Runs the phases in order and stops at the first one that needs the maintainer.
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -36,13 +37,15 @@ export interface Phase {
 /** The phases, in the order a full run takes them. */
 const PHASES: readonly Phase[] = [credentials, host, container, check];
 
-const USAGE = `Usage: dispatch/setup-agents.sh [${PHASES.map((p) => p.name).join("|")}] [--dry-run] [--rebuild] [--add-repo owner/name]
+const USAGE = `Usage: dispatch/setup-agents.sh [${PHASES.map((p) => p.name).join("|")}] [--dry-run] [--rebuild]
+       [--add-repo owner/name]
   With no phase, runs every phase in order and stops at the first that needs the maintainer;
   when every phase passes, the last one (check) resumes dispatch. A single phase never does.
   --dry-run   run the reads and print what each step would do; change nothing.
   --rebuild   container: rebuild the image with --pull --no-cache and replace the container,
               keeping its home volume; it refuses while a session is live.
-  --add-repo  add owner/name to the dispatch config (created when missing), then run as usual; a repo listed already is left as it is.`;
+  --add-repo  add owner/name to the dispatch config (created when missing), then run as usual;
+              a repo listed already is left as it is.`;
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 

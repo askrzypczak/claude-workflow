@@ -88,6 +88,7 @@ function withAddRepo(
   text: string | undefined,
 ): ServedRepo[] {
   const { configPath, addRepo } = opts;
+  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(addRepo)) throw new Error(`--add-repo ${addRepo}: not of the form owner/name`);
   const missing = text === undefined;
   const current = parseConfig(text ?? "[]", { path: configPath, home: CONTAINER_HOME, dirExists: () => true });
   if (current.some((e) => e.repo.toLowerCase() === addRepo.toLowerCase())) {
@@ -138,7 +139,7 @@ function sessionPrefixFor(name: string): string {
 
 const AuthStatus = z.object({
   hosts: z
-    .record(z.string(), z.array(z.object({ login: z.string(), active: z.boolean() })))
+    .record(z.string(), z.array(z.object({ login: z.string(), active: z.boolean().optional() })))
     .nullish(),
 });
 
@@ -161,7 +162,7 @@ function activeLogin(io: SetupIo, repo: string): string {
   }
   const parsed = AuthStatus.safeParse(data);
   if (!parsed.success) throw new Error(`--add-repo ${repo}: gh auth status did not print the accounts per host`);
-  const account = (parsed.data.hosts?.["github.com"] ?? []).find((a) => a.active);
+  const account = (parsed.data.hosts?.["github.com"] ?? []).find((a) => a.active === true);
   if (account === undefined) {
     throw new Error(
       `--add-repo ${repo}: no active github.com gh login to take the owner from: run gh auth login, then rerun`,

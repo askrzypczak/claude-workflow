@@ -41,7 +41,7 @@ Labels on GitHub start unattended agent sessions locally:
           {
             "repo": "example-owner/example-app",
             "dir": "/home/node/example-app",
-            "sessionPrefix": "app",
+            "sessionPrefix": "example-app",
             "owner": "example-owner"
           }
         ]
