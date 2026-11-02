@@ -5,11 +5,12 @@
 # Claude token and the plugin (container), then checks in the container and a probe session
 # started in it (check).
 # See docs/agent-credentials.md and dispatch/container/README.md.
-# Usage: dispatch/setup-agents.sh [credentials|host|container|check] [--dry-run] [--rebuild]
+# Usage: dispatch/setup-agents.sh [credentials|host|container|check] [--dry-run] [--rebuild] [--add-repo owner/name]
 #   With no phase, runs every phase in order and stops at the first step that needs the maintainer.
-#   --dry-run  run the reads and print what each step would do; change nothing.
-#   --rebuild  container: rebuild the image with --pull --no-cache and replace the container,
-#              keeping its home volume; it refuses while a session is live.
+#   --dry-run   run the reads and print what each step would do; change nothing.
+#   --rebuild   container: rebuild the image with --pull --no-cache and replace the container,
+#               keeping its home volume; it refuses while a session is live.
+#   --add-repo  add owner/name to the dispatch config (created when missing), then run as usual; a repo listed already is left as it is.
 # The maintainer runs this in a terminal, never an agent: it reads the tokens and sets up the
 # container that confines agent sessions.
 #

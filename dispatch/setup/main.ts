@@ -1,4 +1,4 @@
-// Entry point, run by dispatch/setup-agents.sh: node dispatch/setup/main.ts [phase] [--dry-run] [--rebuild]
+// Entry point, run by dispatch/setup-agents.sh: node dispatch/setup/main.ts [phase] [--dry-run] [--rebuild] [--add-repo owner/name]
 // Runs the phases in order and stops at the first one that needs the maintainer.
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -36,19 +36,20 @@ export interface Phase {
 /** The phases, in the order a full run takes them. */
 const PHASES: readonly Phase[] = [credentials, host, container, check];
 
-const USAGE = `Usage: dispatch/setup-agents.sh [${PHASES.map((p) => p.name).join("|")}] [--dry-run] [--rebuild]
+const USAGE = `Usage: dispatch/setup-agents.sh [${PHASES.map((p) => p.name).join("|")}] [--dry-run] [--rebuild] [--add-repo owner/name]
   With no phase, runs every phase in order and stops at the first that needs the maintainer;
   when every phase passes, the last one (check) resumes dispatch. A single phase never does.
-  --dry-run  run the reads and print what each step would do; change nothing.
-  --rebuild  container: rebuild the image with --pull --no-cache and replace the container,
-             keeping its home volume; it refuses while a session is live.`;
+  --dry-run   run the reads and print what each step would do; change nothing.
+  --rebuild   container: rebuild the image with --pull --no-cache and replace the container,
+              keeping its home volume; it refuses while a session is live.
+  --add-repo  add owner/name to the dispatch config (created when missing), then run as usual; a repo listed already is left as it is.`;
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 /** The phases argv selects and its flags, or undefined on a usage error. */
 function parse(
   argv: readonly string[],
-): { phases: readonly Phase[]; full: boolean; dryRun: boolean; rebuild: boolean } | undefined {
+): { phases: readonly Phase[]; full: boolean; dryRun: boolean; rebuild: boolean; addRepo: string | undefined } | undefined {
   let parsed;
   try {
     parsed = parseArgs({
@@ -56,6 +57,7 @@ function parse(
       options: {
         "dry-run": { type: "boolean", default: false },
         rebuild: { type: "boolean", default: false },
+        "add-repo": { type: "string" },
       },
       allowPositionals: true,
       strict: true,
@@ -68,7 +70,13 @@ function parse(
   const name = positionals[0];
   const phases = name === undefined ? PHASES : PHASES.filter((p) => p.name === name);
   if (phases.length === 0) return undefined;
-  return { phases, full: name === undefined, dryRun: values["dry-run"], rebuild: values.rebuild };
+  return {
+    phases,
+    full: name === undefined,
+    dryRun: values["dry-run"],
+    rebuild: values.rebuild,
+    addRepo: values["add-repo"],
+  };
 }
 
 /** 0 when every phase passed, 1 when one stopped or failed, 2 on a usage error. */
@@ -82,7 +90,12 @@ export function runSetup(
     return 2;
   }
   try {
-    const repos = servedRepos(base.io, { clone: base.clone, configPath: base.configPath });
+    const repos = servedRepos(base.io, {
+      clone: base.clone,
+      configPath: base.configPath,
+      addRepo: args.addRepo,
+      dryRun: args.dryRun,
+    });
     const ctx: SetupContext = {
       io: base.io,
       dryRun: args.dryRun,
