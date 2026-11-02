@@ -32,7 +32,7 @@ export function parseRemote(url: string): string | undefined {
  */
 export function servedRepos(
   io: SetupIo,
-  opts: { clone: string; configPath: string },
+  opts: { clone: string; configPath: string; addRepo?: string; dryRun?: boolean },
 ): ServedRepo[] {
   const origin = io.run("git", ["-C", opts.clone, "remote", "get-url", "origin"]);
   if (origin.status !== 0) {
