@@ -112,6 +112,21 @@ describe("credentials phase after-swap checks", () => {
     expect(reports.some((r) => r.status === "todo" && r.text.includes("example-second"))).toBe(true);
   });
 
+  it("a read failure other than HTTP 404 on the after-swap restrict-updates read-back still throws, naming the read", () => {
+    let loggedIn = false;
+    const world: FakeWorld = {
+      respond(call) {
+        if (isGh(call, "auth", "login")) loggedIn = true;
+        const a = parseGhApi(call);
+        return loggedIn && a?.method === "GET" && a.endpoint === `repos/${FAKE_REPO}/rulesets`
+          ? { status: 1, stdout: "", stderr: "gh: Server Error (HTTP 500)" }
+          : undefined;
+      },
+    };
+
+    expect(() => run(world, [FAKE_REPO, OTHER_REPO])).toThrow(`repos/${FAKE_REPO}/rulesets`);
+  });
+
   it("one stored login after the swap passes the one-login check whatever its token kind", () => {
     const { result, reports } = run(afterLogin([{ login: FAKE_LOGIN, token: "gho_******" }]));
 

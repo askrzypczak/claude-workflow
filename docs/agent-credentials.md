@@ -39,7 +39,7 @@ The setup script opens a pre-filled form for each token and stores the token pas
 - A paste must start `github_pat_` (maintainer, 2026-11-02 (#195, #196)), because the login swap logs out every account first. A paste that `gh auth login` refuses leaves no login, and the to-do says how to log in.
 - Nothing checks that the container's token sees every served repo (maintainer, 2026-11-02 (#195, #196)): `check`'s `gh repo view` reads only the first clone. The accepted cost: a repo not selected on the token passes setup, and its poller `gh` calls fail once dispatch runs.
 
-The after-swap `restrict-updates` read-back is the only repo-access check the script keeps for the host token, and it runs after the swap: a served repo the new token cannot see is a to-do naming the repo and how to select it on the token (epic #195 orchestrator, not human-approved).
+The after-swap `restrict-updates` read-back is the only repo-access check of a newly pasted host token, and it runs after the swap: a served repo the new token cannot see is a to-do naming the repo and how to select it on the token (epic #195 orchestrator, not human-approved).
 
 ## The token
 
