@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { probeItems } from "./check.ts";
-import { FAKE_REPO, fakeIo, fileWrites, isMergeProbe, parseGhApi, writeCalls } from "./fake-io.ts";
+import { FAKE_REPO, FAKE_TOKEN, fakeIo, fileWrites, writeCalls } from "./fake-io.ts";
 import type { FakeCall, FakeDocker } from "./fake-io.ts";
 import type { SetupIo } from "./io.ts";
 import { runSetup } from "./main.ts";
@@ -27,9 +27,11 @@ const PAUSED_LINE =
   "Dispatch stays paused until a full run of dispatch/setup-agents.sh passes every phase, or until dispatch/install-launchd.sh resume.";
 const isStopLine = (line: string) => line.startsWith("Stopped in credentials:");
 const liveSession = [{ name: "tools-3", state: "running" as const, startedAt: 1 }];
-/** No served repo has an open PR. */
-const noPrs = (c: FakeCall) =>
-  c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "list" ? { status: 0, stdout: "[]\n", stderr: "" } : undefined;
+/** No served repo has an open PR, an open issue or a workflow run. */
+const nothingOpen = (c: FakeCall) =>
+  c.cmd === "gh" && ["pr", "issue", "run"].includes(c.args[0] ?? "") && c.args[1] === "list"
+    ? { status: 0, stdout: "[]\n", stderr: "" }
+    : undefined;
 
 describe("runSetup", () => {
   beforeEach(() => {
@@ -103,8 +105,8 @@ describe("runSetup", () => {
     expect(console.error).toHaveBeenCalledTimes(1);
   });
 
-  it("a full run with no open PR in any served repo probes the login's token and goes on past credentials to the later phases", () => {
-    const { io, calls } = fakeIo({ login: "fine-grained", deployKeys: [FAKE_REPO], docker: readyContainer(), respond: noPrs });
+  it("with no open PR, issue or workflow run on any served repo, a full run on an admin login reads the pasted token, swaps the login and goes on past credentials to the later phases", () => {
+    const { io, calls } = fakeIo({ deployKeys: [FAKE_REPO], docker: readyContainer(), respond: nothingOpen });
 
     runSetup([], base(io));
     const headers = printed()
@@ -113,8 +115,13 @@ describe("runSetup", () => {
     expect(headers).toEqual(expect.arrayContaining(["credentials", "host", "container"]));
     expect(printed().some(isStopLine)).toBe(false);
     expect(console.error).not.toHaveBeenCalled();
-    const loginProbes = calls.filter((c) => isMergeProbe(c) && c.env.GH_TOKEN === undefined);
-    expect(loginProbes.map((c) => parseGhApi(c)!.endpoint)).toEqual([`repos/${FAKE_REPO}/git/refs`]);
+    const isHostGh = (c: FakeCall, sub: string) => c.cmd === "gh" && c.args[0] === "auth" && c.args[1] === sub;
+    const logins = calls.filter((c) => isHostGh(c, "login"));
+    expect(logins).toHaveLength(1);
+    expect(logins[0]!.input?.trim()).toBe(FAKE_TOKEN);
+    const logout = calls.findIndex((c) => isHostGh(c, "logout"));
+    expect(logout).toBeGreaterThanOrEqual(0);
+    expect(logout).toBeLessThan(calls.indexOf(logins[0]!));
   });
 
   it("a phase that stops while dispatch is paused says after the stop line that dispatch stays paused and how to resume it", () => {

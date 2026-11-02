@@ -68,7 +68,6 @@ function expiredWorld(first?: (call: FakeCall) => RunResult | undefined): FakeWo
       }
       if (isGh(call, "auth", "logout")) return undefined;
       if (isGh(call, "auth", "status")) return expiredStatus(call);
-      if (call.env.GH_TOKEN !== undefined) return undefined;
       return unauthorized(call);
     },
   };
@@ -97,7 +96,7 @@ describe("credentials phase with the stored token expired", () => {
     vi.restoreAllMocks();
   });
 
-  it("with the stored token expired, setup-agents credentials opens the token form, runs the pre-swap test as the new token and swaps the login", () => {
+  it("with the stored token expired, setup-agents credentials opens the token form and swaps the login, and no call carries the new token in its environment", () => {
     const { io, calls, prompts } = fakeIo(expiredWorld());
 
     expect(runSetup(["credentials"], base(io))).toBe(0);
@@ -113,39 +112,8 @@ describe("credentials phase with the stored token expired", () => {
     expect(calls[logout]!.args).toContain(FAKE_LOGIN);
     expect(logout).toBeLessThan(login);
 
-    const beforeSwap = calls.slice(0, login);
-    for (const words of [["pr", "list"], ["issue", "list"], ["run", "list"], ["label", "list"]]) {
-      const reads = beforeSwap.filter((c) => isGh(c, ...words));
-      expect(reads.length, `gh ${words.join(" ")} before the swap`).toBeGreaterThan(0);
-      for (const read of reads) expect(read.env.GH_TOKEN, `gh ${read.args.join(" ")}`).toBe(FAKE_TOKEN);
-    }
-    const firstPrList = calls.findIndex((c) => isGh(c, "pr", "list"));
-    expect(firstPrList).toBeGreaterThan(opened);
-    for (const words of [["issue", "comment"], ["run", "view"], ["pr", "diff"]]) {
-      const preSwap = beforeSwap.filter((c) => isGh(c, ...words));
-      expect(preSwap.length, `gh ${words.join(" ")} in the pre-swap test`).toBeGreaterThan(0);
-      for (const c of preSwap) expect(c.env.GH_TOKEN).toBe(FAKE_TOKEN);
-    }
-  });
-
-  it("with the stored token expired, a served repo the new token cannot read is a to-do naming the repo and the login is not swapped", () => {
-    const { io, calls, reports } = fakeIo(
-      expiredWorld((c) =>
-        isGh(c, "pr", "list") && c.env.GH_TOKEN !== undefined
-          ? {
-              status: 1,
-              stdout: "",
-              stderr: `GraphQL: Could not resolve to a Repository with the name '${FAKE_REPO}'. (repository)`,
-            }
-          : undefined,
-      ),
-    );
-
-    expect(runSetup(["credentials"], base(io))).toBe(1);
-
-    expect(console.error).not.toHaveBeenCalled();
-    expect(reports.some((r) => r.status === "todo" && r.text.includes(FAKE_REPO))).toBe(true);
-    expect(calls.filter((c) => isGh(c, "auth", "logout") || isGh(c, "auth", "login"))).toEqual([]);
+    const carrying = calls.filter((c) => Object.values(c.env).some((v) => v.includes(FAKE_TOKEN)));
+    expect(carrying.map((c) => `${c.cmd} ${c.args.join(" ")}`)).toEqual([]);
   });
 
   it("with the stored token expired, the run makes no ruleset or auto-merge write and reports the ruleset step as skipped", () => {
@@ -164,7 +132,7 @@ describe("credentials phase with the stored token expired", () => {
 
     expect(console.error).not.toHaveBeenCalled();
     const would = reports.filter((r) => r.status === "would").map((r) => r.text);
-    for (const keyword of [/token/i, /pre-swap/i, /login/i, /after-swap/i]) {
+    for (const keyword of [/token/i, /login/i, /after-swap/i]) {
       expect(would.some((t) => keyword.test(t)), `a would line matching ${keyword}`).toBe(true);
     }
     expect(skippedReport(reports)).toBe(true);
