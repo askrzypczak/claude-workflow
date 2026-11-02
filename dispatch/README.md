@@ -35,22 +35,24 @@ Labels on GitHub start unattended agent sessions locally:
 1. Meet the [requirements](../docs/setup.md#requirements) (declared checks, deny rules, the plugin at user scope).
 2. Create the labels: `setup-labels.sh owner/repo`.
 3. Optionally add the [label-cleanup caller](../docs/setup.md#label-cleanup-on-close).
-4. Add the repo to `~/.config/claude-workflow/repos.json` (`dispatch/repos.example.json` is a starting point; the installer refuses to run without the file):
+4. Add the repo to the dispatch config with `dispatch/setup-agents.sh --add-repo owner/name`. It writes the entry below to `~/.config/claude-workflow/repos.json` (or `CLAUDE_WORKFLOW_CONFIG`), creating the file when missing, then runs as usual. With `--dry-run` it prints the entry and writes nothing, and the dry run serves the repo as if the entry were written:
 
         [
           {
             "repo": "example-owner/example-app",
             "dir": "/home/node/example-app",
-            "sessionPrefix": "app",
+            "sessionPrefix": "example-app",
             "owner": "example-owner"
           }
         ]
 
-   - `repo`: `owner/name`.
+   - `repo`: `owner/name`, the name given to `--add-repo`.
    - `dir`: the repo's clone in the agent container, `/home/node/<name>` for `owner/<name>`, which sessions start in. The `container` phase clones it there and trusts it; setup refuses any other value.
-   - `sessionPrefix`: names sessions; unique per repo.
-   - `owner`: the only ticket author whose tickets are launched.
+   - `sessionPrefix`: names sessions; unique per repo. It is the repo name with each character other than a letter, digit, `_` or `-` turned into `-`, and leading `-` dropped (`my.site` gives `my-site`, `.github` gives `github`).
+   - `owner`: the login of the `gh` account setup runs with, the only ticket author whose tickets are launched.
    - `maxSessions` (optional, positive integer): cap on live sessions for this repo.
+
+   A repo already listed is left alone. A `sessionPrefix` that another entry uses (in any case) is refused: add that entry by hand with another `sessionPrefix`. `maxSessions`, or any other change, is a hand edit. The installer still refuses to run without the file.
 5. The maintainer, in a terminal and never from an agent session, sets the machine up from the clone (`npm ci` there once). `dispatch/setup-agents.sh --dry-run` first lists every step and changes nothing; then `dispatch/setup-agents.sh` runs the four phases in order and stops at the first step that needs the maintainer: do what it prints and rerun.
    - `credentials`: the host's `gh` token, each repo's `restrict-updates` ruleset and auto-merge; see [Agent credentials](../docs/agent-credentials.md). It refuses while a session is live on the host or in the container.
    - `host`: `CLAUDE_CODE_ENABLE_CFC=0` and the deny rules of `dispatch/setup/host-settings.json`, merged into `~/.claude/settings.json` after a backup. A `sandbox` block or a managed settings file left from the old setup gets a note with the command that removes it, and is left as it is.
