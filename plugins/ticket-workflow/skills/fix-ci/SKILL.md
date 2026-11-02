@@ -29,13 +29,13 @@ Make the smallest change that fixes the cause. Never make a check pass by deleti
 State what failed, what you tried and the options you see.
 
 ## 4. Verify and publish
-- `npm run check` (or the repo's equivalent definition of done) must be green locally. If it fails identically on `origin/main`, say so rather than papering over it.
+- The project's checks (its definition of done: every backticked command on the `Checks:` line of the root `CLAUDE.md`, or `npm run check`, the fallback, when there is no such line) must be green locally. If it fails identically on `origin/main`, say so rather than papering over it.
 - Commit with a message naming the CI failure fixed.
 - Send the same branch to origin with `git push -u origin <headRefName>` (no force flags), as its own Bash call with no `cd`, `git -C` or chaining; it also sets the upstream step 1 left out.
 - Wait for CI with `gh pr checks <pr> --watch`. If it is still red for a new reason, apply the stop conditions: one fix attempt, then `needs input:`.
 
 ## 5. Report
-Comment on the PR (`gh pr comment`): which check failed, the cause, the fix, the `npm run check` result, the new head commit and the final CI state. End the session with `result:` naming the PR and its state.
+Comment on the PR (`gh pr comment`): which check failed, the cause, the fix, the result of the project's checks, the new head commit and the final CI state. End the session with `result:` naming the PR and its state.
 
 ## Hard rules
 Only ever update the PR's own `issue-N-*` branch, with a plain push; never `main`, never force-push, never rebase, never merge, never `gh pr merge`. Do not change issue or PR labels, and do not touch anything beyond what the fix requires. Same guardrails as `work-ticket`.

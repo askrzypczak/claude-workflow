@@ -6,7 +6,8 @@ Claude Code plugin marketplace (`askrzypczak-plugins`) holding the `ticket-workf
 - **No `version` in `plugin.json`, on purpose.** Installs track the commit SHA, so every merge to `main` reaches agent sessions and PRs have no version to collide on. Don't add one (here or in `marketplace.json`): a pinned version would freeze installs until someone changed it.
 - Keep README.md's Workflow list in step with `skills/work-ticket/SKILL.md`.
 - Keep the allowlist table in `docs/containers.md` in step with the hosts in `dispatch/container/init-firewall.sh`.
-- Validate with `claude plugin validate .`; type-check TS with `npm run typecheck`.
+- Checks: `npm test`, `npm run typecheck`, `plugins/ticket-workflow/hooks/test-guard-comments.sh`, `claude plugin validate .`.
+- `claude plugin validate .` warns that plugin.json has no version; that is expected (see the first bullet).
 - Guardrails: the comment guard ships with the plugin (`plugins/ticket-workflow/hooks/guard-comments.sh`; test: `test-guard-comments.sh` in the same directory, run in CI). Deny rules stay per project; this repo's own are in `.claude/settings.json`.
 - Maintainer: `askrzypczak`. Branch per change, PR to `main`; humans merge.
 - **Public repo**: tracked files must not contain home-directory paths, personal emails (GitHub noreply is fine), tokens, names of unpublished repos or projects, or role references to a named person (use "the human" / "the maintainer").

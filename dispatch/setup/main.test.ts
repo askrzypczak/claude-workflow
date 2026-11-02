@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { probeItems } from "./check.ts";
-import { FAKE_REPO, FAKE_TOKEN, fakeIo, fileWrites, writeCalls } from "./fake-io.ts";
+import { FAKE_REPO, FAKE_TOKEN, fakeIo, fileWrites, parseGhApi, writeCalls } from "./fake-io.ts";
 import type { FakeCall, FakeDocker } from "./fake-io.ts";
 import type { SetupIo } from "./io.ts";
 import { runSetup } from "./main.ts";
@@ -170,5 +170,32 @@ describe("runSetup", () => {
     expect(stop).toBeGreaterThanOrEqual(0);
     expect(lines.slice(stop + 1)).toEqual([]);
     expect(console.error).not.toHaveBeenCalled();
+  });
+
+  describe("--add-repo", () => {
+    const NEW = "example-owner/example-app";
+    const configPath = "/config/repos.json";
+    /** Whether the run read the new repo with gh api repos/<repo>, as the credentials phase does for each served repo. */
+    const servesNew = (calls: readonly FakeCall[]) =>
+      calls.some((c) => c.cmd === "gh" && parseGhApi(c)?.endpoint === `repos/${NEW}`);
+
+    it("a run with --add-repo writes the entry, then runs the phase, which serves the new repo", () => {
+      const { io, calls, files } = fakeIo({ login: "fine-grained" });
+
+      runSetup(["credentials", "--add-repo", NEW], { ...base(io), configPath });
+      const config = JSON.parse(files[configPath] ?? "[]") as { repo: string }[];
+      expect(config.map((e) => e.repo)).toEqual([NEW]);
+      expect(printed().some((line) => line.startsWith("--- credentials"))).toBe(true);
+      expect(servesNew(calls)).toBe(true);
+    });
+
+    it("a dry run with --add-repo writes no file, and the phase that follows serves the new repo", () => {
+      const { io, calls, fileOps } = fakeIo();
+
+      runSetup(["credentials", "--dry-run", "--add-repo", NEW], { ...base(io), configPath });
+      expect(fileWrites(fileOps)).toEqual([]);
+      expect(printed().some((line) => line.startsWith("--- credentials"))).toBe(true);
+      expect(servesNew(calls)).toBe(true);
+    });
   });
 });

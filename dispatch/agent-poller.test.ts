@@ -233,6 +233,62 @@ describe("agent-poller reconcile", () => {
   });
 });
 
+describe("agent-poller Claude Code 2.1.309 session listing", () => {
+  // A background session as `claude agents --json --all` listed it in the agent container on
+  // 2026-11-02 (Claude Code 2.1.309), with `cwd` redacted.
+  const CAPTURED_BACKGROUND = {
+    pid: 349237,
+    id: "23e70b04",
+    cwd: "/work/claude-workflow/.claude/worktrees/epic-195",
+    kind: "background",
+    startedAt: 1793598345511,
+    sessionId: "23e70b04-0207-4d9e-a89d-aa89823a49f8",
+    name: "claude-workflow-epic-195",
+    status: "busy",
+    state: "working",
+  };
+  // An interactive session as 2.1.309 lists it on a host: the fields the ticket reports, with
+  // illustrative values.
+  const HOST_INTERACTIVE = {
+    pid: 41027,
+    cwd: "/work/example-tools",
+    kind: "interactive",
+    startedAt: 1793598400000,
+    sessionId: "00000000-0000-4000-8000-000000000001",
+    name: "example-tools",
+    status: "busy",
+  };
+
+  it("a dry run reads Claude Code 2.1.309 output, ignores its interactive session and keeps the tracked session it lists as working", () => {
+    configure();
+    writeFileSync(
+      join(dir, "sessions.json"),
+      JSON.stringify([
+        { ...CAPTURED_BACKGROUND, name: "app-5" },
+        { ...HOST_INTERACTIVE, name: "app-6" },
+      ]),
+    );
+    const now = Math.floor(Date.now() / 1000);
+    mkdirSync(state("app"), { recursive: true });
+    writeFileSync(
+      join(state("app"), "launched.json"),
+      JSON.stringify({
+        5: { name: "app-5", at: now - 3600 },
+        6: { name: "app-6", at: now - 60 },
+      }),
+    );
+    writeFileSync(
+      join(rdir(APP.repo), "issue.json"),
+      JSON.stringify({ state: "OPEN", labels: [{ name: "in-progress" }] }),
+    );
+    const res = exec({ dry: true });
+    expect(res.status, res.stdout + res.stderr).toBe(0);
+    expect(res.stdout + res.stderr).not.toContain("cannot read sessions");
+    expect(res.stdout).toContain("#5: app-5 state=working");
+    expect(res.stdout).toContain("#6: app-6 state=<none>");
+  });
+});
+
 describe("agent-poller conflict phase", () => {
   interface ConflictOpts {
     sessions?: { name: string; state: string }[];
