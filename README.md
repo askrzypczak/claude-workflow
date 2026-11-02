@@ -12,8 +12,8 @@ Plugin `ticket-workflow`:
 - Skills:
   - `work-ticket`: works a GitHub issue end to end.
   - `address-feedback`: handles review feedback on the PR.
-  - `resolve-conflicts`: merges `origin/main` into a conflicting `issue-N-*` PR branch, runs `npm run check`, publishes. Stops with `needs input` on semantic conflicts; never rebases or force-pushes.
-  - `fix-ci`: reads the failing run's logs on an `issue-N-*` PR, fixes the cause, runs `npm run check`, pushes. Stops with `needs input` for infrastructure, secrets or required-check changes; never force-pushes.
+  - `resolve-conflicts`: merges `origin/main` into a conflicting `issue-N-*` PR branch, runs the project's [checks](#checks), publishes. Stops with `needs input` on semantic conflicts; never rebases or force-pushes.
+  - `fix-ci`: reads the failing run's logs on an `issue-N-*` PR, fixes the cause, runs the project's checks, pushes. Stops with `needs input` for infrastructure, secrets or required-check changes; never force-pushes.
   - `file-ticket`: files a ticket in the house format (type-prefixed title, Problem, Proposed change, checkable acceptance criteria, labels per [Ticket conventions](#ticket-conventions)) after verifying its claims and searching for duplicates. Never sets `ready` or `skip-plan`. After filing an epic with children it links them as sub-issues, runs the `spec-auditor` over the set, applies the findings it verifies to the tickets it just filed, and asks the human only about the unclear ones (the auditor itself writes nothing to GitHub).
   - `orchestrate-epic`: runs an epic's children as `work-ticket` sub-agents into an `epic-E` branch, stands in at the plan gates (escalating only product questions), reviews and integrates each child PR, then opens one epic PR to `main` for the human to merge. See [Orchestrating an epic](#orchestrating-an-epic).
 - Subagents: `contract-writer` (opus, medium) writes stubs and failing tests first; `implementer` (haiku, xhigh; opus medium or opus xhigh per the approved plan) builds the code that makes them pass; `reviewer` (opus, xhigh, read-only) reviews complex diffs; `spec-auditor` (opus, medium, read-only; sonnet, medium for a `simple` ticket plan) audits epics, and each ticket's plan, for necessity; `first-reviewer` (fable, xhigh, read-only) reviews each orchestrate-epic child PR for the maintainer. Dispatched sessions run on opus at xhigh; orchestrate-epic children on opus at xhigh, or sonnet at medium for docs-only or single-adapter children, with their `implementer` on its default (opus medium for subtle logic, opus xhigh only for security-boundary code) and their `reviewer` on opus at medium (none for a `simple` child), since the `first-reviewer` is their quality gate; the orchestrate-epic session and its per-PR `first-reviewer` on fable at xhigh, because they stand in for the human reviewer (plan gates, gate questions, first PR review). Effort rule for any retune: never `high`; opus at `medium` or `xhigh`; sonnet only at `medium`, with opus `medium` wherever more than that is wanted.
@@ -30,7 +30,7 @@ In Claude Code:
     /plugin marketplace add askrzypczak/claude-workflow
     /plugin install ticket-workflow@askrzypczak-plugins
 
-Local development, what a consuming project needs (`npm run check`, labels, deny rules) and label cleanup on close: [docs/setup.md](docs/setup.md).
+Local development, what a consuming project needs (declared checks, labels, deny rules) and label cleanup on close: [docs/setup.md](docs/setup.md).
 
 ## Running agents safely
 
@@ -71,6 +71,14 @@ Use `orchestrate-epic` (`/ticket-workflow:orchestrate-epic E`) instead of the po
 
 The children's PRs target an `epic-E` branch, not `main`. After its review, with CI green and the PR mergeable, the orchestrator merges each child into `epic-E` with `plugins/ticket-workflow/scripts/integrate-child.sh merge`, pushes `epic-E` with a plain `git push`, then closes the child issue with `integrate-child.sh close`, which refuses until the merge is on `origin/epic-E`. The fetch and the push run outside the script, as plain commands. The human still merges every PR that reaches `main`: one epic PR, read by its merge commits and the child PRs' review maps. Spike children are not run inside an epic: the orchestrator leaves them out, and the human works each on its own with `work-ticket`; children blocked by one wait until it closes.
 
+### Checks
+
+A project declares its checks, the commands that are its definition of done, on a `Checks:` line in its root `CLAUDE.md`: a list item under Conventions with each command in backticks, and no other backticked text on the line. For example:
+
+    - Checks: `npm test`, `npm run typecheck`
+
+`work-ticket`, `address-feedback`, `fix-ci`, `resolve-conflicts`, `orchestrate-epic`, the `implementer` and the `reviewer` run every command on the line, and `file-ticket` names them in an acceptance criterion that the checks pass. A project without the line falls back to `npm run check`.
+
 ### Architecture rules
 
 Optional. When a project has an Architecture section (a heading titled `Architecture` in its root `CLAUDE.md`), `file-ticket`, the `work-ticket` plan, `spec-auditor` and `reviewer` check designs against it; [Workflow](#workflow) has the detail. When a project adds or changes an architecture rule, re-audit its open tickets for designs that conflict with the rule instead of only refreshing their paths and names.
@@ -108,7 +116,7 @@ Agents follow the `work-ticket` skill with an explicit issue number, run manuall
 2. Plan, with human sign-off: the draft plan is audited for necessity by `spec-auditor` against the ticket, its epic and sibling tickets (on sonnet for `simple` plans; skipped for docs-only tickets); open questions, the auditor's included, are asked up front with the question tool, written to be answered cold (ticket in the header, what the code does today, what each option does), then the plan shows the AC as a diff against the ticket with the audit verdicts folded in (additions struck unless approved), the Decisions made (with the options offered, when the project has a Decision log section), Interfaces, Test titles and Carrying costs; when the project has a Decision log section, it also lists the active entries the plan supersedes, and a plan that reverses a maintainer-decided entry goes to the human; when the project has an Architecture section, the plan also lists the new workspace import edges, cross-package exports and lint exceptions (and the port and adapter for each external dependency), and a design that conflicts with it goes to the human before the plan is shown.
 3. Branch in a worktree; the approved plan is posted on the issue. With a Decision log section, the ticket's log file is started and filled as decisions arise, uncommitted until the PR.
 4. Contract and implement: the contract-writer writes stubs and failing tests from the approved Interfaces and Test titles, and the red run is observed and committed; the implementer then makes them pass. Tickets with no red state say "contract N/A"; a `simple` change with no tests whose plan holds the change verbatim is applied by the orchestrator, with no subagent.
-5. Verify the tests: `npm run check`, contract tests unchanged since the contract commit, and red/green record.
+5. Verify the tests: the project's [checks](#checks), contract tests unchanged since the contract commit, and red/green record.
 6. Reviewer on complex changes; the orchestrator triages its findings: blockers and behaviour-preserving cuts go to the implementer; additive suggestions and notes are deferred to the PR body; cuts that remove validation, error handling, security code or a test, and any AC suspect or plan gap, are left to the human; a workspace edge, export or lint exception the plan did not list, or a breach of the project's Architecture section, is a blocker (simple changes get the same check from the orchestrator); with a Decision log section it also flags a choice in the diff that the log does not record, as a suggestion.
 7. Open an active (non-draft) PR with CI green and no conflicts with main (a conflicting branch gets `origin/main` merged in first); its body links the approved plan comment and carries only its AC diff, Interfaces and Test titles, a review map and a Test proof; with a Decision log section the log is committed in its own commit after the code and the body links its entries, or says `Decision log: none` with a reason.
 8. Human review, then address-feedback.

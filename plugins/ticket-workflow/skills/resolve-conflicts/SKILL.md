@@ -32,13 +32,13 @@ For each conflicted file, read both sides (the commits on each side since the me
 State exactly which files and hunks conflict, what each side intends, and the options you see.
 
 ## 4. Verify and publish
-- `npm run check` (the project's definition of done) must be green. If it fails because of the merge, fix the merge; if it fails identically on `origin/main`, say so rather than papering over it.
+- The project's checks (its definition of done: every backticked command on the `Checks:` line of the root `CLAUDE.md`, or `npm run check`, the fallback, when there is no such line) must be green. If it fails because of the merge, fix the merge; if it fails identically on `origin/main`, say so rather than papering over it.
 - Commit the merge. Keep git's default merge message; when conflicts were resolved, list the files in the body.
 - Send the same branch to origin with `git push -u origin <headRefName>` (no force flags), as its own Bash call with no `cd`, `git -C` or chaining; it also sets the upstream step 1 left out.
 - Confirm GitHub now reports the PR as mergeable (`gh pr view <pr> --json mergeable`) and wait for CI (`gh pr checks <pr>`).
 
 ## 5. Report
-Comment on the PR (`gh pr comment`): which files conflicted, how each was resolved, the `npm run check` result, and the new head commit. End the session with `result:` naming the PR and its state.
+Comment on the PR (`gh pr comment`): which files conflicted, how each was resolved, the result of the project's checks, and the new head commit. End the session with `result:` naming the PR and its state.
 
 ## Hard rules
 Only ever update the PR's own `issue-N-*` branch, with a plain push; never `main`, never force-push, never rebase, never `gh pr merge`. Do not change issue or PR labels, and do not touch anything beyond what the merge requires. Same guardrails as `work-ticket`.
