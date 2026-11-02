@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 import { credentials } from "./credentials.ts";
 import {
   FAKE_REPO,
-  FAKE_TOKEN,
   fakeIo,
   parseGhApi,
   protectMain,
@@ -121,15 +120,5 @@ describe("credentials phase protect-main check", () => {
     expect(result).toBe("stop");
     expect(protectMainTodo(reports)).toBe(true);
     expect(settingWrites(calls)).toEqual([]);
-  });
-
-  it("the pre-swap test reads the default branch's rules with the new token", () => {
-    const { calls } = run({});
-
-    const reads = calls.filter((c) => {
-      const a = parseGhApi(c);
-      return a?.method === "GET" && a.endpoint === `repos/${FAKE_REPO}/rules/branches/main`;
-    });
-    expect(reads.some((c) => c.env.GH_TOKEN === FAKE_TOKEN)).toBe(true);
   });
 });

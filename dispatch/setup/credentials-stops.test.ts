@@ -3,9 +3,7 @@ import { describe, expect, it } from "vitest";
 import { credentials } from "./credentials.ts";
 import {
   FAKE_REPO,
-  FAKE_TOKEN,
   fakeIo,
-  isMergeProbe,
   parseGhApi,
   protectMain,
   restrictUpdates,
@@ -14,8 +12,6 @@ import {
 import type { FakeCall, FakeWorld } from "./fake-io.ts";
 
 const OTHER_REPO = "example-owner/example-other";
-const PROBE_REF = "refs/claude-workflow-probe/cannot-merge";
-const ZERO_SHA = "0".repeat(40);
 
 function run(world: FakeWorld, dryRun = false, repos: readonly string[] = [FAKE_REPO]) {
   const fake = fakeIo(world);
@@ -87,21 +83,26 @@ describe("credentials phase writes", () => {
     expect(body.bypass_actors).toEqual([{ actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "exempt" }]);
   });
 
-  it("deletes the pre-swap test comment by the id gh printed, as the new token", () => {
-    const { calls } = run({
-      respond: (c) =>
-        isGh(c, "issue", "comment")
-          ? { status: 0, stdout: `https://github.com/${FAKE_REPO}/issues/12#issuecomment-4242\n`, stderr: "" }
-          : undefined,
-    });
+  it("under an admin login and on a token rotation, the phase sends no gh issue comment, issue edit, pr edit or pr comment and no gh api call on issues/comments or git/refs", () => {
+    const admin = run({});
+    const rotation = run({ login: "fine-grained", confirm: true });
 
-    const deletes = apiCalls(calls, "DELETE", `repos/${FAKE_REPO}/issues/comments/4242`);
-    expect(deletes.some((c) => c.env.GH_TOKEN === FAKE_TOKEN)).toBe(true);
+    for (const { calls, prompts } of [admin, rotation]) {
+      expect(prompts.some((p) => p.kind === "secret")).toBe(true);
+      for (const words of [["issue", "comment"], ["issue", "edit"], ["pr", "edit"], ["pr", "comment"]]) {
+        expect(calls.filter((c) => isGh(c, ...words)), `gh ${words.join(" ")}`).toEqual([]);
+      }
+      const touched = calls.filter((c) => {
+        const endpoint = parseGhApi(c)?.endpoint ?? "";
+        return endpoint.includes("/issues/comments") || endpoint.includes("/git/refs");
+      });
+      expect(touched.map((c) => c.args.join(" "))).toEqual([]);
+    }
   });
 });
 
 describe("credentials phase stops", () => {
-  it("a pasted token that is not fine-grained stops the phase before the pre-swap test and the swap", () => {
+  it("a pasted token that does not start github_pat_ stops the phase before any logout or login", () => {
     const { result, calls } = run({ secret: "ghp_classic_example" });
 
     expect(result).toBe("stop");
@@ -115,17 +116,6 @@ describe("credentials phase stops", () => {
     expect(result).toBe("stop");
     expect(reports.some((r) => r.status === "todo" && r.text.includes("restrict-updates"))).toBe(true);
     expect(prompts.filter((p) => p.kind === "confirm")).toEqual([]);
-  });
-
-  it("a missing pre-swap test subject stops the phase before the token form opens", () => {
-    const { result, reports, calls, prompts } = run({
-      respond: (c) => (isGh(c, "pr", "list") ? { status: 0, stdout: "[]\n", stderr: "" } : undefined),
-    });
-
-    expect(result).toBe("stop");
-    expect(reports.some((r) => r.status === "todo")).toBe(true);
-    expect(calls.some((c) => c.cmd === "open")).toBe(false);
-    expect(prompts).toEqual([]);
   });
 
   it("under the fine-grained login a repo the token cannot see is a to-do naming the repo", () => {
@@ -172,15 +162,8 @@ describe("credentials phase stops", () => {
     expect(writeCalls(calls)).toEqual([]);
   });
 
-  it("under --dry-run with the fine-grained login, a repo the token cannot see is skipped by the subject pick and the run does not throw", () => {
-    const world: FakeWorld = {
-      login: "fine-grained",
-      respond: (c) =>
-        repoNotFound(c) ??
-        (isGh(c, "pr", "list") && c.args.includes(FAKE_REPO)
-          ? { status: 1, stdout: "", stderr: `GraphQL: Could not resolve to a Repository with the name '${FAKE_REPO}'. (repository)` }
-          : undefined),
-    };
+  it("under --dry-run with the fine-grained login, a repo the token cannot see is a to-do naming the repo and the run does not throw", () => {
+    const world: FakeWorld = { login: "fine-grained", respond: repoNotFound };
     let outcome: ReturnType<typeof run> | undefined;
 
     expect(() => {
@@ -189,66 +172,9 @@ describe("credentials phase stops", () => {
 
     expect(outcome!.result).toBe("ok");
     expect(outcome!.reports.some((r) => r.status === "todo" && r.text.includes(FAKE_REPO))).toBe(true);
-    expect(outcome!.calls.filter((c) => isGh(c, "pr", "list"))).toEqual([]);
-  });
-});
-
-/** The endpoint of every merge probe sent, in order. */
-const probedEndpoints = (calls: readonly FakeCall[]) => calls.filter(isMergeProbe).map((c) => parseGhApi(c)!.endpoint);
-const refsOf = (repo: string) => `repos/${repo}/git/refs`;
-const failedWith = (stderr: string) => ({ status: 1, stdout: "", stderr });
-
-describe("credentials phase merge probe", () => {
-  it("the merge probe runs on every served repo as the login's token, and 403 on each passes", () => {
-    const { result, calls, reports } = run({ login: "fine-grained" }, false, [FAKE_REPO, OTHER_REPO]);
-
-    expect(result).toBe("ok");
-    expect(probedEndpoints(calls)).toEqual([refsOf(FAKE_REPO), refsOf(OTHER_REPO)]);
-    expect(calls.filter(isMergeProbe).every((c) => c.env.GH_TOKEN === undefined)).toBe(true);
-    expect(reports.filter((r) => r.status === "todo")).toEqual([]);
   });
 
-  it("a merge probe answered with 422 on one served repo stops the phase with a to-do that says the token can merge", () => {
-    const { result, calls, reports } = run(
-      {
-        login: "fine-grained",
-        respond: (c) =>
-          isMergeProbe(c) && parseGhApi(c)!.endpoint === refsOf(OTHER_REPO)
-            ? failedWith("gh: Object does not exist (HTTP 422)")
-            : undefined,
-      },
-      false,
-      [FAKE_REPO, OTHER_REPO],
-    );
-
-    expect(result).toBe("stop");
-    expect(probedEndpoints(calls)).toEqual([refsOf(FAKE_REPO), refsOf(OTHER_REPO)]);
-    expect(reports.some((r) => r.status === "todo" && /can merge/i.test(r.text))).toBe(true);
-  });
-
-  it("a merge probe that succeeds stops the phase with a to-do that says the token can merge", () => {
-    const { result, reports } = run({
-      login: "fine-grained",
-      respond: (c) => (isMergeProbe(c) ? { status: 0, stdout: "{}", stderr: "" } : undefined),
-    });
-
-    expect(result).toBe("stop");
-    expect(reports.some((r) => r.status === "todo" && /can merge/i.test(r.text))).toBe(true);
-  });
-
-  it("a merge probe answered with any other error stops the phase as inconclusive", () => {
-    const { result, reports } = run({
-      login: "fine-grained",
-      respond: (c) => (isMergeProbe(c) ? failedWith("gh: Not Found (HTTP 404)") : undefined),
-    });
-
-    expect(result).toBe("stop");
-    const todos = reports.filter((r) => r.status === "todo");
-    expect(todos.some((r) => /inconclusive/i.test(r.text))).toBe(true);
-    expect(todos.some((r) => /can merge/i.test(r.text))).toBe(false);
-  });
-
-  it("on a rerun with everything in place, the merge probe for refs/claude-workflow-probe/cannot-merge at the all-zero sha is the only gh api call that is not a GET", () => {
+  it("on a rerun with everything in place, every gh api call the phase makes is a GET", () => {
     const { result, calls } = run({ login: "fine-grained" }, false, [FAKE_REPO, OTHER_REPO]);
 
     expect(result).toBe("ok");
@@ -256,13 +182,41 @@ describe("credentials phase merge probe", () => {
       const a = parseGhApi(c);
       return a !== undefined && a.method !== "GET";
     });
-    expect(notGet.map((c) => parseGhApi(c))).toEqual([
-      { method: "POST", endpoint: refsOf(FAKE_REPO) },
-      { method: "POST", endpoint: refsOf(OTHER_REPO) },
-    ]);
-    for (const c of notGet) {
-      expect(c.args).toContain(`ref=${PROBE_REF}`);
-      expect(c.args).toContain(`sha=${ZERO_SHA}`);
-    }
+    expect(notGet.map((c) => parseGhApi(c))).toEqual([]);
+  });
+
+  it("after the swap, a served repo the new token cannot see is a to-do naming the repo, not a thrown error, and the next repo is still read back", () => {
+    let swapped = false;
+    const world: FakeWorld = {
+      respond(c) {
+        if (isGh(c, "auth", "login")) {
+          swapped = true;
+          return undefined;
+        }
+        const a = parseGhApi(c);
+        return swapped && a?.method === "GET" && a.endpoint === `repos/${FAKE_REPO}/rulesets`
+          ? { status: 1, stdout: '{"message":"Not Found"}', stderr: "gh: Not Found (HTTP 404)" }
+          : undefined;
+      },
+    };
+    let outcome: ReturnType<typeof run> | undefined;
+
+    expect(() => {
+      outcome = run(world, false, [FAKE_REPO, OTHER_REPO]);
+    }).not.toThrow();
+
+    const { result, reports, calls } = outcome!;
+    expect(result).toBe("stop");
+    expect(
+      reports.some(
+        (r) =>
+          r.status === "todo" &&
+          r.text.includes(FAKE_REPO) &&
+          r.text.includes("https://github.com/settings/personal-access-tokens"),
+      ),
+    ).toBe(true);
+    const login = calls.findIndex((c) => isGh(c, "auth", "login"));
+    expect(login).toBeGreaterThanOrEqual(0);
+    expect(apiCalls(calls.slice(login + 1), "GET", `repos/${OTHER_REPO}/rulesets`).length).toBeGreaterThan(0);
   });
 });
