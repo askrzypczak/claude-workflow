@@ -24,13 +24,22 @@ Two standing rules, which no script can check:
   - With Contents write and no Administration permission, a direct push to `main` was refused (`GH013 ... Cannot update this protected ref`), but `gh pr merge --merge --admin` merged the PR past `restrict-updates`, though GitHub's `viewerCanMergeAsAdmin` read `false` just before. So a token carries its owner's admin bypass without the Administration permission.
   - With Contents read-only, `gh pr merge --merge --admin` got `Resource not accessible by personal access token (mergePullRequest)`, and `PUT .../pulls/N/merge` and an HTTPS push of a branch both got 403.
   - Spike #169 adds, reasoned and not tested, that under `exempt` ([The Actions token](#the-actions-token)) a token with Contents write may merge without `--admin`.
-  - #182 tested the merge probe ([Verify](#verify), after the swap, item 2) on a throwaway public repo, with two fine-grained tokens limited to it. With Contents read-only, `POST .../git/refs` at the all-zero `sha` got 403 `Resource not accessible by personal access token`, with `X-Accepted-GitHub-Permissions: contents=write`; with Contents write, it got 422 `Object does not exist`. Both held for a ref under `refs/heads` and one outside it, and the repo's refs read the same before and after. So GitHub checks the token's permission before the `sha`, and the probe needs no open PR.
 - Merging a PR (`PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge`) needs "Repository permissions for "Contents"" (write); opening one (`POST /repos/{owner}/{repo}/pulls`) needs only "Repository permissions for "Pull requests"" (write) (GitHub Docs, *Permissions required for fine-grained personal access tokens*). The tokens below have no Contents write.
 - A fine-grained token is limited to one owner: "The token will only be able to access resources owned by the selected resource owner." (GitHub Docs, *Managing your personal access tokens*).
 - A workflow's `GITHUB_TOKEN` is stopped by the ruleset rule "Restrict updates": "If selected, only users with bypass permissions can push to branches or tags whose name matches the pattern you specify." (GitHub Docs, *Available rules for rulesets*). Details in [The Actions token](#the-actions-token).
 - Agents get no route into the maintainer's logged-in browser on github.com ([Wiring](#wiring)).
 
 Together, only the maintainer can merge. Nothing in the workflow needs Contents write through the API: branches are pushed with git over SSH (each served repo's deploy key in the agent container, the maintainer's own key on the host), which cannot merge a PR, and `protect-main` refuses direct pushes to `main`; `orchestrate-epic` folds children into `epic-E` with a local merge (`plugins/ticket-workflow/scripts/integrate-child.sh`) and a plain `git push`; auto-merge stays off. A push over HTTPS would need Contents write, which is why branches go over SSH (#164).
+
+## What the script trusts
+
+The setup script opens a pre-filled form for each token and stores the token pasted from it; it does not test what the token can do. The decisions behind that:
+
+- The script trusts the token made from the pre-filled form (maintainer, 2026-11-02 (#195, #196)). It opens the form, reads the paste and stores it, and does not test what the token can do. A missing permission shows up when an agent first needs it, and is fixed by editing the token in the browser. The accepted cost: if Contents write gets ticked on the form, agents can merge and nothing reports it. #164 found that such a token merges past `restrict-updates`, and `protect-main` requires zero approvals, so the form is then all that stops an agent merging. The rule in [Why](#why) stands, but the script no longer checks it. This reverses part of #182: it removes the pre-swap test, which needed an open PR with a `test` check run, an open issue and a completed workflow run, and wrote a comment and labels to live work; and it removes the merge probe on the host's and the container's tokens.
+- A paste must start `github_pat_` (maintainer, 2026-11-02 (#195, #196)), because the login swap logs out every account first. A paste that `gh auth login` refuses leaves no login, and the to-do says how to log in.
+- Nothing checks that the container's token sees every served repo (maintainer, 2026-11-02 (#195, #196)): `check`'s `gh repo view` reads only the first clone. The accepted cost: a repo not selected on the token passes setup, and its poller `gh` calls fail once dispatch runs.
+
+The after-swap `restrict-updates` read-back is the only repo-access check the script keeps for the host token, and it runs after the swap: a served repo the new token cannot see is a to-do naming the repo and how to select it on the token (epic #195 orchestrator, not human-approved).
 
 ## The token
 
@@ -40,11 +49,11 @@ The host's token is a fine-grained personal access token. The script opens GitHu
 - Repository access: "Only select repositories", the repos the workflow serves.
 - Account permissions: none.
 - Repository permissions, these six and nothing else: Metadata read, Contents read, Actions read, Commit statuses read, Issues write, Pull requests write.
-- Expiry: choose one, or none: "Infinite lifetimes are allowed but may be blocked by a maximum lifetime policy set by your organization or enterprise owner." (GitHub Docs, *Managing your personal access tokens*). With an expiry, note the date and rotate the token before it: an expired token makes every `gh` call on the host fail, the maintainer's sessions' and the setup script's (the `container` phase reads each served repo with it). To rotate, rerun `dispatch/setup-agents.sh credentials` and answer Yes to "Create a new token and swap it in?". An expired token is rotated the same way, by rerunning `dispatch/setup-agents.sh credentials`: the script sees that GitHub refuses the stored token, skips the ruleset step and goes straight to the token form, with no question. It then picks what the pre-swap test uses only after the paste, so a missing one costs a token: first make sure a served repo has an open PR with a `test` check run, an open issue and a completed workflow run.
+- Expiry: choose one, or none: "Infinite lifetimes are allowed but may be blocked by a maximum lifetime policy set by your organization or enterprise owner." (GitHub Docs, *Managing your personal access tokens*). With an expiry, note the date and rotate the token before it: an expired token makes every `gh` call on the host fail, the maintainer's sessions' and the setup script's (the `container` phase reads each served repo with it). To rotate, rerun `dispatch/setup-agents.sh credentials` and answer Yes to "Create a new token and swap it in?". An expired token is rotated the same way, by rerunning `dispatch/setup-agents.sh credentials`: the script sees that GitHub refuses the stored token, skips the ruleset step and goes straight to the token form, with no question.
 
 Actions stays read: write would let the token dispatch or re-run workflows (`POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches` and `POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun` are Actions write), and nothing uses that.
 
-Checks is not in the list. GitHub offers fine-grained tokens no Checks permission and lists "Using fine-grained personal access token to call the Checks API." among their limitations (GitHub Docs, *Managing your personal access tokens*). Check runs feed `gh pr checks` and `--json statusCheckRollup` (the poller's PR list in `dispatch/poller/io.ts`). On public repos they are expected to work through the token's read access to public repos ("Tokens always include read-only access to all public repositories on GitHub.", same page), but GitHub's docs do not confirm it, and on a private repo nothing grants them. A failed check read, or an empty rollup, stops the poller's conflict and CI-fix sessions, and the token cannot serve the workflow as documented. The pre-swap test in [Verify](#verify) settles this before the login changes.
+Checks is not in the list. GitHub offers fine-grained tokens no Checks permission and lists "Using fine-grained personal access token to call the Checks API." among their limitations (GitHub Docs, *Managing your personal access tokens*). Check runs feed `gh pr checks` and `--json statusCheckRollup` (the poller's PR list in `dispatch/poller/io.ts`). On public repos they are expected to work through the token's read access to public repos ("Tokens always include read-only access to all public repositories on GitHub.", same page), but GitHub's docs do not confirm it, and on a private repo nothing grants them. A failed check read, or an empty rollup, stops the poller's conflict and CI-fix sessions, and the token cannot serve the workflow as documented. Setup does not test this ([What the script trusts](#what-the-script-trusts)), so on a private repo it shows first as those sessions stopping.
 
 What each `gh` command needs, from the skills, the agents, `plugins/ticket-workflow/scripts/`, `dispatch/poller/` and `dispatch/setup/`:
 
@@ -52,10 +61,9 @@ What each `gh` command needs, from the skills, the agents, `plugins/ticket-workf
 |---|---|---|
 | `gh issue view`, `gh issue list` (including `--search`) | skills, agents, poller | Issues: read |
 | `gh issue create`, `gh issue edit` (labels, assignee, body), `gh issue comment`, `gh issue close` | skills, poller, `integrate-child.sh` | Issues: write |
-| `gh api -X DELETE .../issues/comments/<id>` | the setup script's pre-swap test, removing its test comment | Issues: write |
 | `gh pr view`, `gh pr list`, `gh pr diff`, `gh pr checkout` (the API lookup; the fetch is git over SSH) | skills, agents, poller | Pull requests: read |
 | `gh pr create`, `gh pr edit --add-label`, `gh pr comment` | skills, poller | Pull requests: write |
-| `gh pr checks`; `--json statusCheckRollup` on `gh pr view` and `gh pr list` | skills, poller | Commit statuses: read for status contexts. Check runs: no fine-grained permission covers them (the Checks API is unsupported); expected to work on public repos through the token's read-only public access; unconfirmed until Verify runs |
+| `gh pr checks`; `--json statusCheckRollup` on `gh pr view` and `gh pr list` | skills, poller | Commit statuses: read for status contexts. Check runs: no fine-grained permission covers them (the Checks API is unsupported); expected to work on public repos through the token's read-only public access; unconfirmed |
 | `gh run list`, `gh run view --log-failed` | `fix-ci` | Actions: read |
 | `gh api repos/{owner}/{repo}/issues/N` (`.author_association`, `.id`), `.../issues/N/comments`, `GET .../issues/E/sub_issues` | skills, agents | Issues: read |
 | `gh api -X POST .../issues/E/sub_issues` | `file-ticket`, `orchestrate-epic` | Issues: write |
@@ -63,10 +71,9 @@ What each `gh` command needs, from the skills, the agents, `plugins/ticket-workf
 | `gh api repos/<repo>/commits/main` | poller | Contents: read |
 | `gh label list`, `gh label create` | `setup-labels.sh` | Issues: read / write |
 | `gh api repos/<owner>/<repo>` (the default branch, admin rights, the auto-merge setting) | the setup script's `credentials` and `container` phases | Metadata: read |
-| `gh api repos/<owner>/<repo>/rules/branches/<branch>` | the `credentials` and `container` phases' `protect-main` check, and the pre-swap test ([Verify](#verify)) | Metadata: read (expected; unconfirmed until the first run) |
+| `gh api repos/<owner>/<repo>/rules/branches/<branch>` | the `credentials` and `container` phases' `protect-main` check | Metadata: read (expected; unconfirmed until the first run) |
 | `gh api repos/<owner>/<repo>/rulesets/<id>` | the setup script's `protect-main` check and [Verify](#verify) | Metadata: read |
 | Merging a PR (`PUT .../pulls/N/merge`) | nothing in the workflow | Contents: write, which the token lacks |
-| Creating a ref (`POST .../git/refs`) | the setup script's merge probe, which expects it refused ([Verify](#verify)) | Contents: write, which the token lacks |
 
 Metadata read comes with every fine-grained token. `plugins/ticket-workflow/scripts/ticket-labels.ts` runs in Actions on the caller workflow's `GITHUB_TOKEN` (`contents: read`, `issues: write`), not on the local login. The setup script's ruleset and auto-merge writes need admin rights, which the token lacks: it makes them with the login it replaces, before the swap.
 
@@ -74,8 +81,8 @@ Metadata read comes with every fine-grained token. `plugins/ticket-workflow/scri
 
 The agent container has a `gh` login of its own, set up by the `container` phase, so it can be revoked alone. The phase opens the same pre-filled token form as [the host's](#the-token), named `claude-workflow-container-` and the date, with the same six permissions: select the served repos under Repository access, keep Contents read-only and pick an expiry. The host's fine-grained token is accepted too, but a separate one is recommended.
 
-- Before the token is stored, the phase checks on the host, with the token only as `GH_TOKEN`, that the merge probe with it is refused with 403 on every served repo (as in [Verify](#verify), after the swap, item 2). A token that can merge is never stored. Then `gh auth login --with-token` stores it in the container as `node`, the token on standard input; it lands in `~/.config/gh/hosts.yml` there, mode 0600 (#164).
-- Every later run reads the stored token as `node` and probes it the same way.
+- A paste that does not start `github_pat_` is refused. Otherwise `gh auth login --with-token` stores the token in the container as `node`, the token on standard input; it lands in `~/.config/gh/hosts.yml` there, mode 0600 (#164). Nothing tests what it can do ([What the script trusts](#what-the-script-trusts)), so keep Contents read-only on the form.
+- A later run checks only that the container has one working fine-grained login, and does not read its token.
 - A new token changes the container's `gh` login, so the phase first pauses dispatch and refuses while a session is live in the container.
 - When the token expires, or must be rotated, log it out in the container and rerun the phase, which asks for a new one:
 
@@ -84,7 +91,7 @@ The agent container has a `gh` login of its own, set up by the `container` phase
 
   When GitHub refuses the stored login, the phase stops with that logout command in its to-do.
 - Its expiry is what makes every poll log `[<prefix>] poll failed` and every container session's `gh` call fail: note the date.
-- A served repo added later needs this token edited in the browser too, so it can see the repo.
+- A served repo added later needs this token edited in the browser too, so it can see the repo. Nothing checks this, and until it is done the poller's `gh` calls for that repo fail.
 
 ## The Claude token
 
@@ -103,16 +110,15 @@ What `dispatch/setup-agents.sh credentials` does, in order. Each step checks fir
 
 1. Pauses dispatch (`dispatch/install-launchd.sh pause`, which also ends a poll running in the agent container) and refuses to go on while a session is live on the host (`claude agents`) or in the agent container (`docker exec claude-workflow-agent claude agents`), idle sessions included. It names each with its stop command by id: `claude stop <id>`, or `docker exec claude-workflow-agent claude stop <id>`. Dispatch stays paused until a full setup run passes every phase and resumes it, or until `dispatch/install-launchd.sh resume`. A rerun pauses it again.
 2. On each served repo (this clone's, then those in the [dispatch config](../dispatch/README.md#onboarding-a-repo)), with the current login, it first checks `protect-main`: the default branch must have an active ruleset with a `pull_request` rule that this login cannot bypass (`current_user_can_bypass` reads `never`). It finds that ruleset through `rules/branches/<branch>` and the rulesets behind those rules, not by matching names. Under the admin login the ruleset's bypass list must also be empty; the fine-grained login cannot read the list, so it gets a note to check it in the browser. A missing or bypassable `protect-main` is a to-do, fixed in the browser, and `restrict-updates` is not created or reset until it passes. Then the step creates the `restrict-updates` ruleset ([The Actions token](#the-actions-token)), or puts it back when it drifted, and turns auto-merge off ([Auto-merge](#auto-merge)). Other rulesets are left alone. Under a login without admin rights, such as the fine-grained one on a rerun, it changes nothing and checks what it can read: the ruleset as in [Verify](#verify), and auto-merge, which it reports as unchecked when GitHub does not return the setting. A repo the token cannot see (HTTP 404) is a to-do: select it under the token's Repository access, then rerun. When GitHub refuses the stored login's token (it expired), nothing can be read or changed as that login: the script skips this step, `protect-main` check included, with a note per repo, and the after-swap checks read `restrict-updates` back.
-3. Under the fine-grained login it first asks "Create a new token and swap it in? [y/N]"; No skips to step 6. It then picks what the pre-swap test will use ([Verify](#verify)), so a missing PR, issue or run is reported before a token is made. Last, it opens the pre-filled token form ([The token](#the-token)), lists the repos to select, and reads the token at a prompt that does not echo it. (How it tells a fine-grained login: [Verify](#verify), after the swap, item 1.) With the stored token expired, it asks nothing and goes straight to the form; after the paste, it picks what the pre-swap test will use with the new token. A served repo the new token cannot read is then a to-do: select the repo under the token's Repository access, rerun and paste the same token again.
-4. Runs the pre-swap test ([Verify](#verify)) with the token only in the commands' environment.
-5. Only when every check passed, swaps the login: `gh auth logout` for each github.com account, then `gh auth login --with-token` with the token on standard input. Logging out comes first because both tokens belong to the same GitHub user: a logout by user after the login would remove the new login too. The token is never on a command line, in a file or in the output.
-6. Looks for every other GitHub API token on the machine and reports each one to remove by hand, by place and never by value; it removes nothing:
+3. Under the fine-grained login it first asks "Create a new token and swap it in? [y/N]"; No skips to step 5. Otherwise it opens the pre-filled token form ([The token](#the-token)), lists the repos to select, and reads the token at a prompt that does not echo it. An empty paste, or one that does not start `github_pat_`, stops the run before anything is logged out. With the stored token expired, it asks nothing and goes straight to the form. How it tells a fine-grained login: `gh auth status --json` leaves the token out, so the script reads it with `--show-token`, keeps only whether it starts `github_pat_`, and never prints or stores it.
+4. Swaps the login: `gh auth logout` for each github.com account, then `gh auth login --with-token` with the token on standard input. Logging out comes first because both tokens belong to the same GitHub user: a logout by user after the login would remove the new login too. A token `gh auth login` refuses leaves no login, and the to-do says how to log in. The token is never on a command line, in a file or in the output.
+5. Looks for every other GitHub API token on the machine and reports each one to remove by hand, by place and never by value; it removes nothing:
    - `GH_TOKEN`/`GITHUB_TOKEN` (`gh` prefers them over the stored login) in the environment, the shell startup files, the `env` block of `~/.claude/settings.json` and the poller's LaunchAgent plist;
    - a github.com internet password in the macOS keychain (a token a git credential helper stored, or a password saved for the website) and stored git credentials for github.com (remotes stay on SSH);
    - GitHub MCP servers in Claude Code's configuration (`~/.claude.json`, this clone's `.mcp.json`, and each served repo's `.mcp.json` in the agent container, read through it; when the container is not running, a note says those were not scanned).
 
-   A finding stops the run after step 7.
-7. Runs the after-swap checks ([Verify](#verify)).
+   A finding stops the run after step 6.
+6. Runs the after-swap checks ([Verify](#verify)).
 
 `gh auth logout` does not revoke the old login: "The authentication configuration is only removed locally. This command does not revoke authentication tokens." (`gh auth logout --help`). Revoking the old "GitHub CLI" authorization at github.com/settings/applications is optional; the script prints it as a last note.
 
@@ -133,28 +139,13 @@ Keep auto-merge off on every repo the workflow serves. With it on, enabling auto
 
 What the setup script checks. The maintainer reads its report; nothing here is run by hand.
 
-The pre-swap test, before anything is logged out. With the current login, and before it opens the token form, the script picks the first served repo that has an open PR whose checks include a `test` check run, an open issue, a completed workflow run, and a label carried by neither (never one of the workflow's own labels). When GitHub refuses the stored login's token, it picks them with the new token instead, after the form. Then, with the new token only as `GH_TOKEN` in each command's environment, it runs one command per row of the [table](#the-token):
+After the swap, the script checks the login and each served repo's `restrict-updates`. It does not test the token's permissions ([What the script trusts](#what-the-script-trusts)).
 
-- `gh issue view <i> --json number,state` and `gh api repos/<owner>/<repo>/issues/<i> --jq .author_association`
-- `gh issue comment <i>`, and the test comment deleted again (`gh api -X DELETE repos/<owner>/<repo>/issues/comments/<id>`)
-- `gh issue edit <i> --add-label <label>`, then `--remove-label <label>`
-- `gh pr view <n> --json mergeable`, `gh api repos/<owner>/<repo>/pulls/<n> --jq .author_association` and `gh pr diff <n>`
-- `gh pr edit <n> --add-label <label>`, then `--remove-label <label>`
-- `gh pr checks <n>`: passes when it lists a `test` row. It exits 8 while a check is pending and 1 when one has failed, even when the read worked, so it is judged by the output, not the exit code.
-- `gh pr view <n> --json statusCheckRollup`: passes when the output has an entry with `"__typename": "CheckRun"` and name `test`. An empty rollup exits 0 but fails.
-- `gh run view <id> --log`, `gh api repos/<owner>/<repo>/commits/main --jq .sha`, `gh api repos/<owner>/<repo>/rules/branches/main`, `gh label list --limit 5` and `gh api repos/<owner>/<repo>/rulesets`
-
-The rest pass on exit 0. The test comment and the label are removed even when a check fails. If any check fails, the login is not swapped: the current login stays, and the failure is worth a ticket.
-
-After the swap:
-
-1. `gh auth status` shows one github.com login, with a fine-grained token (it starts `github_pat_`). `gh auth status --json` leaves the token out, so the script reads it with `--show-token`, keeps only whether it starts `github_pat_`, and never prints or stores it.
-2. The merge probe, on each served repo: a request to create a ref at the all-zero `sha`: `gh api -X POST repos/<owner>/<repo>/git/refs -f ref=refs/claude-workflow-probe/cannot-merge -f sha=0000000000000000000000000000000000000000`. Creating a ref needs Contents write, as merging does. 403 means correct. 422 means the token has Contents write and can merge: GitHub got past the permission check and refused only because no object has that `sha`. Anything else (a 404 when the token cannot see the repo) is inconclusive. It needs no open PR; the all-zero `sha` keeps it from ever creating the ref, and the ref is outside `refs/heads` and `refs/tags`, so it could be no branch or tag. A 422 and an inconclusive answer both stop the script with a to-do.
-3. On each served repo, `restrict-updates` reads back with a rule of type `update`, `enforcement` `active`, and `current_user_can_bypass` `exempt`. GitHub returns the bypass list only to callers who can edit the ruleset ("the bypass_actors property is only returned if the user making the API request has write access to the ruleset", GitHub Docs, *REST API endpoints for rules*). When `bypass_actors` is returned, it must be the Repository admin role alone, in `exempt` mode; when it is missing, the script says to read the ruleset's Bypass list in the browser: the Repository admin role alone, in exempt mode (the label the browser gives that mode is unconfirmed).
+1. `gh auth status` shows one github.com login.
+2. On each served repo, `restrict-updates` reads back with a rule of type `update`, `enforcement` `active`, and `current_user_can_bypass` `exempt`. GitHub returns the bypass list only to callers who can edit the ruleset ("the bypass_actors property is only returned if the user making the API request has write access to the ruleset", GitHub Docs, *REST API endpoints for rules*). When `bypass_actors` is returned, it must be the Repository admin role alone, in `exempt` mode; when it is missing, the script says to read the ruleset's Bypass list in the browser: the Repository admin role alone, in exempt mode (the label the browser gives that mode is unconfirmed). A repo the new token cannot see (HTTP 404) is a to-do: select it under the token's Repository access, then rerun.
 
 The maintainer's first run should confirm what the script assumes but no run has shown yet:
 
-- that `gh pr checks`, with its output not on a terminal, prints tab-separated rows with the check name first;
 - that the fine-grained token reads `current_user_can_bypass`: `exempt` on `restrict-updates` and `never` on `protect-main`;
 - that the fine-grained token can read `rules/branches/<branch>`;
 - the label the browser's Bypass list gives exempt mode.

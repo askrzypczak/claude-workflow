@@ -1,6 +1,6 @@
 // The credentials phase: pause dispatch, the protect-main check and the restrict-updates
-// ruleset, the fine-grained token, the pre-swap test, the login swap, the stray-token scan and
-// the after-swap checks.
+// ruleset, the fine-grained token, the login swap, the stray-token scan and the after-swap
+// checks.
 // docs/agent-credentials.md gives the reasons; this file carries them out.
 import { join } from "node:path";
 import { z } from "zod";
@@ -9,9 +9,8 @@ import { timestamp } from "../poller/io.ts";
 import { parseJson } from "../poller/schemas.ts";
 import type { Session } from "../poller/schemas.ts";
 import { cloneDir, CONTAINER, containerSessions, containerState, readInContainer } from "./docker.ts";
-import type { RunOptions, RunResult, SetupIo, StepStatus } from "./io.ts";
+import type { RunResult, SetupIo, StepStatus } from "./io.ts";
 import type { Phase, SetupContext } from "./main.ts";
-import type { ServedRepo } from "./repos.ts";
 
 const HOST = "github.com";
 const LAUNCHD = "dispatch/install-launchd.sh";
@@ -46,12 +45,6 @@ const TOKEN_PERMISSIONS = {
   issues: "write",
   pull_requests: "write",
 };
-
-/** Labels the workflow acts on; the pre-swap test never adds one. */
-const WORKFLOW_LABELS = new Set([
-  "ready", "in-progress", "blocked", "needs-review", "agent-ok", "skip-plan", "agent-failed",
-  "orchestrate-epic-run",
-]);
 
 const TOKEN_VARS = ["GH_TOKEN", "GITHUB_TOKEN"];
 const STARTUP_FILES = [".zshenv", ".zprofile", ".zshrc", ".zlogin", ".bash_profile", ".bashrc", ".profile"];
@@ -111,24 +104,11 @@ const Ruleset = z.object({
   current_user_can_bypass: z.string().optional(),
 });
 type Ruleset = z.infer<typeof Ruleset>;
-const Named = z.array(z.object({ name: z.string() }));
-const RollupEntry = z.object({ __typename: z.string().optional(), name: z.string().nullish() });
-const PrList = z.array(
-  z.object({
-    number: z.number(),
-    labels: Named.optional(),
-    statusCheckRollup: z.array(RollupEntry).optional(),
-  }),
-);
-const IssueList = z.array(z.object({ number: z.number(), labels: Named.optional() }));
-const RunList = z.array(z.object({ databaseId: z.number() }));
 
 /** One pass of the phase: the context, plus the reporter that keeps the token out of every line. */
 interface Pass extends SetupContext {
   /** The pasted token once read; replaced in every reported line. */
   secret: string;
-  /** Served repos the fine-grained token cannot see (HTTP 404 in step 2). */
-  unseen: Set<string>;
   say(status: StepStatus, text: string): void;
 }
 
@@ -145,27 +125,16 @@ function apiAnswer(result: RunResult): string {
   return body === "" ? line : `${line}: ${body}`;
 }
 
-/** A read-only gh command that exited non-zero: the command and gh's answer. */
-class ReadFailed extends Error {
-  readonly command: string;
-  readonly answer: string;
-  constructor(command: string, answer: string) {
-    super(`${command} failed: ${answer}`);
-    this.command = command;
-    this.answer = answer;
-  }
-}
-
 /** A read-only gh command's JSON; throws when the command failed. */
 function parseRead<T extends z.ZodType>(schema: T, args: string[], result: RunResult): z.output<T> {
   const what = `gh ${args.join(" ")}`;
-  if (result.status !== 0) throw new ReadFailed(what, answer(result));
+  if (result.status !== 0) throw new Error(`${what} failed: ${answer(result)}`);
   return parseJson(schema, result.stdout, what);
 }
 
 /** Runs a read-only gh command and parses its JSON; throws when it fails. */
-function ghJson<T extends z.ZodType>(p: { io: SetupIo }, schema: T, args: string[], opts?: RunOptions): z.output<T> {
-  return parseRead(schema, args, p.io.run("gh", args, opts));
+function ghJson<T extends z.ZodType>(p: { io: SetupIo }, schema: T, args: string[]): z.output<T> {
+  return parseRead(schema, args, p.io.run("gh", args));
 }
 
 /**
@@ -196,8 +165,6 @@ function accounts(p: Pass): Account[] {
   }));
 }
 
-const hasTestCheckRun = (rollup: readonly z.infer<typeof RollupEntry>[]) =>
-  rollup.some((e) => e.__typename === "CheckRun" && e.name === "test");
 const isUpdateRule = (rule: z.infer<typeof Rule>) =>
   rule.type === "update" && rule.parameters?.update_allows_fetch_and_merge !== true;
 const isAdminBypass = (actor: z.infer<typeof BypassActor>) =>
@@ -433,7 +400,6 @@ function rulesetStep(p: Pass, active: Account | undefined): boolean {
         "todo",
         `${repo}: the token cannot see this repo (HTTP 404): edit the token at https://${HOST}/settings/personal-access-tokens, select ${repo} under Repository access, then rerun`,
       );
-      p.unseen.add(repo);
       ok = false;
       continue;
     }
@@ -515,157 +481,7 @@ function readToken(p: Pass, active: Account | undefined): string | undefined {
   return token;
 }
 
-interface Subject {
-  repo: string;
-  pr: number;
-  issue: number;
-  run: number;
-  label: string;
-}
-
-/**
- * What the pre-swap test works on, reported; a to-do when no served repo has all of it. With
- * the new token in `opts`, a failed read is a to-do too, not an error.
- */
-function pickSubject(p: Pass, opts?: RunOptions): Subject | undefined {
-  let subject: Subject | undefined;
-  try {
-    subject = findSubject(p, opts);
-  } catch (err) {
-    if (opts === undefined || !(err instanceof ReadFailed)) throw err;
-    p.say(
-      "todo",
-      `pre-swap test: with the new token, ${err.command} failed (${err.answer}): edit the token at https://${HOST}/settings/personal-access-tokens, select that repo under Repository access, then rerun and paste the same token`,
-    );
-    return undefined;
-  }
-  if (subject === undefined) {
-    p.say(
-      "todo",
-      "pre-swap test: no served repo has an open PR with a test check run, an open issue, a completed workflow run and a label that is neither on them nor one of the workflow's: open what is missing, then rerun",
-    );
-  } else {
-    const { repo, pr, issue, run, label } = subject;
-    p.say("note", `pre-swap test: it will use ${repo} PR #${pr}, issue #${issue}, run ${run} and label ${label}`);
-  }
-  return subject;
-}
-
-/**
- * The first served repo with an open PR with a `test` check run, an open issue, a run and a free
- * label, read with `opts` (the new token, when given). Repos the token cannot see are skipped.
- */
-function findSubject(p: Pass, opts?: RunOptions): Subject | undefined {
-  for (const { repo } of p.repos) {
-    if (p.unseen.has(repo)) continue;
-    const prs = ghJson(p, PrList, [
-      "pr", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", "number,labels,statusCheckRollup",
-    ], opts);
-    const pr = prs.find((x) => hasTestCheckRun(x.statusCheckRollup ?? []));
-    if (pr === undefined) continue;
-    const [issue] = ghJson(p, IssueList, [
-      "issue", "list", "--repo", repo, "--state", "open", "--limit", "1", "--json", "number,labels",
-    ], opts);
-    // A completed run: an in-progress run has no log to read yet.
-    const [run] = ghJson(p, RunList, [
-      "run", "list", "--repo", repo, "--status", "completed", "--limit", "1", "--json", "databaseId",
-    ], opts);
-    if (issue === undefined || run === undefined) continue;
-    const carried = new Set([...(pr.labels ?? []), ...(issue.labels ?? [])].map((l) => l.name.toLowerCase()));
-    const label = ghJson(p, Named, ["label", "list", "--repo", repo, "--limit", "200", "--json", "name"], opts)
-      .map((l) => l.name)
-      .find((name) => !WORKFLOW_LABELS.has(name.toLowerCase()) && !carried.has(name.toLowerCase()));
-    if (label === undefined) continue;
-    return { repo, pr: pr.number, issue: issue.number, run: run.databaseId, label };
-  }
-  return undefined;
-}
-
-/**
- * Step 4: one command per row of the permission table, with the token only as GH_TOKEN in the
- * child's environment, each judged by its output. The test comment and labels are removed.
- */
-function preSwapTest(
-  p: Pass,
-  subject: Subject | undefined,
-  token: string | undefined,
-  unpicked = "a PR, issue and run (none found, above)",
-): boolean {
-  if (subject === undefined || token === undefined) {
-    p.say(
-      "would",
-      `pre-swap test: with the new token only in the child environment, run one command per permission against ${subject === undefined ? unpicked : "the PR, issue and run above"}, then delete the test comment and remove the label`,
-    );
-    return true;
-  }
-  const { repo, pr, issue, run, label } = subject;
-
-  const asToken: RunOptions = { env: { GH_TOKEN: token } };
-  const R = ["--repo", repo];
-  const failed: string[] = [];
-  const check = (name: string, args: string[], judge = (r: RunResult) => r.status === 0): RunResult => {
-    const result = p.io.run("gh", args, asToken);
-    const passed = judge(result);
-    p.say(passed ? "pass" : "fail", `pre-swap: ${name}${passed ? "" : `: ${answer(result)}`}`);
-    if (!passed) failed.push(name);
-    return result;
-  };
-  /** Runs a cleanup command as the token, then as the current login; a note when both fail. */
-  const cleanUp = (name: string, args: string[], byHand: string) => {
-    if (check(name, args).status === 0) return;
-    if (p.io.run("gh", args).status !== 0) p.say("note", `pre-swap: ${byHand}`);
-  };
-  const labelRoundTrip = (kind: "issue" | "pr", n: number) => {
-    const edit = [kind, "edit", String(n), ...R];
-    if (check(`gh ${kind} edit ${n} --add-label ${label}`, [...edit, "--add-label", label]).status !== 0) return;
-    cleanUp(`gh ${kind} edit ${n} --remove-label ${label}`, [...edit, "--remove-label", label], `remove the label ${label} from ${repo} #${n} by hand`);
-  };
-
-  check(`gh issue view ${issue}`, ["issue", "view", String(issue), ...R, "--json", "number,state"]);
-  check(`gh api repos/${repo}/issues/${issue}`, ["api", `repos/${repo}/issues/${issue}`, "--jq", ".author_association"]);
-  const comment = check(`gh issue comment ${issue}`, [
-    "issue", "comment", String(issue), ...R, "--body", "Token test by dispatch/setup-agents.sh; deleted right away.",
-  ]);
-  if (comment.status === 0) {
-    const url = comment.stdout.trim();
-    const id = /#issuecomment-(\d+)/.exec(url)?.[1];
-    if (id === undefined) {
-      p.say("note", `pre-swap: delete the test comment on ${repo} #${issue} by hand (${url})`);
-    } else {
-      cleanUp(
-        "gh api -X DELETE (the test comment)",
-        ["api", "-X", "DELETE", `repos/${repo}/issues/comments/${id}`],
-        `delete the test comment by hand: ${url}`,
-      );
-    }
-  }
-  labelRoundTrip("issue", issue);
-  check(`gh pr view ${pr} --json mergeable`, ["pr", "view", String(pr), ...R, "--json", "mergeable"]);
-  check(`gh api repos/${repo}/pulls/${pr}`, ["api", `repos/${repo}/pulls/${pr}`, "--jq", ".author_association"]);
-  check(`gh pr diff ${pr}`, ["pr", "diff", String(pr), ...R]);
-  labelRoundTrip("pr", pr);
-  check(`gh pr checks ${pr} (a test row)`, ["pr", "checks", String(pr), ...R], judgePrChecks);
-  check(`gh pr view ${pr} --json statusCheckRollup (a test check run)`, [
-    "pr", "view", String(pr), ...R, "--json", "statusCheckRollup",
-  ], judgeRollup);
-  check(`gh run view ${run} --log`, ["run", "view", String(run), ...R, "--log"]);
-  check(`gh api repos/${repo}/commits/main`, ["api", `repos/${repo}/commits/main`, "--jq", ".sha"]);
-  check(`gh api repos/${repo}/rules/branches/main`, ["api", `repos/${repo}/rules/branches/main`]);
-  check("gh label list", ["label", "list", ...R, "--limit", "5"]);
-  check(`gh api repos/${repo}/rulesets`, ["api", `repos/${repo}/rulesets`]);
-
-  if (failed.length > 0) {
-    p.say(
-      "todo",
-      `pre-swap test: ${failed.length} command(s) failed with the new token (above), so the login is not swapped and the current login stays; file a ticket with the failed commands and their output`,
-    );
-    return false;
-  }
-  p.say("pass", "pre-swap test: every command passed with the new token");
-  return true;
-}
-
-/** Step 5: replace every stored github.com login with the token. */
+/** Step 4: replace every stored github.com login with the token. */
 function swapLogin(p: Pass, token: string | undefined): boolean {
   if (token === undefined) {
     p.say("would", "login swap: gh auth logout for each github.com account, then gh auth login --with-token with the new token on stdin");
@@ -701,7 +517,7 @@ function githubServers(servers: unknown): string[] {
     .map(([name]) => name);
 }
 
-/** Step 6: other GitHub tokens on the machine, reported by place, never by value; changes nothing. */
+/** Step 5: other GitHub tokens on the machine, reported by place, never by value; changes nothing. */
 function scanStrayTokens(p: Pass): number {
   let found = 0;
   const todo = (text: string) => {
@@ -815,35 +631,6 @@ function scanStrayTokens(p: Pass): number {
   return found;
 }
 
-/** The ref the merge probe asks GitHub to create: outside refs/heads and refs/tags, so never a branch or tag. */
-const PROBE_REF = "refs/claude-workflow-probe/cannot-merge";
-/** The sha the merge probe names: no object has it, so GitHub never creates the ref. */
-const ZERO_SHA = "0".repeat(40);
-
-/** What the merge probe showed about a token. */
-export type MergeVerdict =
-  | { kind: "refused"; where: string }
-  | { kind: "can-merge"; where: string; code: string | undefined }
-  | { kind: "inconclusive"; where: string; answer: string };
-
-/**
- * The merge probe on every served repo, in order, run with `opts` (the token as GH_TOKEN, when
- * given): a ref create at the all-zero sha, which GitHub never makes. A repo that refuses it is
- * passed over; the first that does not decides.
- */
-export function probeMerge(io: SetupIo, repos: readonly ServedRepo[], opts?: RunOptions): MergeVerdict {
-  for (const { repo } of repos) {
-    const result = io.run("gh", [
-      "api", "-X", "POST", `repos/${repo}/git/refs`, "-f", `ref=${PROBE_REF}`, "-f", `sha=${ZERO_SHA}`,
-    ], opts);
-    const code = /HTTP (\d{3})/.exec(result.stderr)?.[1];
-    if (result.status !== 0 && code === "403") continue;
-    if (result.status === 0 || code === "422") return { kind: "can-merge", where: repo, code };
-    return { kind: "inconclusive", where: repo, answer: answer(result) };
-  }
-  return { kind: "refused", where: repos.map((r) => r.repo).join(", ") };
-}
-
 /** True when install-launchd.sh status shows dispatch disabled and not loaded; throws when the status read fails. */
 export function dispatchPaused(io: SetupIo, clone: string): boolean {
   const status = io.run(join(clone, LAUNCHD), ["status"]);
@@ -853,48 +640,46 @@ export function dispatchPaused(io: SetupIo, clone: string): boolean {
   return disabled && !loaded;
 }
 
-/** Step 7: the merge probe on each served repo must be refused with 403. */
-function mergeProbe(p: Pass): boolean {
-  const verdict = probeMerge(p.io, p.repos);
-  switch (verdict.kind) {
-    case "refused":
-      p.say("pass", `after-swap: the merge probe (creating ${PROBE_REF} at an all-zero sha) on ${verdict.where} was refused with 403: the token cannot merge`);
-      return true;
-    case "can-merge":
-      p.say(
-        "todo",
-        `after-swap: the merge probe on ${verdict.where} got ${verdict.code ?? "a success"}: the token has Contents write and can merge. Log it out now (gh auth logout --hostname ${HOST}) and check its permissions: Contents must be read`,
-      );
-      return false;
-    case "inconclusive":
-      p.say("todo", `after-swap: the merge probe on ${verdict.where} was inconclusive (${verdict.answer}): check that the token can read ${verdict.where}, then rerun`);
-      return false;
-  }
-}
-
-/** Step 7: one fine-grained login, the merge probe refused on each served repo, and each repo's ruleset read back. */
+/**
+ * Step 6: one stored login, whatever its token kind, and each served repo's ruleset
+ * read back. A repo the new token cannot see (HTTP 404) is a to-do and the next repo is still read.
+ */
 function afterSwapChecks(p: Pass): boolean {
   if (p.dryRun) {
     p.say(
       "would",
-      `after-swap checks: gh auth status shows one ${HOST} login, with a fine-grained token; the merge probe on each served repo (a ref creation at an all-zero sha) is refused with 403; each served repo's ${RULESET} reads back as set`,
+      `after-swap checks: gh auth status shows one ${HOST} login; each served repo's ${RULESET} reads back as set`,
     );
     return true;
   }
   let ok = true;
   const stored = accounts(p);
-  if (stored.length === 1 && stored[0]!.fineGrained) {
-    p.say("pass", `after-swap: one ${HOST} login (${stored[0]!.login}), with a fine-grained token`);
+  if (stored.length === 1) {
+    const only = stored[0]!;
+    p.say("pass", `after-swap: one ${HOST} login (${only.login}), with a ${only.fineGrained ? "fine-grained" : "classic"} token`);
   } else {
     const what = stored.map((a) => `${a.login} (${a.fineGrained ? "fine-grained" : "not fine-grained"})`).join(", ");
     p.say(
       "todo",
-      `after-swap: gh auth status shows ${what || `no ${HOST} login`}, not one fine-grained login: log out the others with gh auth logout --hostname ${HOST} --user <login>, then rerun`,
+      `after-swap: gh auth status shows ${what || `no ${HOST} login`}, not one login: log out the others with gh auth logout --hostname ${HOST} --user <login>, then rerun`,
     );
     ok = false;
   }
-  ok = mergeProbe(p) && ok;
-  for (const { repo } of p.repos) ok = checkRuleset(p, repo, readRuleset(p, repo), "after-swap: ", true) && ok;
+  for (const { repo } of p.repos) {
+    const args = ["api", `repos/${repo}/rulesets`];
+    const read = p.io.run("gh", args);
+    if (read.status !== 0 && /HTTP 404/.test(read.stderr)) {
+      p.say(
+        "todo",
+        `after-swap: ${repo}: the token cannot see this repo (HTTP 404): edit the token at https://${HOST}/settings/personal-access-tokens, select ${repo} under Repository access, then rerun`,
+      );
+      ok = false;
+      continue;
+    }
+    const found = parseRead(RulesetList, args, read).find((r) => r.name === RULESET);
+    const ruleset = found && ghJson(p, Ruleset, ["api", `repos/${repo}/rulesets/${found.id}`]);
+    ok = checkRuleset(p, repo, ruleset, "after-swap: ", true) && ok;
+  }
   return ok;
 }
 
@@ -904,7 +689,6 @@ export const credentials: Phase = {
     const p: Pass = {
       ...ctx,
       secret: "",
-      unseen: new Set(),
       say(status, text) {
         ctx.io.report(status, this.secret === "" ? text : text.split(this.secret).join("<token>"));
       },
@@ -920,32 +704,14 @@ export const credentials: Phase = {
 
     const swapped = !expired && active !== undefined && active.fineGrained;
     if (swapped && p.dryRun) {
-      p.say("would", "token: ask whether to create a new token and swap it in (default No, which skips the token, the pre-swap test and the login swap)");
+      p.say("would", "token: ask whether to create a new token and swap it in (default No, which skips the token and the login swap)");
     }
     if (swapped && !p.dryRun && !p.io.confirm("Create a new token and swap it in? [y/N]")) {
       p.say("already", "token: the fine-grained login is in place and no new token was wanted");
-      p.say("already", "pre-swap test: not needed without a new token");
       p.say("already", "login swap: the fine-grained login stays");
-    } else if (expired) {
-      // Only the new token can read the served repos, so the subject is picked after the form.
-      const token = readToken(p, active);
-      if (token === undefined && !p.dryRun) return "stop";
-      let subject: Subject | undefined;
-      if (token === undefined) {
-        p.say("would", "pre-swap test: pick its PR, issue, run and label, reading with the new token once it is pasted");
-      } else {
-        subject = pickSubject(p, { env: { GH_TOKEN: token } });
-        if (subject === undefined) return "stop";
-      }
-      if (!preSwapTest(p, subject, token, "the PR, issue and run picked with the new token")) return "stop";
-      if (!swapLogin(p, token)) return "stop";
     } else {
-      // Picked before the token form: a missing PR, issue or run must not cost a generated token.
-      const subject = pickSubject(p);
-      if (subject === undefined && !p.dryRun) return "stop";
       const token = readToken(p, active);
       if (token === undefined && !p.dryRun) return "stop";
-      if (!preSwapTest(p, subject, token)) return "stop";
       if (!swapLogin(p, token)) return "stop";
     }
 
@@ -956,24 +722,3 @@ export const credentials: Phase = {
     return (strays === 0 && checked) || p.dryRun ? "ok" : "stop";
   },
 };
-
-/** `gh pr checks`: exit 0, 1 or 8 and an output row whose first tab-separated field is `test`. */
-export function judgePrChecks(result: RunResult): boolean {
-  return (
-    [0, 1, 8].includes(result.status) &&
-    result.stdout.split("\n").some((line) => line.split("\t")[0]?.trim() === "test")
-  );
-}
-
-/** `gh pr view --json statusCheckRollup`: exit 0 and a CheckRun named `test` in the rollup. */
-export function judgeRollup(result: RunResult): boolean {
-  if (result.status !== 0) return false;
-  let data: unknown;
-  try {
-    data = JSON.parse(result.stdout);
-  } catch {
-    return false;
-  }
-  const parsed = z.object({ statusCheckRollup: z.array(RollupEntry) }).safeParse(data);
-  return parsed.success && hasTestCheckRun(parsed.data.statusCheckRollup);
-}
