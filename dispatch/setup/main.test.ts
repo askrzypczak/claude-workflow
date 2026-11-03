@@ -159,7 +159,7 @@ describe("runSetup", () => {
       respond: (c) => {
         if (!(c.cmd.endsWith("install-launchd.sh") && c.args[0] === "status")) return undefined;
         statusReads++;
-        return statusReads > 1 ? { status: 1, stdout: "", stderr: "launchctl: boom" } : undefined;
+        return statusReads > 2 ? { status: 1, stdout: "", stderr: "launchctl: boom" } : undefined;
       },
     });
 
