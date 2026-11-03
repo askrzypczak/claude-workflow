@@ -28,7 +28,7 @@ export function recordingIo(io: SetupIo, into: Report[], echo: boolean): SetupIo
  * A live session's to-do. It stays out of the list: the live run pauses dispatch first and
  * then stops on it in its phase, so the poller cannot start another session before the rerun.
  */
-const LIVE_SESSION = /: stop it (with \S.* stop \S+|from \S.*)$/;
+const LIVE_SESSION = /: stop it (with \S.* stop .+|from \S.*)$/;
 
 /** The page a container dry run names for a repo's deploy key. */
 const KEYS_PAGE = /https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/settings\/keys\/new/;
