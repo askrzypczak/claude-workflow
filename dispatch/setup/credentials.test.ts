@@ -79,7 +79,7 @@ describe("credentials phase", () => {
     expect(already.some((t) => /auto-merge/i.test(t))).toBe(true);
   });
 
-  it("with dispatch already paused, a re-run after the swap that declines a new token runs no write command", () => {
+  it("with dispatch already paused, a re-run after the swap that declines a new token runs no write command other than setup-labels.sh", () => {
     const { calls, prompts, ctx } = setup({ dispatch: "paused", login: "fine-grained", confirm: false });
 
     const result = credentials.run(ctx);
@@ -87,7 +87,7 @@ describe("credentials phase", () => {
     expect(result).toBe("ok");
     expect(prompts.some((p) => p.kind === "confirm")).toBe(true);
     expect(prompts.some((p) => p.kind === "secret")).toBe(false);
-    expect(writeCalls(calls)).toEqual([]);
+    expect(writeCalls(calls).filter((c) => !c.cmd.endsWith("/setup-labels.sh"))).toEqual([]);
   });
 
   it("the token reaches gh only as gh auth login's stdin, never in argv, a call's environment, a reported line or a file-write effect", () => {
@@ -159,7 +159,7 @@ describe("credentials phase", () => {
     expect(todos.some((t) => t.includes("tools-9"))).toBe(false);
   });
 
-  it("the stray-token scan reports each token it finds without its value and runs no write command", () => {
+  it("the stray-token scan reports each token it finds without its value and runs no write command other than setup-labels.sh", () => {
     const values = ["ghp_ENVVALUE111", "ghp_ZSHRCVALUE222", "ghp_CREDVALUE333", "ghp_MCPVALUE444"];
     const { calls, reports, ctx } = setup({
       login: "fine-grained",
@@ -184,7 +184,7 @@ describe("credentials phase", () => {
     const result = credentials.run(ctx);
 
     expect(result).toBe("stop");
-    expect(writeCalls(calls)).toEqual([]);
+    expect(writeCalls(calls).filter((c) => !c.cmd.endsWith("/setup-labels.sh"))).toEqual([]);
     const todos = reports.filter((r) => r.status === "todo").map((r) => r.text);
     expect(todos.some((t) => t.includes("GH_TOKEN"))).toBe(true);
     expect(todos.some((t) => t.includes(".zshrc") && t.includes("GITHUB_TOKEN"))).toBe(true);

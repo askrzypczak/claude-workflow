@@ -262,6 +262,23 @@ describe("credentials phase protect-main step", () => {
     expect(tokenPrompts(prompts)).toEqual([]);
   });
 
+  it("a refused auto-merge change on one served repo still goes on to the next repo's ruleset step, and the phase stops at the step's end", () => {
+    const { result, reports, calls, prompts } = run(
+      {
+        rulesets: [protectMain(), restrictUpdates()],
+        allowAutoMerge: true,
+        respond: (c) => (isRepoPatch(c, FAKE_REPO) ? REFUSED : undefined),
+      },
+      false,
+      [FAKE_REPO, OTHER_REPO],
+    );
+
+    expect(reports.some((r) => r.status === "todo" && r.text.includes(FAKE_REPO) && /auto-merge/i.test(r.text))).toBe(true);
+    expect(calls.some((c) => isRepoPatch(c, OTHER_REPO))).toBe(true);
+    expect(result).toBe("stop");
+    expect(tokenPrompts(prompts)).toEqual([]);
+  });
+
   it("under --dry-run under an admin login a repo without protect-main gets a would line for its create and the required-checks note, then the restrict-updates would line, and no write command runs", () => {
     const { result, reports, calls } = run({ rulesets: [] }, true);
 

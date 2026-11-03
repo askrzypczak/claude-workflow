@@ -27,7 +27,7 @@ describe("stray-token scan", () => {
     });
 
     expect(result).toBe("stop");
-    expect(writeCalls(calls)).toEqual([]);
+    expect(writeCalls(calls).filter((c) => !c.cmd.endsWith("/setup-labels.sh"))).toEqual([]);
     expect(todos.some((t) => t.includes("settings.json") && t.includes("GH_TOKEN"))).toBe(true);
     for (const r of reports) expect(r.text).not.toContain(value);
   });
@@ -49,7 +49,7 @@ describe("stray-token scan", () => {
     });
 
     expect(result).toBe("stop");
-    expect(writeCalls(calls)).toEqual([]);
+    expect(writeCalls(calls).filter((c) => !c.cmd.endsWith("/setup-labels.sh"))).toEqual([]);
     expect(todos.some((t) => t.includes("claude-workflow-poller.plist") && t.includes("GITHUB_TOKEN"))).toBe(true);
     for (const r of reports) expect(r.text).not.toContain(value);
   });
@@ -96,7 +96,7 @@ describe("stray-token scan of .mcp.json files", () => {
     expect(
       calls.some((c) => parseDockerExec(c)?.command.some((a) => a.includes(`${APP_CLONE}/.mcp.json`)) === true),
     ).toBe(true);
-    expect(writeCalls(calls)).toEqual([]);
+    expect(writeCalls(calls).filter((c) => !c.cmd.endsWith("/setup-labels.sh"))).toEqual([]);
   });
 
   it("the stray-token scan notes the served repos it did not scan when the container is not running", () => {
