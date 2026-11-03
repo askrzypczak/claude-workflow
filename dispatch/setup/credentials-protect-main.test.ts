@@ -292,6 +292,22 @@ describe("credentials phase protect-main step", () => {
     expect(result).toBe("ok");
   });
 
+  it("under --dry-run under an admin login a bypassable protect-main is a to-do and that repo gets no restrict-updates or auto-merge would line", () => {
+    const { result, reports, calls } = run(
+      { rulesets: [protectMain({ bypass_actors: [ADMIN_ALWAYS] })], allowAutoMerge: true },
+      true,
+    );
+
+    expect(protectMainTodo(reports)).toBe(true);
+    expect(
+      reports.some(
+        (r) => r.status === "would" && r.text.includes(FAKE_REPO) && (/restrict-updates/i.test(r.text) || /auto-merge/i.test(r.text)),
+      ),
+    ).toBe(false);
+    expect(writeCalls(calls)).toEqual([]);
+    expect(result).toBe("ok");
+  });
+
   it("a repo with one bypassable and one unbypassable pull_request ruleset on its default branch passes the protect-main check", () => {
     const { result, reports } = run({
       rulesets: [

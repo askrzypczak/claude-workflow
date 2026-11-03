@@ -377,15 +377,15 @@ function pullRequestRulesets(p: { io: SetupIo }, repo: string, branch: string): 
 /**
  * Judges the pull_request rulesets on `branch`: one must read current_user_can_bypass never
  * and, where GitHub returns it, have an empty bypass list. `missing` is the to-do when there
- * is none at all.
+ * is none at all; a caller that has already found some leaves it out.
  */
-function judgeProtectMain(p: { say: Say }, repo: string, branch: string, rulesets: Ruleset[], missing: string): boolean {
+function judgeProtectMain(p: { say: Say }, repo: string, branch: string, rulesets: Ruleset[], missing?: string): boolean {
   const todo = (text: string) => {
     p.say("todo", `${repo}: ${PROTECT_MAIN}: ${text}`);
     return false;
   };
   const browser = `fix it in the browser (${RULESETS_FIX}), then rerun`;
-  if (rulesets.length === 0) return todo(missing);
+  if (rulesets.length === 0) return todo(missing ?? `no active ruleset on ${branch} has a pull_request rule`);
   const binding = rulesets.filter((r) => r.current_user_can_bypass === "never");
   if (binding.length === 0) {
     const read = rulesets.map((r) => `ruleset ${r.id} reads ${r.current_user_can_bypass ?? "not returned"}`);
@@ -437,7 +437,7 @@ export function checkProtectMain(p: { io: SetupIo; say: Say }, repo: string, bra
  */
 function ensureProtectMain(p: Pass, repo: string, branch: string): boolean {
   const existing = pullRequestRulesets(p, repo, branch);
-  if (existing.length > 0) return judgeProtectMain(p, repo, branch, existing, "");
+  if (existing.length > 0) return judgeProtectMain(p, repo, branch, existing);
   const shape =
     "deletion, non_fast_forward and a pull_request rule with no required approvals on the default branch, active, with no bypass actors and no required status checks";
   const checksNote = `${repo}: ${PROTECT_MAIN} requires no status checks: once the repo has CI, add them in the browser (${RULESETS_FIX} > ${PROTECT_MAIN}, Require status checks to pass)`;
@@ -517,10 +517,11 @@ function rulesetStep(p: Pass, active: Account | undefined): boolean {
     }
     if (admin) {
       // With the admin role exempt from restrict-updates, protect-main must hold before
-      // restrict-updates is created or reset. Under --dry-run the would lines still follow.
+      // restrict-updates is created or reset. Under --dry-run a would-create counts as holding,
+      // so the would lines follow; a protect-main to-do skips them, as in a live run.
       const protectedMain = ensureProtectMain(p, repo, info.default_branch);
       ok = protectedMain && ok;
-      if (protectedMain || p.dryRun) {
+      if (protectedMain) {
         ok = ensureRuleset(p, repo, readRuleset(p, repo)) && ensureAutoMergeOff(p, repo, info.allow_auto_merge) && ok;
       }
     } else {
