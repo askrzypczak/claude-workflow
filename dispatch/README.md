@@ -32,6 +32,8 @@ Labels on GitHub start unattended agent sessions locally:
 
 ### Onboarding a repo
 
+[Adding a repo](../docs/setup.md#adding-a-repo) is the ordered checklist, covering both logins and what stays manual in the browser (token repository access, the deploy key, and the rulesets under a fine-grained login). The steps below are the detail of each phase.
+
 1. Meet the [requirements](../docs/setup.md#requirements) (declared checks, deny rules, the plugin at user scope).
 2. The labels: the `credentials` phase (step 5) runs `setup-labels.sh` for each served repo, which creates the missing ones and leaves existing ones alone. By hand: `setup-labels.sh owner/repo`.
 3. Optionally add the [label-cleanup caller](../docs/setup.md#label-cleanup-on-close).
@@ -68,11 +70,7 @@ Labels on GitHub start unattended agent sessions locally:
    - launchd only gives the job `HOME` and `PATH`, so the dry run drops `CLAUDE_MAX_SESSIONS` from your shell. Set it in the plist's `EnvironmentVariables` for the real poller.
    - Remove with `dispatch/install-launchd.sh uninstall`.
 
-A repo added later needs no reinstall. It does need:
-
-- adding to the config, with `dir` `/home/node/<name>`, and to the host token's repository access (edit the token in the browser);
-- its `protect-main` and `restrict-updates` rulesets, which the fine-grained login cannot create: either an admin-login rerun (`gh auth login` to an admin login, then a full rerun, which asks for a new token), or the browser, as [The Actions token](../docs/agent-credentials.md#the-actions-token) describes;
-- then a full rerun of `dispatch/setup-agents.sh`, or its phases in order: `credentials` (checks the rulesets and the token's access, and creates the repo's labels under any login), `container` (the new repo's `protect-main` check, deploy key, alias, clone and trust; edit the container's token in the browser so it can see the repo too). Only a full run resumes dispatch; after single phases, finish with `check`, which does not resume it either: run `dispatch/install-launchd.sh resume`.
+A repo added later needs no reinstall. Follow the [Adding a repo](../docs/setup.md#adding-a-repo) checklist: `dispatch/setup-agents.sh --add-repo owner/name`, both tokens' repository access in the browser, the rulesets (created by the script under an admin login, browser steps under the fine-grained one) and the deploy key. Only a full run of `dispatch/setup-agents.sh` resumes dispatch; after single phases, finish with `check`, which does not resume it either: run `dispatch/install-launchd.sh resume`.
 
 Migrating from an older poller on the host: pass `--legacy-label <its launchd label>` (booted out, plist removed). Its state is not carried into the container, so the new poller may try a conflicting or red PR again that the old one already tried, and it does not see the sessions the old one started on the host: let those finish first.
 
@@ -187,13 +185,13 @@ Every JSON input (the config, `gh` and `claude agents` output, the state files) 
   {
     "repo": "example-owner/example-app",
     "dir": "/home/node/example-app",
-    "sessionPrefix": "app",
+    "sessionPrefix": "example-app",
     "owner": "example-owner"
   },
   {
     "repo": "example-owner/example-tools",
     "dir": "/home/node/example-tools",
-    "sessionPrefix": "tools",
+    "sessionPrefix": "example-tools",
     "owner": "example-owner"
   }
 ]
