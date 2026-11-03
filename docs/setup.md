@@ -70,8 +70,8 @@ A consuming project needs:
 The maintainer runs these in a terminal in the main clone, never from an agent session. [Onboarding a repo](../dispatch/README.md#onboarding-a-repo) has the detail of each phase.
 
 1. Before starting: Node 24 and `npm ci` in the clone. Colima started with `colima start --cpu 4 --memory 4 --disk 40 --mount none`; `docker context show` prints `colima`, and `colima ssh -- mount` shows no `virtiofs`, `9p` or `sshfs` mount. An admin `gh` login. No config to write by hand: add the first repo with `dispatch/setup-agents.sh --add-repo owner/name`, which creates the config file when it is missing ([Adding a repo](#adding-a-repo)).
-2. `dispatch/setup-agents.sh --dry-run`: every step it would take, changing nothing.
-3. With every Claude Code session closed, on the host and in the agent container: `dispatch/setup-agents.sh`, the full run of `credentials`, `host`, `container` and `check`. It first lists everything it can read as missing and stops before any change; otherwise it stops at the first step that needs the maintainer: do what it prints and rerun.
+2. `dispatch/setup-agents.sh --dry-run --add-repo owner/name` (the dry run writes nothing, so the flag is needed again): every step it would take, changing nothing.
+3. With every Claude Code session closed, on the host and in the agent container: `dispatch/setup-agents.sh`, the full run of `credentials`, `host`, `container` and `check`, with `--add-repo owner/name` on the first run for a repo not yet in the config. It first lists everything it can read as missing and stops before any change; otherwise it stops at the first step that needs the maintainer: do what it prints and rerun.
 4. `dispatch/install-launchd.sh install`, which starts polling.
 
 When a session on the host must stay open, run `dispatch/setup-agents.sh host`, `container` and `check` one at a time, then `credentials` once every session is closed, then install. A single phase never resumes dispatch, and `credentials` refuses while any session is live, idle ones included.
@@ -82,16 +82,16 @@ The checklist for "I created a repo and want it served". It is the same for the 
 
 First pick the path, by the login `gh` holds:
 
-- Path A, an admin login (`gh auth login` as a repo admin). The `credentials` phase creates `protect-main` when none exists and creates `restrict-updates`, then creates the labels, and a new fine-grained token follows. Pick it on a first setup, or when you are willing to make a new token for this repo. The new host token's form is where the repo is selected.
-- Path B, the fine-grained login already in place. The script cannot write rulesets or settings under it, so `protect-main` and `restrict-updates` are browser steps (or take path A for this one run). Pick it when you do not want a new token.
+- Path A, an admin login (`gh auth login` as a repo admin). The `credentials` phase creates `protect-main` when none exists and creates `restrict-updates`, then creates the labels, and a new fine-grained token follows. Pick it on a first setup, or when you are willing to make a new token for this repo.
+- Path B, the fine-grained login already in place. The script cannot write rulesets or settings under it, so `protect-main` and `restrict-updates` are browser steps (or take path A for this one run). Pick it when you do not want a new token. In step 4's run the script asks "Create a new token and swap it in?": answer No, since step 2 already edited the token.
 
 The steps, in order:
 
 1. The repo's own requirements, which setup does not check: a `Checks:` line in the root `CLAUDE.md` naming the definition-of-done commands (see [Requirements](#requirements)), the deny rules in `.claude/settings.json`, and optionally the [label-cleanup caller](#label-cleanup-on-close).
-2. Token repository access, which nothing checks ([What the script trusts](agent-credentials.md#what-the-script-trusts)). The host token and the container token both need the repo under Repository access. Path A: select it on the new host token's form; the container token is still edited in the browser. Path B: edit both tokens in the browser (GitHub > Settings > Developer settings > Fine-grained tokens). A repo missing from the container token passes setup and fails when the poller runs.
+2. Token repository access, which the script does not check up front ([What the script trusts](agent-credentials.md#what-the-script-trusts)). The host token and the container token both need the repo under Repository access. Path A: select the repo on the new host token's form, which step 4's run opens; on a first setup the container token's access is selected on the form the `container` phase opens during that run, and editing it in the browser is the later-repo case. Path B: edit both tokens in the browser (GitHub > Settings > Developer settings > Fine-grained tokens). A repo missing from the container token passes setup and fails when the poller runs.
 3. The rulesets. Path A: nothing, the script creates them. An existing `protect-main` is never edited: one that can be bypassed or has bypass actors is a to-do fixed in the browser. Path B: do [protect-main in the browser](#protect-main-in-the-browser) and [restrict-updates in the browser](#restrict-updates-in-the-browser).
-4. `dispatch/setup-agents.sh --add-repo owner/name`, with `--dry-run` first. It writes the config entry, then runs the phases as usual. The script's read-only preflight lists what is still missing, with the fix for each. The `credentials` phase also creates the repo's labels under either login.
-5. The deploy key, a browser paste on both paths. The `container` phase opens `https://github.com/owner/name/settings/keys/new` through its clipboard flow: paste the key and tick "Allow write access". A key added through a token is deleted when that token is revoked or expires, and only an admin login can add one, so the paste stays ([spike #198's findings](https://github.com/askrzypczak/claude-workflow/issues/198#issuecomment-6570465502)).
+4. `dispatch/setup-agents.sh --add-repo owner/name`, with `--dry-run` first. It writes the config entry, then runs the phases as usual. A live run first reads what it can without a change: it prints `Preflight: <n> to do before setup can pass:` with the items grouped by `owner/repo:` and `this machine:`, then `Stopped before any change` and exits 1, or `Preflight: nothing to do before setup can pass.` and runs the phases. The deploy key is listed separately and never stops the run; `--dry-run` ends with the same list headed `Dry run summary:` ([Onboarding a repo](../dispatch/README.md#onboarding-a-repo), step 5). The `credentials` phase also creates the repo's labels under either login.
+5. The deploy key, a browser paste on both paths, done during step 4's run. The `container` phase opens `https://github.com/owner/name/settings/keys/new` through its clipboard flow: paste the key and tick "Allow write access". A key added through a token is deleted when that token is revoked or expires, and only an admin login can add one, so the paste stays ([spike #198's findings](https://github.com/askrzypczak/claude-workflow/issues/198#issuecomment-6570465502)).
 6. Later, once the repo has CI: [add required checks](#adding-required-checks-later).
 
 ### protect-main in the browser
@@ -104,6 +104,8 @@ Settings > Rules > Rulesets > New ruleset > New branch ruleset, with these value
 - Target branches: Add target > Include default branch.
 - Rules: tick "Restrict deletions", "Block force pushes" and "Require a pull request before merging". Under the pull request rule set "Required approvals" to `0` and leave the other options at their defaults (unticked; all three merge methods allowed).
 - No "Require status checks to pass": a repo may have no CI yet ([Adding required checks later](#adding-required-checks-later)).
+
+This repository's own `protect-main` (askrzypczak/claude-workflow) additionally requires its `test` check, added the way [Adding required checks later](#adding-required-checks-later) describes.
 
 ### restrict-updates in the browser
 
