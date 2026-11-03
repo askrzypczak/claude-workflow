@@ -7,7 +7,8 @@
 // and `restrict-updates` in exempt mode in place, auto-merge off, the pasted token FAKE_TOKEN,
 // a swap that leaves one fine-grained login and no stray tokens. The world has no open PR,
 // issue, workflow run or label, so the gh `pr`, `issue`, `run` and `label` commands are
-// unscripted.
+// unscripted. A run of the clone's `setup-labels.sh` exits 0 with no output; no label state is
+// modelled, so a failing run comes from `respond` or `fail`.
 //
 // The ruleset model: a ruleset read gives `current_user_can_bypass` from the Repository admin
 // role's bypass mode, for every login (always, pull_requests_only, exempt, or never when the role
@@ -415,7 +416,7 @@ export function parseGhApi(call: FakeCall): { method: string; endpoint: string }
 /**
  * Whether a call changes state. This is the definition of "write command" the setup tests
  * use: `install-launchd.sh` pause or resume; `gh api` with a POST, PUT, PATCH or DELETE
- * (explicit, or implied by a body); `gh issue comment`;
+ * (explicit, or implied by a body); a `setup-labels.sh` run; `gh issue comment`;
  * `gh issue edit`; `gh pr edit`; `gh auth logout`; `gh auth login`; `open`; `pbcopy`;
  * `git ... remote set-url`; `git config` setting a value; `chmod`; `mkdir`; and every docker
  * call that changes state: build, run, create, start, stop, restart, rm, kill, volume create or rm, and a
@@ -427,6 +428,7 @@ export function parseGhApi(call: FakeCall): { method: string; endpoint: string }
 function isWrite(call: FakeCall): boolean {
   const [a0, a1] = call.args;
   if (call.cmd.endsWith("install-launchd.sh")) return a0 === "pause" || a0 === "resume";
+  if (call.cmd.endsWith("/setup-labels.sh")) return true;
   if (call.cmd === "open" || call.cmd === "pbcopy") return true;
   if (call.cmd === "chmod" || call.cmd === "mkdir") return true;
   if (call.cmd === "docker") return isDockerWrite(call.args);
@@ -1525,6 +1527,7 @@ export function fakeIo(world: FakeWorld = {}) {
         return ok("Resumed.\n");
       }
     }
+    if (call.cmd.endsWith("/setup-labels.sh")) return ok();
     if (call.cmd === "docker") return docker.run(call);
     if (call.cmd === "stat") {
       const path = call.args[call.args.length - 1] ?? "";
