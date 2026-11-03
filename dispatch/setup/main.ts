@@ -1,6 +1,8 @@
 // Entry point, run by dispatch/setup-agents.sh: node dispatch/setup/main.ts [phase] [--dry-run]
 // [--rebuild] [--add-repo owner/name]
-// Runs the phases in order and stops at the first one that needs the maintainer.
+// A live run first reads what it can without a change and, when anything is missing, lists it
+// all by repo and stops before any change; otherwise it runs the phases in order and stops at
+// the first one that needs the maintainer. --dry-run ends with that list.
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -41,9 +43,11 @@ const PHASES: readonly Phase[] = [credentials, host, container, check];
 
 const USAGE = `Usage: dispatch/setup-agents.sh [${PHASES.map((p) => p.name).join("|")}] [--dry-run] [--rebuild]
        [--add-repo owner/name]
-  With no phase, runs every phase in order and stops at the first that needs the maintainer;
-  when every phase passes, the last one (check) resumes dispatch. A single phase never does.
-  --dry-run   run the reads and print what each step would do; change nothing.
+  First reads what it can without a change and, when anything is missing, lists it all by
+  repo and stops before any change. With no phase, then runs every phase in order and stops at
+  the first that needs the maintainer; when every phase passes, the last one (check) resumes
+  dispatch. A single phase never does.
+  --dry-run   run the reads and print what each step would do, then that list; change nothing.
   --rebuild   container: rebuild the image with --pull --no-cache and replace the container,
               keeping its home volume; it refuses while a session is live.
   --add-repo  add owner/name to the dispatch config (created when missing), then run as usual;

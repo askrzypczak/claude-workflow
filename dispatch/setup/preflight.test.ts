@@ -226,4 +226,59 @@ describe("the preflight list", () => {
 
     expect(summary("Dry run summary")).toEqual([NOTHING("Dry run summary")]);
   });
+
+  it("a live check run whose container checks fail lists each failed check before its to-do and stops with exit 1", () => {
+    const world: FakeWorld = {
+      deployKeys: [FAKE_REPO],
+      docker: {
+        container: { state: "running" },
+        clones: { "/home/node/example-tools": `git@github.com-example-tools:${FAKE_REPO}.git` },
+        files: {
+          "/home/node/.ssh/deploy-example-tools": "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE-KEY-BODY-FOR-TESTS\n-----END OPENSSH PRIVATE KEY-----\n",
+        },
+        ghLogin: "fine-grained",
+        reach: ["api.github.com", "github.com", "example.com"],
+      },
+    };
+    const dry = fakeIo(world);
+    runSetup(["check", "--dry-run"], base(dry.io));
+    const failed = dry.reports.filter((r) => r.status === "fail").map((r) => r.text);
+    const checksFailed = dry.reports.filter((r) => r.status === "todo").map((r) => r.text);
+    vi.mocked(console.log).mockClear();
+    const { io, calls } = fakeIo(world);
+
+    expect(runSetup(["check"], base(io))).toBe(1);
+
+    expect(failed).toEqual([expect.stringMatching(/^firewall: https:\/\/example\.com was reached/)]);
+    expect(checksFailed).toEqual([expect.stringMatching(/^the container checks failed \(above\)/)]);
+    const lines = printed();
+    expect(lines.slice(0, 5)).toEqual([
+      COUNT("Preflight", 2),
+      "this machine:",
+      `  - ${failed[0]}`,
+      `  - ${checksFailed[0]}`,
+      "Stopped before any change: do the to-dos above, then rerun dispatch/setup-agents.sh.",
+    ]);
+    expect(writeCalls(calls)).toEqual([]);
+    expect(calls.some((c) => c.cmd.endsWith("install-launchd.sh") && c.args[0] === "resume")).toBe(false);
+  });
+
+  it("a live session without a name, or in the agent container, is not in the preflight's list either", () => {
+    const { io, calls, reports } = fakeIo({
+      dispatch: "running",
+      sessions: [{ state: "running", startedAt: 1 }],
+      docker: { container: { state: "running" }, sessions: [{ id: "c0ffee01", name: "tools-12", state: "running", startedAt: 1 }] },
+    });
+
+    expect(runSetup(["credentials"], base(io))).toBe(1);
+
+    const todos = reports.filter((r) => r.status === "todo").map((r) => r.text);
+    expect(todos.some((t) => /^an unnamed session is running: stop it from claude agents$/.test(t))).toBe(true);
+    expect(todos.some((t) => /in the agent container .* stop it with docker exec .*claude stop c0ffee01$/.test(t))).toBe(true);
+    const lines = printed();
+    expect(lines[0]).toBe(NOTHING("Preflight"));
+    expect(calls.some((c) => c.cmd.endsWith("install-launchd.sh") && c.args[0] === "pause")).toBe(true);
+    expect(lines.at(-2)).toMatch(/^Stopped in credentials:/);
+    expect(lines.at(-1)).toMatch(/^Dispatch stays paused/);
+  });
 });
