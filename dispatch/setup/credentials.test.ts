@@ -2,8 +2,7 @@
 //
 // Report keywords these tests match on (case-insensitive), which the phase must use:
 // - dry run, `would` lines: "pause" (pausing dispatch), "restrict-updates" (the ruleset),
-//   "token" (the token form and prompt), "pre-swap" (the pre-swap test), "login" (the swap),
-//   "after-swap" (the after-swap checks);
+//   "token" (the token form and prompt), "login" (the swap), "after-swap" (the after-swap checks);
 // - `already` lines: "restrict-updates" and "auto-merge";
 // - the protect-main check: lines naming "protect-main" (and, for its to-dos, the repo); under
 //   the fine-grained login, a `note` naming "protect-main", "bypass" and "browser";
@@ -12,8 +11,8 @@
 // - a live session's to-do names its fix, `claude stop <name>`;
 // - stray-token to-dos name what was found: the variable, the file, "keychain".
 import { describe, expect, it, vi } from "vitest";
-import { credentials, judgePrChecks, judgeRollup } from "./credentials.ts";
-import { FAKE_LOGIN, FAKE_REPO, FAKE_TOKEN, fakeIo, isMergeProbe, parseGhApi, protectMain, restrictUpdates, writeCalls } from "./fake-io.ts";
+import { credentials } from "./credentials.ts";
+import { FAKE_LOGIN, FAKE_REPO, FAKE_TOKEN, fakeIo, parseGhApi, protectMain, restrictUpdates, writeCalls } from "./fake-io.ts";
 import type { FakeCall, FakeWorld } from "./fake-io.ts";
 import type { RunResult } from "./io.ts";
 import type { SetupContext } from "./main.ts";
@@ -63,7 +62,7 @@ describe("credentials phase", () => {
     expect(writeCalls(calls)).toEqual([]);
     expect(prompts.filter((p) => p.kind === "secret")).toEqual([]);
     const would = reports.filter((r) => r.status === "would").map((r) => r.text);
-    for (const keyword of [/pause/i, /restrict-updates/i, /token/i, /pre-swap/i, /login/i, /after-swap/i]) {
+    for (const keyword of [/pause/i, /restrict-updates/i, /token/i, /login/i, /after-swap/i]) {
       expect(would.some((t) => keyword.test(t)), `a would line matching ${keyword}`).toBe(true);
     }
     expect(reports.some((r) => r.status === "pass" && /protect-main/i.test(r.text) && r.text.includes(FAKE_REPO))).toBe(true);
@@ -80,7 +79,7 @@ describe("credentials phase", () => {
     expect(already.some((t) => /auto-merge/i.test(t))).toBe(true);
   });
 
-  it("with dispatch already paused, a re-run after the swap that declines a new token runs no write command", () => {
+  it("with dispatch already paused, a re-run after the swap that declines a new token runs no write command other than setup-labels.sh", () => {
     const { calls, prompts, ctx } = setup({ dispatch: "paused", login: "fine-grained", confirm: false });
 
     const result = credentials.run(ctx);
@@ -88,77 +87,31 @@ describe("credentials phase", () => {
     expect(result).toBe("ok");
     expect(prompts.some((p) => p.kind === "confirm")).toBe(true);
     expect(prompts.some((p) => p.kind === "secret")).toBe(false);
-    expect(writeCalls(calls)).toEqual([]);
+    expect(writeCalls(calls).filter((c) => !c.cmd.endsWith("/setup-labels.sh"))).toEqual([]);
   });
 
-  it("the token reaches gh only as GH_TOKEN or as gh auth login's stdin, never in argv, a reported line or a file-write effect", () => {
-    const { calls, reports, ctx } = setup();
+  it("the token reaches gh only as gh auth login's stdin, never in argv, a call's environment, a reported line or a file-write effect", () => {
+    const { calls, reports, fileOps, ctx } = setup();
 
     const result = credentials.run(ctx);
 
     expect(result).toBe("ok");
     for (const call of calls) {
-      expect(call.args.some((a) => a.includes(FAKE_TOKEN)), `${call.cmd} ${call.args.join(" ")}`).toBe(false);
+      const shown = `${call.cmd} ${call.args.join(" ")}`;
+      expect(call.args.some((a) => a.includes(FAKE_TOKEN)), shown).toBe(false);
       expect(call.cmd.includes(FAKE_TOKEN)).toBe(false);
       for (const [name, value] of Object.entries(call.env)) {
-        if (value.includes(FAKE_TOKEN)) {
-          expect(name).toBe("GH_TOKEN");
-          expect(call.cmd).toBe("gh");
-        }
+        expect(value.includes(FAKE_TOKEN), `${name} in the environment of ${shown}`).toBe(false);
       }
       if (call.input?.includes(FAKE_TOKEN)) {
-        expect(isGh(call, "auth", "login")).toBe(true);
+        expect(isGh(call, "auth", "login"), shown).toBe(true);
       }
     }
     expect(calls.some((c) => isGh(c, "auth", "login") && c.input?.trim() === FAKE_TOKEN)).toBe(true);
-    expect(calls.some((c) => c.env.GH_TOKEN === FAKE_TOKEN)).toBe(true);
     for (const report of reports) expect(report.text).not.toContain(FAKE_TOKEN);
+    for (const op of fileOps) expect(op.text ?? "").not.toContain(FAKE_TOKEN);
     const writers = ["tee", "cp", "mv", "dd", "install", "sh", "bash", "zsh"];
     expect(calls.filter((c) => writers.includes(c.cmd))).toEqual([]);
-  });
-
-  it("a failed pre-swap check stops the phase before gh auth logout or login", () => {
-    const { calls, reports, ctx } = setup({
-      fail: (c) => c.env.GH_TOKEN === FAKE_TOKEN && isGh(c, "run", "view"),
-    });
-
-    const result = credentials.run(ctx);
-
-    expect(result).toBe("stop");
-    expect(calls.some((c) => isGh(c, "run", "view") && c.env.GH_TOKEN === FAKE_TOKEN)).toBe(true);
-    expect(calls.filter((c) => isGh(c, "auth", "logout") || isGh(c, "auth", "login"))).toEqual([]);
-    expect(reports.some((r) => r.status === "todo")).toBe(true);
-  });
-
-  it("judgeRollup fails a rollup without a CheckRun named test", () => {
-    const rollup = (entries: unknown[]) => ({
-      status: 0,
-      stdout: JSON.stringify({ statusCheckRollup: entries }),
-      stderr: "",
-    });
-
-    expect(judgeRollup(rollup([]))).toBe(false);
-    expect(
-      judgeRollup(
-        rollup([
-          { __typename: "StatusContext", context: "test", state: "SUCCESS" },
-          { __typename: "CheckRun", name: "lint", status: "COMPLETED", conclusion: "SUCCESS" },
-        ]),
-      ),
-    ).toBe(false);
-    expect(
-      judgeRollup(rollup([{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }])),
-    ).toBe(true);
-  });
-
-  it("judgePrChecks passes exit 8 and exit 1 when a test row is listed", () => {
-    const url = `https://github.com/${FAKE_REPO}/actions/runs/1/job/1`;
-
-    expect(judgePrChecks({ status: 8, stdout: `test\tpending\t0\t${url}\n`, stderr: "" })).toBe(true);
-    expect(
-      judgePrChecks({ status: 1, stdout: `lint\tpass\t5s\t${url}\ntest\tfail\t12s\t${url}\n`, stderr: "" }),
-    ).toBe(true);
-    expect(judgePrChecks({ status: 1, stdout: `lint\tfail\t5s\t${url}\n`, stderr: "" })).toBe(false);
   });
 
   it("a missing ruleset is created as restrict-updates with only an update rule and the Repository admin role as the only bypass actor, in exempt mode", () => {
@@ -206,7 +159,7 @@ describe("credentials phase", () => {
     expect(todos.some((t) => t.includes("tools-9"))).toBe(false);
   });
 
-  it("the stray-token scan reports each token it finds without its value and runs no write command", () => {
+  it("the stray-token scan reports each token it finds without its value and runs no write command other than setup-labels.sh", () => {
     const values = ["ghp_ENVVALUE111", "ghp_ZSHRCVALUE222", "ghp_CREDVALUE333", "ghp_MCPVALUE444"];
     const { calls, reports, ctx } = setup({
       login: "fine-grained",
@@ -231,7 +184,7 @@ describe("credentials phase", () => {
     const result = credentials.run(ctx);
 
     expect(result).toBe("stop");
-    expect(writeCalls(calls)).toEqual([]);
+    expect(writeCalls(calls).filter((c) => !c.cmd.endsWith("/setup-labels.sh"))).toEqual([]);
     const todos = reports.filter((r) => r.status === "todo").map((r) => r.text);
     expect(todos.some((t) => t.includes("GH_TOKEN"))).toBe(true);
     expect(todos.some((t) => t.includes(".zshrc") && t.includes("GITHUB_TOKEN"))).toBe(true);
@@ -242,7 +195,7 @@ describe("credentials phase", () => {
       for (const value of values) expect(report.text).not.toContain(value);
     }
     // The after-swap checks still run in the same pass.
-    expect(calls.some(isMergeProbe)).toBe(true);
+    expect(reports.some((r) => r.text.startsWith("after-swap:") && /restrict-updates/i.test(r.text))).toBe(true);
   });
 
   it("under the fine-grained login the ruleset step writes nothing and reports protect-main, enforcement, bypass as exempt and auto-merge as it could check them, with a note to check protect-main's bypass list in the browser", () => {

@@ -23,7 +23,7 @@ The firewall, `dispatch/container/init-firewall.sh`, drops everything by default
 | `api.github.com` | `gh`, and GitHub's address ranges from `https://api.github.com/meta`. Every refresh resolves and adds it first, so the ranges can still be fetched after its address changes. |
 | GitHub's `web` and `api` ranges, from `/meta` | `github.com` and GitHub's API, including the plugin marketplace's clone over HTTPS (the image sets `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1`). |
 | GitHub's `git` ranges, from `/meta` | Git over SSH (port 22) through the deploy keys, and HTTPS. |
-| `results-receiver.actions.githubusercontent.com` | `gh run view --log`, which `fix-ci` and the pre-swap test use. |
+| `results-receiver.actions.githubusercontent.com` | `gh run view --log`, which `fix-ci` uses. |
 | `registry.npmjs.org` | `npm ci` in the clones. Claude Code: "Plugin installs (fetching npm-source plugin packages and installing plugins' Node.js package dependencies), `npx`-launched MCP servers, and the package registry for npm and bun installs of Claude Code itself". |
 | `api.anthropic.com` | "Claude API requests, including the WebFetch domain safety check, feature flag fetches, and telemetry event logging". |
 | `claude.ai` | "claude.ai account authentication". |

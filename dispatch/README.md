@@ -32,29 +32,33 @@ Labels on GitHub start unattended agent sessions locally:
 
 ### Onboarding a repo
 
+[Adding a repo](../docs/setup.md#adding-a-repo) is the ordered checklist, covering both logins and what stays manual in the browser (token repository access, the deploy key, and the rulesets under a fine-grained login). The steps below are the detail of each phase.
+
 1. Meet the [requirements](../docs/setup.md#requirements) (declared checks, deny rules, the plugin at user scope).
-2. Create the labels: `setup-labels.sh owner/repo`.
+2. The labels: the `credentials` phase (step 5) runs `setup-labels.sh` for each served repo, which creates the missing ones and leaves existing ones alone. By hand: `setup-labels.sh owner/repo`.
 3. Optionally add the [label-cleanup caller](../docs/setup.md#label-cleanup-on-close).
-4. Add the repo to `~/.config/claude-workflow/repos.json` (`dispatch/repos.example.json` is a starting point; the installer refuses to run without the file):
+4. Add the repo to the dispatch config with `dispatch/setup-agents.sh --add-repo owner/name`. It writes the entry below to `~/.config/claude-workflow/repos.json` (or `CLAUDE_WORKFLOW_CONFIG`), creating the file when missing, then runs as usual. With `--dry-run` it prints the entry and writes nothing, and the dry run serves the repo as if the entry were written:
 
         [
           {
             "repo": "example-owner/example-app",
             "dir": "/home/node/example-app",
-            "sessionPrefix": "app",
+            "sessionPrefix": "example-app",
             "owner": "example-owner"
           }
         ]
 
-   - `repo`: `owner/name`.
+   - `repo`: `owner/name`, the name given to `--add-repo`.
    - `dir`: the repo's clone in the agent container, `/home/node/<name>` for `owner/<name>`, which sessions start in. The `container` phase clones it there and trusts it; setup refuses any other value.
-   - `sessionPrefix`: names sessions; unique per repo.
-   - `owner`: the only ticket author whose tickets are launched.
+   - `sessionPrefix`: names sessions; unique per repo. It is the repo name with each character other than a letter, digit, `_` or `-` turned into `-`, and leading `-` dropped (`my.site` gives `my-site`, `.github` gives `github`).
+   - `owner`: the login of the `gh` account setup runs with, the only ticket author whose tickets are launched.
    - `maxSessions` (optional, positive integer): cap on live sessions for this repo.
-5. The maintainer, in a terminal and never from an agent session, sets the machine up from the clone (`npm ci` there once). `dispatch/setup-agents.sh --dry-run` first lists every step and changes nothing; then `dispatch/setup-agents.sh` runs the four phases in order and stops at the first step that needs the maintainer: do what it prints and rerun.
-   - `credentials`: the host's `gh` token, each repo's `restrict-updates` ruleset and auto-merge; see [Agent credentials](../docs/agent-credentials.md). It refuses while a session is live on the host or in the container.
+
+   A repo already listed is left alone. A `sessionPrefix` that another entry uses (in any case) is refused: add that entry by hand with another `sessionPrefix`. `maxSessions`, or any other change, is a hand edit. The installer still refuses to run without the file.
+5. The maintainer, in a terminal and never from an agent session, sets the machine up from the clone (`npm ci` there once). `dispatch/setup-agents.sh --dry-run` first lists every step, changes nothing and ends with what is still to do, by repo; then `dispatch/setup-agents.sh` first reads what it can without a change and, when anything is missing, lists it all and stops before changing anything; otherwise it runs the four phases in order and stops at the first step that needs the maintainer: do what it prints and rerun.
+   - `credentials`: the host's `gh` token and, for each served repo, `protect-main` (created under an admin login when no ruleset puts a pull request rule on the default branch; it requires no status checks), the `restrict-updates` ruleset, auto-merge and the labels; see [Agent credentials](../docs/agent-credentials.md). It refuses while a session is live on the host or in the container.
    - `host`: `CLAUDE_CODE_ENABLE_CFC=0` and the deny rules of `dispatch/setup/host-settings.json`, merged into `~/.claude/settings.json` after a backup. A `sandbox` block or a managed settings file left from the old setup gets a note with the command that removes it, and is left as it is.
-   - `container`: the [agent container](container/README.md), built and started with the `claude-workflow-home` volume (it needs Colima running: `colima start --cpu 4 --memory 4 --disk 40 --mount none`), and in it, as `node`: per repo, a deploy key (after a `protect-main` check) and an SSH host alias, which you add on GitHub with "Allow write access" when asked, and a clone in `/home/node/<name>`; the host's git identity; a gh login with a fine-grained token of its own, refused unless the merge probe with it gets 403 on every served repo; a rerun probes the stored login the same way; workspace trust; and the plugin. The Claude token, from `claude setup-token`, goes to `~/.config/claude-workflow/claude-agent.env` (mode 0600), which the container reads.
+   - `container`: the [agent container](container/README.md), built and started with the `claude-workflow-home` volume (it needs Colima running: `colima start --cpu 4 --memory 4 --disk 40 --mount none`), and in it, as `node`: per repo, a deploy key (after a `protect-main` check) and an SSH host alias, which you add on GitHub with "Allow write access" when asked, and a clone in `/home/node/<name>`; the host's git identity; a gh login with a fine-grained token of its own (a paste that does not start `github_pat_` is refused, and nothing tests what the token can do: [What the script trusts](../docs/agent-credentials.md#what-the-script-trusts)); workspace trust; and the plugin. The Claude token, from `claude setup-token`, goes to `~/.config/claude-workflow/claude-agent.env` (mode 0600), which the container reads.
      - The plugin reaches `main`'s latest commit in two ways. Every `container` run updates it (`claude plugin marketplace update` and `claude plugin update`, with sessions live). Between runs, Claude Code's marketplace auto-update, which the phase turns on (`autoUpdate` on the marketplace entry, `FORCE_AUTOUPDATE_PLUGINS=1` in the container, since the image sets `DISABLE_AUTOUPDATER=1`), runs in an interactive session after its first message; Claude Code's docs do not say whether background sessions run it.
      - The container is replaced when its image changes or its config (the env file or the run flags) does. `container --rebuild` rebuilds the image with `--pull --no-cache` and replaces the container. Either refuses only while a session is live in the container, listing `claude stop <id>` for each, and keeps the volume, so clones, keys and logins survive.
    - `check`: in the container, as `node`, the firewall (`api.github.com` reached, `example.com` refused), the private keys (only the deploy keys, and no `SSH_AUTH_SOCK`), the gh login (`gh repo view` in the first clone) and the mounts (only the home volume); then a probe session started in the first clone with the poller's launch flags, which include `--permission-mode auto`, which runs `git fetch` and `git push --dry-run` and reports its browser tools. The probe session is stopped by its id afterwards.
@@ -66,11 +70,7 @@ Labels on GitHub start unattended agent sessions locally:
    - launchd only gives the job `HOME` and `PATH`, so the dry run drops `CLAUDE_MAX_SESSIONS` from your shell. Set it in the plist's `EnvironmentVariables` for the real poller.
    - Remove with `dispatch/install-launchd.sh uninstall`.
 
-A repo added later needs no reinstall. It does need:
-
-- adding to the config, with `dir` `/home/node/<name>`, and to the host token's repository access (edit the token in the browser);
-- its `restrict-updates` ruleset, created in the browser as [The Actions token](../docs/agent-credentials.md#the-actions-token) describes (the fine-grained login cannot create it);
-- then a full rerun of `dispatch/setup-agents.sh`, or its phases in order: `credentials` (checks the ruleset and the token's access), `container` (the new repo's `protect-main` check, deploy key, alias, clone and trust; edit the container's token in the browser so it can see the repo too). Only a full run resumes dispatch; after single phases, finish with `check`, which does not resume it either: run `dispatch/install-launchd.sh resume`.
+A repo added later needs no reinstall. Follow the [Adding a repo](../docs/setup.md#adding-a-repo) checklist: `dispatch/setup-agents.sh --add-repo owner/name`, both tokens' repository access in the browser, the rulesets (created by the script under an admin login, browser steps under the fine-grained one) and the deploy key. Only a full run of `dispatch/setup-agents.sh` resumes dispatch; after single phases, finish with `check`, which does not resume it either: run `dispatch/install-launchd.sh resume`.
 
 Migrating from an older poller on the host: pass `--legacy-label <its launchd label>` (booted out, plist removed). Its state is not carried into the container, so the new poller may try a conflicting or red PR again that the old one already tried, and it does not see the sessions the old one started on the host: let those finish first.
 
@@ -185,13 +185,13 @@ Every JSON input (the config, `gh` and `claude agents` output, the state files) 
   {
     "repo": "example-owner/example-app",
     "dir": "/home/node/example-app",
-    "sessionPrefix": "app",
+    "sessionPrefix": "example-app",
     "owner": "example-owner"
   },
   {
     "repo": "example-owner/example-tools",
     "dir": "/home/node/example-tools",
-    "sessionPrefix": "tools",
+    "sessionPrefix": "example-tools",
     "owner": "example-owner"
   }
 ]

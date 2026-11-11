@@ -7,10 +7,27 @@ const Labels = z
   .array(z.object({ name: z.string() }))
   .transform((labels) => labels.map((l) => l.name));
 
-/** `claude agents --json --all`. `startedAt` is epoch milliseconds. */
-export const Sessions = z.array(
-  z.object({ id: z.string().optional(), name: z.string().optional(), state: z.string(), startedAt: z.number() }),
-);
+/**
+ * `claude agents --json --all` (Claude Code 2.1.309). `startedAt` is epoch milliseconds.
+ * Background sessions carry `id` and `state`; interactive ones (`kind: "interactive"`) carry neither and are left out.
+ * Any other entry without a `state` is a live process: `blocked` while its `status` is `waiting`, else `working`.
+ */
+export const Sessions = z
+  .array(
+    z.object({
+      id: z.string().optional(),
+      name: z.string().optional(),
+      kind: z.string().optional(),
+      state: z.string().optional(),
+      status: z.string().optional(),
+      startedAt: z.number(),
+    }),
+  )
+  .transform((entries) =>
+    entries
+      .filter((e) => e.kind !== "interactive")
+      .map(({ kind, status, state, ...s }) => ({ ...s, state: state ?? (status === "waiting" ? "blocked" : "working") })),
+  );
 export type Session = z.infer<typeof Sessions>[number];
 
 /** `gh issue list --json number,author,labels` */

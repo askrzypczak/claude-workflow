@@ -4,11 +4,11 @@
 //
 // The happy path: dispatch already paused, no live sessions, origin example-owner/example-tools,
 // a classic admin login, `protect-main` (active, with a pull_request rule and no bypass actors)
-// and `restrict-updates` in exempt mode in place, auto-merge off, an open mergeable PR with a
-// `test` CheckRun, an open issue, a run, labels, every pre-swap command passing, the
-// pasted token FAKE_TOKEN, a swap that leaves one fine-grained login, no stray tokens, and a
-// merge probe (a ref create at the all-zero sha) refused with HTTP 403 (422 for a GH_TOKEN
-// listed in `merges`).
+// and `restrict-updates` in exempt mode in place, auto-merge off, the pasted token FAKE_TOKEN,
+// a swap that leaves one fine-grained login and no stray tokens. The world has no open PR,
+// issue, workflow run or label, so the gh `pr`, `issue`, `run` and `label` commands are
+// unscripted. A run of the clone's `setup-labels.sh` exits 0 with no output; no label state is
+// modelled, so a failing run comes from `respond` or `fail`.
 //
 // The ruleset model: a ruleset read gives `current_user_can_bypass` from the Repository admin
 // role's bypass mode, for every login (always, pull_requests_only, exempt, or never when the role
@@ -50,8 +50,7 @@
 //   `github.com-<name>` alias reach GitHub only with ~/.ssh/deploy-<name>, an ssh config block for
 //   the alias naming that key, a github.com line in known_hosts and the repo in `deployKeys`;
 //   `-C <dir> remote get-url origin`; `config --global`; fetch), gh (auth status|login;
-//   `auth token`, which prints the stored login's token only as node: FAKE_CONTAINER_TOKEN for a
-//   seeded fine-grained login, else the token logged in with; repo view in a clone) and claude (agents --json --all; --bg --name <n> …, which starts a
+//   repo view in a clone) and claude (agents --json --all; --bg --name <n> …, which starts a
 //   session with a fresh id, records it in `launches` and writes `probe`'s text to
 //   `<dir>/.<n>.txt`; stop <id>, by id only; plugin list|install|update and marketplace
 //   list|add|update). Paths are taken literally: nothing expands `~`.
@@ -221,11 +220,6 @@ export interface FakeWorld {
   modes?: Record<string, number>;
   /** The host's global git config. Default FAKE_GIT_IDENTITY. */
   hostGit?: Record<string, string>;
-  /**
-   * GH_TOKEN values whose merge probe GitHub answers with 422 (the token has Contents write, so
-   * it can merge). Every other merge probe gets 403. Default none.
-   */
-  merges?: string[];
   /** The docker world. Default none: the docker daemon is unreachable. */
   docker?: FakeDocker;
   /** Calls for which this returns true exit 1 with "HTTP 500" on stderr. */
@@ -233,11 +227,6 @@ export interface FakeWorld {
   /** First say on every call; undefined falls through to the scripted world. */
   respond?: (call: FakeCall) => RunResult | undefined;
 }
-
-/** The token of a container login the world seeds as `ghLogin: "fine-grained"`. */
-export const FAKE_CONTAINER_TOKEN = "github_pat_FAKE_CONTAINER_TOKEN_FOR_TESTS";
-/** The token of a container login the world seeds as `ghLogin: "classic"`. */
-const FAKE_CONTAINER_CLASSIC_TOKEN = "gho_fakeContainerClassicTokenForTests";
 
 /** The image id `docker build` gives unless the world says otherwise. */
 const FAKE_IMAGE_ID = `sha256:${"1".repeat(64)}`;
@@ -424,28 +413,10 @@ export function parseGhApi(call: FakeCall): { method: string; endpoint: string }
   return { method: method ?? (hasBody ? "POST" : "GET"), endpoint };
 }
 
-/** The ref the merge probe asks GitHub to create. */
-const PROBE_REF = "refs/claude-workflow-probe/cannot-merge";
-
-/**
- * The merge probe: a POST on a repo's `git/refs` endpoint creating PROBE_REF at sha forty zeros,
- * which GitHub never creates, whatever the token can do.
- */
-export function isMergeProbe(call: FakeCall): boolean {
-  const api = parseGhApi(call);
-  return (
-    api !== undefined &&
-    api.method === "POST" &&
-    /^repos\/[^/]+\/[^/]+\/git\/refs$/.test(api.endpoint) &&
-    call.args.some((a) => a === `ref=${PROBE_REF}`) &&
-    call.args.some((a) => a === `sha=${"0".repeat(40)}`)
-  );
-}
-
 /**
  * Whether a call changes state. This is the definition of "write command" the setup tests
  * use: `install-launchd.sh` pause or resume; `gh api` with a POST, PUT, PATCH or DELETE
- * (explicit, or implied by a body) except the merge probe; `gh issue comment`;
+ * (explicit, or implied by a body); a `setup-labels.sh` run; `gh issue comment`;
  * `gh issue edit`; `gh pr edit`; `gh auth logout`; `gh auth login`; `open`; `pbcopy`;
  * `git ... remote set-url`; `git config` setting a value; `chmod`; `mkdir`; and every docker
  * call that changes state: build, run, create, start, stop, restart, rm, kill, volume create or rm, and a
@@ -457,6 +428,7 @@ export function isMergeProbe(call: FakeCall): boolean {
 function isWrite(call: FakeCall): boolean {
   const [a0, a1] = call.args;
   if (call.cmd.endsWith("install-launchd.sh")) return a0 === "pause" || a0 === "resume";
+  if (call.cmd.endsWith("/setup-labels.sh")) return true;
   if (call.cmd === "open" || call.cmd === "pbcopy") return true;
   if (call.cmd === "chmod" || call.cmd === "mkdir") return true;
   if (call.cmd === "docker") return isDockerWrite(call.args);
@@ -468,7 +440,7 @@ function isWrite(call: FakeCall): boolean {
   }
   if (call.cmd !== "gh") return false;
   const api = parseGhApi(call);
-  if (api) return api.method !== "GET" && !isMergeProbe(call);
+  if (api) return api.method !== "GET";
   return (
     (a0 === "issue" && (a1 === "comment" || a1 === "edit")) ||
     (a0 === "pr" && a1 === "edit") ||
@@ -489,14 +461,6 @@ export function fileWrites(ops: readonly FakeFileOp[]): FakeFileOp[] {
 const ok = (stdout = ""): RunResult => ({ status: 0, stdout, stderr: "" });
 const json = (value: unknown): RunResult => ok(`${JSON.stringify(value)}\n`);
 const failed = (stderr: string, status = 1): RunResult => ({ status, stdout: "", stderr });
-
-const PR = 7;
-const ISSUE = 12;
-const RUN = 555;
-const COMMENT_ID = 9001;
-const ROLLUP = [
-  { __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
-];
 
 interface Account {
   login: string;
@@ -560,8 +524,6 @@ interface Home {
   clones: Map<string, string>;
   git: Record<string, string>;
   login: "fine-grained" | "classic" | undefined;
-  /** The stored login's token, which `gh auth token` prints. */
-  token: string | undefined;
   sessions: Session[];
   plugins: FakePlugin[];
   marketplaces: string[];
@@ -672,10 +634,6 @@ function newHome(seed: FakeDocker = {}): Home {
     clones: new Map(),
     git: { ...seed.gitConfig },
     login: seed.ghLogin,
-    token:
-      seed.ghLogin === "fine-grained" ? FAKE_CONTAINER_TOKEN
-      : seed.ghLogin === "classic" ? FAKE_CONTAINER_CLASSIC_TOKEN
-      : undefined,
     sessions: structuredClone(seed.sessions ?? []),
     plugins: structuredClone(seed.plugins ?? []),
     marketplaces: [...(seed.marketplaces ?? [])],
@@ -1250,11 +1208,6 @@ function createDocker(
 
   const ghIn = (home: Home, args: readonly string[], cwd: string, input: string | undefined, user: string): RunResult => {
     const [a0, a1] = args;
-    if (a0 === "auth" && a1 === "token") {
-      // node's login lives in node's home; root's gh config (under /root) holds none.
-      if (user !== "node" || home.token === undefined) return failed("no oauth token found for github.com");
-      return ok(`${home.token}\n`);
-    }
     if (a0 === "auth" && a1 === "status") {
       if (args.includes("--json")) {
         return json({
@@ -1279,7 +1232,6 @@ function createDocker(
       const token = (input ?? "").trim();
       if (token === "") return failed("error validating token: missing token");
       home.login = token.startsWith("github_pat_") ? "fine-grained" : "classic";
-      home.token = token;
       return ok();
     }
     if (a0 === "repo" && a1 === "view") {
@@ -1414,11 +1366,8 @@ export function fakeIo(world: FakeWorld = {}) {
   const polls: { timeoutMs: number }[] = [];
   const docker = createDocker(world, { files, githubKeys, launches });
 
-  /** Whether the call authenticates as a fine-grained token (GH_TOKEN first, as gh does). */
-  const fineGrained = (call: FakeCall) =>
-    call.env.GH_TOKEN !== undefined
-      ? call.env.GH_TOKEN.startsWith("github_pat_")
-      : accounts.some((a) => a.fineGrained);
+  /** Whether the call authenticates as a fine-grained token. */
+  const fineGrained = (_call: FakeCall) => accounts.some((a) => a.fineGrained);
 
   const rulesetView = (r: FakeRuleset, call: FakeCall) => {
     const admin = (r.bypass_actors ?? []).find(
@@ -1514,16 +1463,6 @@ export function fakeIo(world: FakeWorld = {}) {
           ),
       );
     }
-    if (isMergeProbe(call)) {
-      if (call.env.GH_TOKEN !== undefined && world.merges?.includes(call.env.GH_TOKEN)) {
-        return failed("gh: Object does not exist (HTTP 422)");
-      }
-      return failed("gh: Resource not accessible by personal access token (HTTP 403)");
-    }
-    if (rest[0] === "pulls" && method === "GET") return json({ number: Number(rest[1]), author_association: "OWNER" });
-    if (rest[0] === "issues" && rest[1] === "comments" && method === "DELETE") return ok();
-    if (rest[0] === "issues" && method === "GET") return json({ id: 1, number: Number(rest[1]), author_association: "OWNER" });
-    if (rest[0] === "commits" && method === "GET") return json({ sha: "a".repeat(40) });
     return failed(`unscripted: gh api -X ${method} ${endpoint}`, 127);
   };
 
@@ -1531,7 +1470,6 @@ export function fakeIo(world: FakeWorld = {}) {
     const api = parseGhApi(call);
     if (api) return ghApi(call, api.method, api.endpoint);
     const [a0, a1] = call.args;
-    const repo = flagValue(call.args, "--repo") ?? flagValue(call.args, "-R") ?? FAKE_REPO;
     const sub = `${a0} ${a1}`;
     switch (sub) {
       case "auth status":
@@ -1559,47 +1497,6 @@ export function fakeIo(world: FakeWorld = {}) {
         accounts = [{ login: FAKE_LOGIN, fineGrained: token.startsWith("github_pat_") }];
         return ok();
       }
-      case "pr list":
-        return json([
-          {
-            number: PR,
-            title: "Example change",
-            headRefName: "example-branch",
-            mergeable: "MERGEABLE",
-            labels: [],
-            statusCheckRollup: ROLLUP,
-          },
-        ]);
-      case "pr view":
-        return json({ number: PR, state: "OPEN", mergeable: "MERGEABLE", labels: [], statusCheckRollup: ROLLUP });
-      case "pr checks":
-        return ok(`test\tpass\t12s\thttps://github.com/${repo}/actions/runs/${RUN}/job/1\n`);
-      case "pr diff":
-        return ok("diff --git a/README.md b/README.md\n");
-      case "pr edit":
-        return ok(`https://github.com/${repo}/pull/${PR}\n`);
-      case "issue list":
-        return json([{ number: ISSUE, title: "Example issue", state: "OPEN", labels: [] }]);
-      case "issue view":
-        return json({ number: ISSUE, title: "Example issue", state: "OPEN", labels: [] });
-      case "issue comment":
-        return ok(`https://github.com/${repo}/issues/${call.args[2] ?? ISSUE}#issuecomment-${COMMENT_ID}\n`);
-      case "issue edit":
-        return ok(`https://github.com/${repo}/issues/${call.args[2] ?? ISSUE}\n`);
-      case "run list":
-        return json([{ databaseId: RUN, status: "completed", conclusion: "success", workflowName: "ci" }]);
-      case "run view":
-        return ok("test\tRun tests\t2026-10-01T00:00:00Z ok\n");
-      case "label list":
-        return json([
-          { name: "bug" },
-          { name: "documentation" },
-          { name: "ready" },
-          { name: "in-progress" },
-          { name: "needs-review" },
-          { name: "blocked" },
-          { name: "agent-ok" },
-        ]);
     }
     return failed(`unscripted: gh ${call.args.join(" ")}`, 127);
   };
@@ -1630,6 +1527,7 @@ export function fakeIo(world: FakeWorld = {}) {
         return ok("Resumed.\n");
       }
     }
+    if (call.cmd.endsWith("/setup-labels.sh")) return ok();
     if (call.cmd === "docker") return docker.run(call);
     if (call.cmd === "stat") {
       const path = call.args[call.args.length - 1] ?? "";
