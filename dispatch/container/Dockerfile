@@ -28,7 +28,7 @@ RUN set -eux; \
 
 # Installed as root into /usr/local, so node cannot update or replace it. The npm link gives way to
 # claude-guard.sh, which runs the real binary through /usr/local/libexec/claude-code.
-ARG CLAUDE_CODE_VERSION=2.1.309
+ARG CLAUDE_CODE_VERSION=2.1.311
 RUN set -eux; \
     npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"; \
     rm -rf /root/.npm; \
