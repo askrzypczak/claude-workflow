@@ -2,7 +2,7 @@
 
 The custom status line shown under the Claude Code prompt. Outside the plugin: it is a user-level setting, so it is installed by hand.
 
-- `statusline.sh`: `[model] effort:level ▓▓▓░░░░░░░ 31% (62k/200k) · 5h:12% · 7d:40%`. The context bar is green below 70%, yellow from 70%, red from 90%. The 5h and 7d plan-usage fields appear only when Claude Code reports them.
+- `statusline.sh`: `repo branch [model] effort:level ▓▓▓░░░░░░░ 31% (62k/200k) · 5h:12% · 7d:40%`. The repo name comes from the `origin` remote, or `?` when there is none. The branch is the worktree branch Claude Code reports during a worktree session. Otherwise it is the branch checked out in the session's working directory, `<detached>` on a detached HEAD, or `?` outside a git repository. The context bar is green below 70%, yellow from 70%, red from 90%. The 5h and 7d plan-usage fields appear only when Claude Code reports them.
 - `subagent-statusline.sh`: one row per running subagent: `name · model · effort:level`, then the same context bar and token count.
 
 Both need `jq` on PATH. Docs: <https://code.claude.com/docs/en/statusline>.
@@ -28,4 +28,6 @@ Then point `~/.claude/settings.json` at them:
 
 ## Try it
 
-    echo '{"model":{"display_name":"Opus"},"effort":{"level":"xhigh"},"context_window":{"used_percentage":31,"total_input_tokens":62000,"context_window_size":200000}}' | statusline/statusline.sh
+    echo '{"model":{"display_name":"Opus"},"effort":{"level":"xhigh"},"context_window":{"used_percentage":31,"total_input_tokens":62000,"context_window_size":200000},"workspace":{"repo":{"name":"claude-workflow"}},"cwd":"."}' | statusline/statusline.sh
+
+Add `"worktree":{"branch":"worktree-my-feature"}` to see the branch Claude Code reports in a worktree session replace the one git reports.
