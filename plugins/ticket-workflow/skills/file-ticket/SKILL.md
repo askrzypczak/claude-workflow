@@ -5,7 +5,7 @@ description: 'File a GitHub ticket in the house format - verify the claims, chec
 
 # file-ticket
 
-Argument: the request to turn into a ticket, as free text. The conversation so far counts as input. Runs in the current session with no subagent, except the epic audit in step 4. Being asked to file is the go-ahead to create the issue; do not ask for confirmation first.
+Argument: the request to turn into a ticket, as free text. The conversation so far counts as input. Runs in the current session with no subagent, except the epic audit in step 4 and the plain pass in step 6. Being asked to file is the go-ahead to create the issue; do not ask for confirmation first.
 
 ## 1. Gather
 - Run `git fetch origin --quiet`, then read the code and docs the ticket will name (`git show origin/main:<path>`; the local checkout can be stale). File paths, symbol names and quoted behaviour must be verified, not guessed: fix or drop what you cannot confirm. Verify line numbers too, but only to locate things while you read; they do not go in the ticket (step 5).
@@ -31,11 +31,11 @@ One ticket is one PR (one worktree, one branch); a spike is one findings comment
 1. File the epic first (Problem and the overall plan, with the children added to its body afterwards).
 2. File each child with `Part of #E` in its body, and `Blocked by #M` plus the `blocked` label where one child needs another.
 3. Edit the epic body (`gh issue edit E --body-file <file>`) to list the children.
-4. Link each child to the epic as a native sub-issue, which is what gives the epic its progress indicator (`Part of #E` and the task-list lines create no parent link). Get the child's numeric id with `gh api repos/{owner}/{repo}/issues/N --jq .id`, then `gh api -X POST repos/{owner}/{repo}/issues/E/sub_issues -F sub_issue_id=<id>`. Write `E` and `N` out as literal numbers in the path: the comment guard denies `gh api` reads under `/issues/` whose path has a shell variable. If a call fails (for example the repo lacks sub-issues), carry on: the `Part of #E` line stays; name the child in step 7.
-5. Once every child is filed and labelled (steps 5-6 for each), audit the set: launch the `ticket-workflow:spec-auditor` subagent in epic mode (if the Agent tool rejects that name, list the available agent types and use the one that ends in `:spec-auditor`). Prompt it with the epic number, the epic text (title and body as filed; it has no comments yet; if the body links a doc, add the doc's text if you read it this session, or a note that it was not read) and the child numbers, each marked listed. The auditor itself writes nothing to GitHub and blocks nothing; you act on its report in the next item.
+4. Link each child to the epic as a native sub-issue, which is what gives the epic its progress indicator (`Part of #E` and the task-list lines create no parent link). Get the child's numeric id with `gh api repos/{owner}/{repo}/issues/N --jq .id`, then `gh api -X POST repos/{owner}/{repo}/issues/E/sub_issues -F sub_issue_id=<id>`. Write `E` and `N` out as literal numbers in the path: the comment guard denies `gh api` reads under `/issues/` whose path has a shell variable. If a call fails (for example the repo lacks sub-issues), carry on: the `Part of #E` line stays; name the child in step 8.
+5. Once every child is filed and labelled (steps 5-7 for each), audit the set: launch the `ticket-workflow:spec-auditor` subagent in epic mode (if the Agent tool rejects that name, list the available agent types and use the one that ends in `:spec-auditor`). Prompt it with the epic number, the epic text (title and body as filed; it has no comments yet; if the body links a doc, add the doc's text if you read it this session, or a note that it was not read) and the child numbers, each marked listed. The auditor itself writes nothing to GitHub and blocks nothing; you act on its report in the next item.
 6. Judge the audit yourself; the auditor can be wrong, and human attention is the scarce resource, so do not forward its report unread.
    - Verify each non-keep verdict's evidence against the code and the filed tickets.
-   - Apply each verdict that holds up to the issues filed in this run (`gh issue edit`): a reword or cut edits that body or title; a reorder rewires the `Blocked by` lines and the `blocked` labels; a split files the new child (steps 5-6, with `Part of #E`, then linked as a sub-issue as in item 4), rewires the `Blocked by` lines and updates the epic's child list.
+   - Apply each verdict that holds up to the issues filed in this run (`gh issue edit`): a reword or cut edits that body or title, with the edited body run through the plain pass (step 6) first; a reorder rewires the `Blocked by` lines and the `blocked` labels; a split files the new child (steps 5-7, with `Part of #E`, then linked as a sub-issue as in item 4), rewires the `Blocked by` lines and updates the epic's child list.
    - Answer an auditor question yourself where the code, the tickets or the repo's recorded conventions settle it, and record the answer in the affected ticket.
    - Ask the human, in one `AskUserQuestion` round under step 3's question rules, except that each question names the filed ticket (`#M`) it concerns in its header and first sentence (rewrite the auditor's questions to them), only about: a verdict you disagree with or cannot verify; an auditor question you cannot settle; a verdict that would drop or merge a whole filed ticket (closing is the human's: apply the surviving edits, leave the closing to them and name the ticket in the report). Then apply the answers.
 
@@ -61,7 +61,23 @@ Title: prefixed with the type, `bug:`, `feature:`, `chore:` or `spike:`. Body, i
 
 Write the body to a temporary file outside the repo and pass it with `--body-file`.
 
-## 6. Label
+## 6. Plain pass
+Before you file a body, have it rewritten in plain English. Launch the `ticket-workflow:plain-writer` subagent (if the Agent tool rejects that name, list the available agent types and use the one that ends in `:plain-writer`) with the body text in its prompt, and write its reply to a second temporary file. Every body this run files goes through the pass, a spike's included: the ticket's, or the epic's and each child's (a child added by a split too). So does each body the audit rewrites (step 4), before `gh issue edit`. Titles do not go through the pass, nor does the edit that adds the child list to the epic body (step 4, item 3).
+
+The rewrite changes wording only, so do not re-judge its content. Check only that the parts that must stay exact came through:
+- every backticked span, URL and `#N` reference in the original appears unchanged in the rewrite;
+- every `Part of #N` and `Blocked by #M` line in the original appears unchanged in the rewrite;
+- both have the same number of acceptance criteria.
+
+This command runs the check on the original `o` and the rewrite `r`. It passes when `comm` prints nothing and `grep -c` gives the same count for both files:
+
+    o=<original>; r=<rewrite>
+    keep() { { grep -oE '`[^`]+`|https?://[^] )>]*[^] )>.,;:!?]|#[0-9]+' "$1"; grep -E '^(Part of|Blocked by) #' "$1"; } | sort -u; }
+    comm -23 <(keep "$o") <(keep "$r"); grep -c '^- \[ \]' "$o" "$r"
+
+If the check passes, file the rewrite. If it fails, file the original and say so in the report (step 8).
+
+## 7. Label
 Labels follow the README's "Ticket conventions":
 - The type label: `bug`, `feature` or `chore` (a spike takes `chore`).
 - `agent-ok` when the change is safe for an unattended agent: the premise is verified, every AC is checkable by a command or test, nothing touches security, data handling or shared code, and no question is open.
@@ -70,8 +86,8 @@ Labels follow the README's "Ticket conventions":
 
 Create the issue with `gh issue create --title ... --body-file ... --label ...`. If `gh` rejects a label because it does not exist, tell the human to run `setup-labels.sh` instead of creating labels yourself.
 
-## 7. Report
-Give the issue URL (an epic and its children, each), their labels, any duplicate or superseded issues touched, any child that could not be linked as a sub-issue (with the error), and the number of skipped comments if step 1 read any. For an epic, then a short account of the audit: verdicts applied (one line each), verdicts declined with the reason, auditor questions you answered with the answer, and what you asked the human with their answers. Remind the human that the maintainer adds `ready` to queue the ticket for dispatch.
+## 8. Report
+Give the issue URL (an epic and its children, each), their labels, any duplicate or superseded issues touched, any child that could not be linked as a sub-issue (with the error), any ticket filed with its original body because the plain-pass check failed (step 6), and the number of skipped comments if step 1 read any. For an epic, then a short account of the audit: verdicts applied (one line each), verdicts declined with the reason, auditor questions you answered with the answer, and what you asked the human with their answers. Remind the human that the maintainer adds `ready` to queue the ticket for dispatch.
 
 ## Hard rules
 - Never add `ready` or `skip-plan`, even when asked to; say they are the maintainer's.
