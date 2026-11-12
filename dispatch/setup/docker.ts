@@ -1,5 +1,6 @@
 // The agent container's exec seam: every call into the container is `io.run("docker", …)`.
 // See dispatch/container/README.md for the run flags, the readiness line and the exec rules.
+import { join } from "node:path";
 import { z } from "zod";
 import { parseJson, Sessions } from "../poller/schemas.ts";
 import type { Session } from "../poller/schemas.ts";
@@ -167,4 +168,28 @@ export function containerSessions(io: SetupIo): Session[] | undefined {
   const what = `docker exec ${CONTAINER} claude ${args.join(" ")}`;
   if (listed.status !== 0) throw new Error(`${what} failed: ${answer(listed)}`);
   return parseJson(Sessions, listed.stdout, what);
+}
+
+/** The npm package whose `stable` dist-tag names the Claude Code the image installs. */
+const CLAUDE_CODE_PACKAGE = "@anthropic-ai/claude-code";
+
+/** `npm view <package> dist-tags.stable` on the host: the stable release's `x.y.z`. */
+export function stableClaudeCode(io: SetupIo): string {
+  void io;
+  void CLAUDE_CODE_PACKAGE;
+  throw new Error("not implemented");
+}
+
+/** `claude --version` in the container: the installed release's leading `x.y.z`. */
+export function installedClaudeCode(io: SetupIo): string {
+  void io;
+  throw new Error("not implemented");
+}
+
+/** The `docker build` arguments for the image, from the clone's dispatch/container. */
+export function imageBuildArgs(clone: string, opts: { version?: string; fresh?: boolean }): string[] {
+  void clone;
+  void opts;
+  void join;
+  throw new Error("not implemented");
 }

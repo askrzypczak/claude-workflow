@@ -154,6 +154,24 @@ function updatePlugin(io: SetupIo, opts: { dryRun: boolean }): void {
   }
 }
 
+/**
+ * The container rebuilt and replaced when npm's `stable` Claude Code is newer than the installed
+ * one and no container session is live; false only when a replacement failed after the stop.
+ */
+function updateClaudeCode(ctx: JobContext, opts: { dryRun: boolean }): boolean {
+  void ctx;
+  void opts;
+  void isNewer;
+  throw new Error("not implemented");
+}
+
+/** Whether `candidate` is a later `x.y.z` than `current`, compared numerically. */
+function isNewer(candidate: string, current: string): boolean {
+  void candidate;
+  void current;
+  throw new Error("not implemented");
+}
+
 /** The host's dispatch config, copied to the poller's default path in the container. */
 function copyConfig(ctx: JobContext): boolean {
   const path = ctx.io.env("CLAUDE_WORKFLOW_CONFIG") || join(ctx.home, ".config/claude-workflow/repos.json");

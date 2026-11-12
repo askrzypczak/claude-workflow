@@ -70,7 +70,7 @@ function lastAnswer(result: RunResult): string {
 }
 
 /** The `docker run` arguments, with the env file and the config label's value. */
-function runArgs(envFile: string, config: string): string[] {
+export function runArgs(envFile: string, config: string): string[] {
   return [
     "run", "-d", "--name", CONTAINER, "--init",
     "--cap-add=NET_ADMIN", "--cap-add=NET_RAW", "--security-opt", "no-new-privileges",
