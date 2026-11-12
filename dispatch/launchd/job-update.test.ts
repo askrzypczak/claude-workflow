@@ -250,4 +250,41 @@ describe("poll's Claude Code update", () => {
     expect(output()).toContain(FAILED_LINE);
     expect(calls.some(isPollerRun)).toBe(false);
   });
+
+  it("a docker stop that fails during the replacement fails the poll, and nothing is removed or run", () => {
+    const { ctx, calls } = setup({
+      stable: "2.1.320",
+      installed: "2.1.311",
+      respond: (call) => (isDocker(call, "stop") ? failed("example stop failure") : undefined),
+    });
+
+    expect(poll(ctx, { dryRun: false })).toBe(1);
+    expect(output()).toContain("docker stop claude-workflow-agent failed");
+    expect(calls.some((c) => isDocker(c, "rm"))).toBe(false);
+    expect(calls.some((c) => isDocker(c, "run"))).toBe(false);
+    expect(calls.some(isPollerRun)).toBe(false);
+  });
+
+  it("a container session that goes live during the build stops the replacement, and the poll runs", () => {
+    const late: Session = { id: "fake-late-1", name: "tools-14", state: "running", startedAt: 3 };
+    let listings = 0;
+    const { ctx, calls, docker } = setup({
+      stable: "2.1.320",
+      installed: "2.1.311",
+      respond: (call) => {
+        if (!isAgentsList(call)) return undefined;
+        listings++;
+        return ok(`${JSON.stringify(listings === 1 ? [] : [late])}\n`);
+      },
+    });
+
+    expect(poll(ctx, { dryRun: false })).toBe(0);
+    expect(calls.some((c) => isDocker(c, "build"))).toBe(true);
+    expect(replacing(calls)).toEqual([]);
+    expect(docker.container()?.image).toBe(OLD_IMAGE);
+    const named = logLines().filter((l) => l.includes("tools-14"));
+    expect(named).toHaveLength(1);
+    expect(named[0]).toContain("not replacing");
+    expect(calls.some(isPollerRun)).toBe(true);
+  });
 });

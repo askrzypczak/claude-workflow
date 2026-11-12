@@ -6,7 +6,8 @@ import { dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ENDED } from "../poller/decide.ts";
 import { log } from "../poller/io.ts";
-import { MARKETPLACE, PLUGIN } from "../setup/container.ts";
+import type { Session } from "../poller/schemas.ts";
+import { ENV_FILE, MARKETPLACE, PLUGIN, runArgs } from "../setup/container.ts";
 import {
   claudeExec,
   cloneDir,
@@ -15,7 +16,12 @@ import {
   CONTAINER_HOME,
   containerSessions,
   containerState,
+  imageBuildArgs,
+  IMAGE,
+  installedClaudeCode,
   nodeExec,
+  stableClaudeCode,
+  VOLUME,
   waitReady,
   writeInContainer,
 } from "../setup/docker.ts";
@@ -45,10 +51,12 @@ const POLLER = 'exec dispatch/agent-poller.sh "$@" 2>&1';
 const pollerProcess = (clone: string) => `${clone}/dispatch/poller/main.ts`;
 const INSTALL = "dispatch/install-launchd.sh install";
 const USAGE = `Usage: dispatch/launchd/job.sh [--dry-run] | deps | halt
-  (none)     one poll: Colima and the agent container up and ready, the plugin updated, the dispatch
-             config copied in, then dispatch/agent-poller.sh in the container's clone of this repo.
-  --dry-run  the same poll with --dry-run: starts neither Colima nor the container, updates no plugin
-             and launches nothing; it refreshes the container's copy of the dispatch config.
+  (none)     one poll: Colima and the agent container up and ready, Claude Code brought up to npm's
+             stable tag (the container rebuilt and replaced when that is newer and no session is live),
+             the plugin updated, the dispatch config copied in, then dispatch/agent-poller.sh in the
+             container's clone of this repo.
+  --dry-run  the same poll with --dry-run: starts neither Colima nor the container, builds nothing,
+             updates no plugin and launches nothing; it refreshes the container's copy of the dispatch config.
   deps       check out this clone's commit in the container's clone of this repo and run npm ci there.
   halt       end a poll running in the container and list its live sessions with their stop commands.`;
 
@@ -154,22 +162,103 @@ function updatePlugin(io: SetupIo, opts: { dryRun: boolean }): void {
   }
 }
 
+/** The container's sessions that have not ended; none when there is no running container. */
+function liveSessions(io: SetupIo): Session[] {
+  return (containerSessions(io) ?? []).filter((s) => !ENDED.includes(s.state));
+}
+
+/** The live sessions in words: how many, and their names. */
+function liveText(live: Session[]): string {
+  const names = live.map((s) => s.name ?? "an unnamed session").join(", ");
+  return `${live.length} container ${live.length === 1 ? "session is" : "sessions are"} live (${names})`;
+}
+
 /**
  * The container rebuilt and replaced when npm's `stable` Claude Code is newer than the installed
  * one and no container session is live; false only when a replacement failed after the stop.
  */
 function updateClaudeCode(ctx: JobContext, opts: { dryRun: boolean }): boolean {
-  void ctx;
-  void opts;
-  void isNewer;
-  throw new Error("not implemented");
+  const { io } = ctx;
+  if (opts.dryRun) {
+    log(`[dry-run] npm's stable Claude Code against claude --version in the container; a newer release rebuilds and replaces the container when no container session is live`);
+    return true;
+  }
+  let stable: string;
+  let installed: string;
+  try {
+    stable = stableClaudeCode(io);
+    installed = installedClaudeCode(io);
+  } catch (err) {
+    log(`${message(err)}; polling with the installed Claude Code`);
+    return true;
+  }
+  if (!isNewer(stable, installed)) return true;
+
+  // Reads only: nothing is replaced until the live sessions and the config label are known.
+  let live: Session[];
+  let label: string | undefined;
+  try {
+    live = liveSessions(io);
+    const state = containerState(io);
+    label = state.kind === "running" || state.kind === "stopped" ? state.label : undefined;
+  } catch (err) {
+    log(`${message(err)}; not rebuilding, the next poll retries`);
+    return true;
+  }
+  if (live.length > 0) {
+    log(`Claude Code ${stable} is on npm's stable tag (installed ${installed}); not rebuilding while ${liveText(live)}; the next poll retries`);
+    return true;
+  }
+
+  const built = io.run("docker", imageBuildArgs(ctx.clone, { version: stable }));
+  if (built.status !== 0) {
+    const why = lines(built.stderr).pop() ?? lines(built.stdout).pop() ?? `exit ${built.status}`;
+    log(`docker build of ${IMAGE} with Claude Code ${stable} failed (${why}); polling with the installed Claude Code`);
+    return true;
+  }
+
+  // A session that started during the build would end at the stop, so the sessions are read again.
+  let late: Session[];
+  try {
+    late = liveSessions(io);
+  } catch (err) {
+    log(`built ${IMAGE} with Claude Code ${stable}, but not replacing ${CONTAINER}: ${message(err)}; the next poll replaces it`);
+    return true;
+  }
+  if (late.length > 0) {
+    log(`built ${IMAGE} with Claude Code ${stable}, but not replacing ${CONTAINER} while ${liveText(late)}; the next poll replaces it`);
+    return true;
+  }
+
+  // From the stop on, a failure leaves the container stopped or missing.
+  const steps: [string, string[]][] = [
+    [`docker stop ${CONTAINER}`, ["stop", CONTAINER]],
+    [`docker rm ${CONTAINER}`, ["rm", CONTAINER]],
+    ["docker run", runArgs(join(ctx.home, ENV_FILE), label ?? "")],
+  ];
+  try {
+    for (const [step, args] of steps) {
+      const result = io.run("docker", args);
+      if (result.status !== 0) throw new Error(`${step} failed (${answer(result)})`);
+    }
+    const ready = waitReady(io, READY_TIMEOUT_MS);
+    if (!ready.ready) throw new Error(`${CONTAINER} is not ready: ${ready.detail}`);
+  } catch (err) {
+    log(`replacing ${CONTAINER} with Claude Code ${stable} failed: ${message(err)}; dispatch/setup-agents.sh container brings the container back`);
+    return false;
+  }
+  log(`rebuilt ${IMAGE} with Claude Code ${stable} (was ${installed}) and replaced the container on the ${VOLUME} volume`);
+  return true;
 }
 
 /** Whether `candidate` is a later `x.y.z` than `current`, compared numerically. */
 function isNewer(candidate: string, current: string): boolean {
-  void candidate;
-  void current;
-  throw new Error("not implemented");
+  const a = candidate.split(".").map(Number);
+  const b = current.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return (a[i] ?? 0) > (b[i] ?? 0);
+  }
+  return false;
 }
 
 /** The host's dispatch config, copied to the poller's default path in the container. */
@@ -190,11 +279,15 @@ function copyConfig(ctx: JobContext): boolean {
   return true;
 }
 
-/** One poll: Colima and the container up and ready, the plugin updated, the config copied in, then the poller. */
+/**
+ * One poll: Colima and the container up and ready, Claude Code brought up to npm's stable tag, the
+ * plugin updated, the config copied in, then the poller.
+ */
 export function poll(ctx: JobContext, opts: { dryRun: boolean }): number {
   return guarded("the poll", () => {
     const clone = containerClone(ctx);
     if (!bringUp(ctx.io, opts)) return 1;
+    if (!updateClaudeCode(ctx, opts)) return 1;
     updatePlugin(ctx.io, opts);
     if (!copyConfig(ctx)) return 1;
     // launchd's EnvironmentVariables reach the job; of the poller's settings, only this one goes on.

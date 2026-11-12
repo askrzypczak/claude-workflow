@@ -10,7 +10,7 @@ From the repository root:
 docker build -t claude-workflow-agent dispatch/container
 ```
 
-Claude Code and Playwright are pinned by the build arguments `CLAUDE_CODE_VERSION` and `PLAYWRIGHT_VERSION`, with defaults in the `Dockerfile`. The image does not update itself; to update, rebuild with a new version, for example `--build-arg CLAUDE_CODE_VERSION=<version>`.
+Claude Code is not pinned: it follows npm's `stable` tag, with the exact version passed as `--build-arg CLAUDE_CODE_VERSION` by the poll and the setup `container` phase. Playwright stays pinned by `PLAYWRIGHT_VERSION`, with its default in the `Dockerfile`. The image does not update itself; the poll rebuilds it when npm's `stable` release is newer ([Updates](../../docs/containers.md#updates)).
 
 ## Run
 
