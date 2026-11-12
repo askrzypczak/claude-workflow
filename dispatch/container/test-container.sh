@@ -22,6 +22,8 @@ containers=""
 checks=0
 failures=0
 detail=""
+# npm's stable Claude Code version, which the build is given; empty when npm does not answer.
+claude_version=""
 tmp=$(mktemp -d)
 
 cleanup() {
@@ -135,11 +137,22 @@ refresh_pid() { as_node pgrep -P 1 -f /usr/local/bin/entrypoint.sh; }
 
 # --- checks --------------------------------------------------------------------------------------
 
+# build_image: the image, given npm's stable Claude Code version when npm answered, as the poll and
+# the setup's container phase give it; without it the build installs whatever `stable` names then.
+build_image() {
+  if [ -n "$claude_version" ]; then
+    docker build --build-arg "CLAUDE_CODE_VERSION=$claude_version" -t "$image" "$here"
+  else
+    docker build -t "$image" "$here"
+  fi
+}
+
 check_build() {
   local server
   server=$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}' 2>&1)
+  claude_version=$(npm view @anthropic-ai/claude-code dist-tags.stable 2>"$tmp/npm.err") || claude_version=""
   echo "test-container: building $image (a first build takes 10-20 minutes)" >&2
-  if docker build -t "$image" "$here" >"$tmp/build.log" 2>&1; then
+  if build_image >"$tmp/build.log" 2>&1; then
     detail="built $image on server $server"
     return 0
   fi
@@ -148,17 +161,16 @@ check_build() {
 }
 
 check_claude_version() {
-  local want out code
-  want=$(sed -n 's/^ARG CLAUDE_CODE_VERSION=\([^[:space:]]*\).*/\1/p' "$here/Dockerfile" | head -n 1)
-  if [ -z "$want" ]; then
-    detail="could not read the ARG CLAUDE_CODE_VERSION line from the Dockerfile"
+  local out code
+  if [ -z "$claude_version" ]; then
+    detail="npm view @anthropic-ai/claude-code dist-tags.stable failed: $(oneline "$(cat "$tmp/npm.err")")"
     return 1
   fi
   out=$(as_node claude --version 2>&1)
   code=$?
-  detail="expected $want; claude --version exit $code: $(oneline "$out")"
+  detail="expected $claude_version; claude --version exit $code: $(oneline "$out")"
   [ "$code" -eq 0 ] || return 1
-  case $out in *"$want"*) return 0 ;; esac
+  case $out in *"$claude_version"*) return 0 ;; esac
   return 1
 }
 
@@ -445,7 +457,7 @@ if ! docker volume create "$volume" >/dev/null || ! start "$main" "${run_flags[@
   exit 1
 fi
 
-run "as node, claude --version prints the pinned Claude Code version" check_claude_version
+run "as node, claude --version prints the Claude Code version the build was given" check_claude_version
 run "as node, api.github.com is reachable" reachable https://api.github.com/rate_limit
 run "as node, registry.npmjs.org is reachable" reachable https://registry.npmjs.org/
 run "as node, api.anthropic.com answers (any HTTP status)" reachable https://api.anthropic.com/

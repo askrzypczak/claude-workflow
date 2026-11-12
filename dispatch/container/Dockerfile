@@ -26,9 +26,12 @@ RUN set -eux; \
     npx -y "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium; \
     rm -rf /var/lib/apt/lists/* /root/.npm
 
+# Claude Code follows npm's `stable` tag: the poll (dispatch/launchd/job.ts) and the setup's `container`
+# phase pass the exact version with --build-arg, so a new release rebuilds from this layer on. A build
+# without the argument installs whatever `stable` names when it runs.
 # Installed as root into /usr/local, so node cannot update or replace it. The npm link gives way to
 # claude-guard.sh, which runs the real binary through /usr/local/libexec/claude-code.
-ARG CLAUDE_CODE_VERSION=2.1.311
+ARG CLAUDE_CODE_VERSION=stable
 RUN set -eux; \
     npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"; \
     rm -rf /root/.npm; \

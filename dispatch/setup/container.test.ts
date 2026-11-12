@@ -48,6 +48,7 @@ function setup(w: FakeWorld, opts: { dryRun?: boolean } = {}) {
 
 const isDocker = (c: FakeCall, sub: string) => c.cmd === "docker" && c.args[0] === sub;
 const isExec = (c: FakeCall) => parseDockerExec(c) !== undefined;
+const isNpmView = (c: FakeCall) => c.cmd === "npm" && c.args.includes("view") && c.args.includes("dist-tags.stable");
 const isKeygen = (c: FakeCall) => {
   const command = parseDockerExec(c)?.command ?? [];
   return command[0] === "ssh-keygen" && command.includes("-t");
@@ -268,6 +269,32 @@ describe("container phase", () => {
     expect(second.some((c) => isDocker(c, "start"))).toBe(false);
     expect(docker.container()?.state).toBe("running");
     expect(docker.container()?.startedAt).toBe(startedAt);
+  });
+
+  it("the container phase builds the image with the stable Claude Code version as a build argument", () => {
+    const { run, calls, docker } = setup(world({}, {
+      respond: (c) => (isNpmView(c) ? { status: 0, stdout: "2.1.320\n", stderr: "" } : undefined),
+    }));
+
+    expect(run()).toBe("ok");
+    expect(calls.some(isNpmView)).toBe(true);
+    expect(docker.builds.length).toBeGreaterThan(0);
+    for (const args of docker.builds) {
+      expect(optValues(args, ["--build-arg"])).toEqual(["CLAUDE_CODE_VERSION=2.1.320"]);
+    }
+  });
+
+  it("when npm view fails, the container phase builds without the build argument and notes why", () => {
+    const { run, calls, reports, docker } = setup(world({}, {
+      respond: (c) => (isNpmView(c) ? { status: 1, stdout: "", stderr: "npm error code ENOTFOUND example registry unreachable\n" } : undefined),
+    }));
+
+    expect(run()).toBe("ok");
+    expect(calls.some(isNpmView)).toBe(true);
+    expect(docker.builds.length).toBeGreaterThan(0);
+    for (const args of docker.builds) expect(optValues(args, ["--build-arg"])).toEqual([]);
+    const notes = reports.filter((r) => r.status === "note").map((r) => r.text);
+    expect(notes.some((t) => t.includes("example registry unreachable")), notes.join("\n")).toBe(true);
   });
 
   it("a rerun with everything in place reports already done and makes no write call", () => {

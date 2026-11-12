@@ -19,9 +19,11 @@ import {
   CONTAINER_HOME,
   containerState,
   IMAGE,
+  imageBuildArgs,
   nodeExec,
   READY_LINE,
   readInContainer,
+  stableClaudeCode,
   VOLUME,
   waitReady,
   writeInContainer,
@@ -70,7 +72,7 @@ function lastAnswer(result: RunResult): string {
 }
 
 /** The `docker run` arguments, with the env file and the config label's value. */
-function runArgs(envFile: string, config: string): string[] {
+export function runArgs(envFile: string, config: string): string[] {
   return [
     "run", "-d", "--name", CONTAINER, "--init",
     "--cap-add=NET_ADMIN", "--cap-add=NET_RAW", "--security-opt", "no-new-privileges",
@@ -246,9 +248,20 @@ function imageId(p: Pass): string | undefined {
 
 /** Builds the image on every run (cached after the first build); its id, or "stop". */
 function imageStep(p: Pass): { id: string | undefined } | "stop" {
-  const args = ["build", ...(p.rebuild ? ["--pull", "--no-cache"] : []), "-t", IMAGE, join(p.clone, "dispatch/container")];
+  // The exact stable version is passed: the Dockerfile's `stable` alone would reuse a cached layer that holds an older release.
+  let version: string | undefined;
+  let unknown: string | undefined;
+  try {
+    version = stableClaudeCode(p.io);
+  } catch (err) {
+    unknown = message(err);
+  }
+  const args = imageBuildArgs(p.clone, { version, fresh: p.rebuild });
   const command = `docker ${args.join(" ")}`;
   const time = p.rebuild ? "a build with --no-cache takes 10 to 20 minutes" : "the first build takes 10 to 20 minutes, a cached one seconds";
+  if (unknown !== undefined) {
+    p.say("note", `image: ${unknown}, so the build runs without --build-arg CLAUDE_CODE_VERSION; a cached layer may hold an older Claude Code`);
+  }
   if (p.dryRun || !p.docker) {
     p.say("would", `image: ${command} (${time})`);
     return { id: p.docker ? imageId(p) : undefined };
