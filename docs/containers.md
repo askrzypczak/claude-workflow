@@ -72,7 +72,7 @@ The container limits what a session can reach, not what it does with what it can
 
 - Why Colima: MIT licence, `brew install colima docker`, no sudo, and it starts from a launchd job in the poller's domain (`gui/<uid>`). Spike #164 started the VM and ran a container from such a job, with the poller plist's `HOME` and `PATH`, in 18 seconds. Docker Desktop was read about, not installed. Neither was tried while logged out; the poller needs a login either way.
 - The command, `colima start --cpu 4 --memory 4 --disk 40 --mount none`, gives the VM 4 CPUs, 4 GiB of memory and a 40 GiB disk, on an 8 GB Mac. The image is about 4 GB. In #164 the container's sampled peak was 1.29 GiB while the served app's checks ran; several opus sessions at full load are untested, and are the main practical risk.
-- The image, on `node:24-bookworm`, pins Claude Code (`CLAUDE_CODE_VERSION`, 2.1.309) and Playwright (`PLAYWRIGHT_VERSION`, 1.64.1) by build arguments and sets `DISABLE_AUTOUPDATER=1`, so Claude Code never updates itself there: an update is a rebuild ([Updates](#updates)).
+- The image, on `node:24-bookworm`, pins Claude Code (`CLAUDE_CODE_VERSION`, 2.1.311) and Playwright (`PLAYWRIGHT_VERSION`, 1.64.1) by build arguments and sets `DISABLE_AUTOUPDATER=1`, so Claude Code never updates itself there: an update is a rebuild ([Updates](#updates)).
 
 ## Restart behaviour
 
