@@ -14,7 +14,7 @@ IFS=$'\x1f' read -r REPO MODEL EFFORT CTX TOK SIZE FIVE WEEK WT_BRANCH CWD < <(
                elif . >= 1000 then "\((. / 100 | floor) / 10)k"
                else tostring end;
     [
-      (.workspace.repo.name // "?"),
+      (.workspace.repo.name // ""),
       (.model.display_name // "?"),
       (.effort.level // ""),
       ((.context_window.used_percentage // 0) | floor | tostring),
@@ -42,6 +42,15 @@ elif BRANCH=$(git -C "${CWD:-.}" branch --show-current 2>/dev/null); then
   BRANCH=${BRANCH:-"<detached>"}
 else
   BRANCH="?"
+fi
+
+# Claude Code leaves the repo name empty when it can't resolve the remote (for
+# example an SSH host alias such as github.com-name:owner/repo.git), so fall back
+# to the last path segment of origin's URL, without a trailing .git.
+if [ -z "$REPO" ]; then
+  REPO=$(git -C "${CWD:-.}" remote get-url origin 2>/dev/null)
+  REPO=${REPO%/}; REPO=${REPO%.git}; REPO=${REPO##*[/:]}
+  REPO=${REPO:-"?"}
 fi
 
 FILLED=$((CTX / 10)); [ "$FILLED" -gt 10 ] && FILLED=10
