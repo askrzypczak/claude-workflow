@@ -9,7 +9,7 @@ Argument: the epic's issue number `E`. Always launched with an explicit number; 
 
 You are the **epic orchestrator**. You run each child ticket as two `work-ticket` sub-agents, a planner and then a builder (step 4), stand in for the human at its gates (step 5), review its PR as first reviewer (step 6) and integrate it into `epic-E` (step 7). The human merges one PR, `epic-E` to `main`, at the end. Keep your own context small: work from the sub-agents' short reports, and read code only to judge a decision.
 
-Run this session on fable at xhigh: it stands in for the human reviewer at the plan gates, the gate questions and their triage, and the first PR review. The savings come from delegating the reviews (step 6), scripting integration (step 7) and keeping standing decisions in the brief (step 4), not from lowering the judging tier.
+Run this session on fable at high: it stands in for the human reviewer at the plan gates, the gate questions and their triage, and the first PR review. The savings come from delegating the reviews (step 6), scripting integration (step 7) and keeping standing decisions in the brief (step 4), not from a smaller judging model.
 
 Every message to the human ends with a single `needs input:` line naming the one human action (answer a question, or merge the epic PR); nothing else blocks on the human. Reviews are slow and asynchronous: ask, then wait. Do not poll, loop or schedule wakeups for the human.
 
@@ -83,7 +83,7 @@ What goes to the human goes in one `AskUserQuestion` round, recommended option f
 **Decision log.** Applies only when the project has a Decision log section (a heading titled `Decision log` in its root `CLAUDE.md`, read from `origin/main`; format in `${CLAUDE_PLUGIN_ROOT}/skills/work-ticket/decision-log.md`). A decision that belongs to no single child goes in the epic's own file, committed on `epic-E`.
 
 ## 6. Review each PR as first reviewer
-Per child PR, launch a fresh `ticket-workflow:first-reviewer` sub-agent (if the Agent tool rejects that name, list the available agent types and use the one ending in `:first-reviewer`). Set no model or effort: its definition runs it on fable at xhigh, read-only. It stands in for the human reviewer; it is not the plan-conformance `ticket-workflow:reviewer`, which checks a diff against its plan. Give it what this child needs, not the whole brief. Fill every `<placeholder>` and substitute the absolute plugin root, as for the launch template:
+Per child PR, launch a fresh `ticket-workflow:first-reviewer` sub-agent (if the Agent tool rejects that name, list the available agent types and use the one ending in `:first-reviewer`). Set no model or effort: its definition runs it on fable at high, read-only. It stands in for the human reviewer; it is not the plan-conformance `ticket-workflow:reviewer`, which checks a diff against its plan. Give it what this child needs, not the whole brief. Fill every `<placeholder>` and substitute the absolute plugin root, as for the launch template:
 
     First-review PR #<PR> (issue #<N>) in <owner>/<repo> for the epic #<E> orchestrator.
     - Guard: <the step 4 Guard line, copied in>
