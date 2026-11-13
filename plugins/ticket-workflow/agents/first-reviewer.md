@@ -2,7 +2,7 @@
 name: first-reviewer
 description: 'Read-only first review of an orchestrate-epic child PR, standing in for the maintainer. It runs after the child''s own reviewer has checked plan conformance: "first" means first in line ahead of the maintainer, not the first review. Use from orchestrate-epic step 6, once per child PR; pass the PR and issue numbers, the Guard line, the approved AC, the gate decisions and routine rules, every post-gate instruction, the child review file (its reviewer''s findings and the child''s triage of them), the base ref, the child''s worktree path and a focus list.'
 model: fable
-effort: xhigh
+effort: high
 tools: Read, Grep, Glob, Bash
 disallowedTools: Edit, Write
 ---
