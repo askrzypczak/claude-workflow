@@ -2,7 +2,7 @@
 
 The custom status line shown under the Claude Code prompt. Outside the plugin: it is a user-level setting, so it is installed by hand.
 
-- `statusline.sh`: `repo branch [model] effort:level ▓▓▓░░░░░░░ 31% (62k/200k) · 5h:12% · 7d:40%`. The repo name comes from the `origin` remote, or `?` when there is none. The branch is the worktree branch Claude Code reports during a worktree session. Otherwise it is the branch checked out in the session's working directory, `<detached>` on a detached HEAD, or `?` outside a git repository. The context bar is green below 70%, yellow from 70%, red from 90%. The 5h and 7d plan-usage fields appear only when Claude Code reports them.
+- `statusline.sh`: `repo branch [model] effort:level ▓▓▓░░░░░░░ 31% (62k/200k) · 5h:12% · 7d:40%`. The repo name is the one Claude Code reports. When it reports none (seen in the agent container, whose remotes use SSH host aliases such as `github.com-name:owner/repo.git`), the name is the last path segment of the `origin` remote URL without `.git`, or `?` when there is no `origin` remote or no git repository. The branch is the worktree branch Claude Code reports during a worktree session. Otherwise it is the branch checked out in the session's working directory, `<detached>` on a detached HEAD, or `?` outside a git repository. The context bar is green below 70%, yellow from 70%, red from 90%. The 5h and 7d plan-usage fields appear only when Claude Code reports them.
 - `subagent-statusline.sh`: one row per running subagent: `name · model · effort:level`, then the same context bar and token count.
 
 Both need `jq` on PATH. Docs: <https://code.claude.com/docs/en/statusline>.
