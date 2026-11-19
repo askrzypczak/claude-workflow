@@ -91,6 +91,16 @@ export function ticketVerdict(issue: IssueRow, owner: string, launched: Launched
   return { ok: true };
 }
 
+/** Whether an open `agent-ok` issue gets an orchestrate-epic session (before the caps and the epic limit). */
+export function epicVerdict(issue: IssueRow, owner: string, launched: Launched): Verdict {
+  throw new Error("not implemented");
+}
+
+/** Tracked `epic-N` sessions still taking a slot, counted as `liveCount` counts. */
+export function liveEpicCount(launched: Launched, sessions: readonly Session[], now: number): number {
+  throw new Error("not implemented");
+}
+
 /** The work-ticket command for an issue; `skip-plan` adds `auto` (no plan sign-off). */
 export function ticketPrompt(issue: IssueRow): string {
   const auto = issue.labels.includes("skip-plan") ? " auto" : "";

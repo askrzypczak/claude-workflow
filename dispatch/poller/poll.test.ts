@@ -72,6 +72,7 @@ const run = (p: Partial<RunContext> = {}): RunContext => ({
   sessions: [],
   maxSessions: 10,
   live: new Map(),
+  epics: 0,
   ...p,
 });
 
@@ -81,6 +82,11 @@ const ready = (n: number, ...labels: string[]): IssueRow => ({
   number: n,
   author: { login: "me" },
   labels: ["agent-ok", "ready", ...labels],
+});
+const epic = (n: number, ...labels: string[]): IssueRow => ({
+  number: n,
+  author: { login: "me" },
+  labels: ["agent-ok", "ready-epic", ...labels],
 });
 const conflictPr = (number: number, n: number): PrRow => ({
   number,
@@ -517,5 +523,122 @@ describe("pollRepo: failure comments", () => {
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toMatch(/docker exec (\S+ )*claude-workflow-agent claude logs app-3\b/);
     expect(bodies[0]).toMatch(/docker exec (\S+ )*claude-workflow-agent claude agents\b/);
+  });
+});
+
+describe("pollRepo: epics", () => {
+  const EPIC_7 = "launch app-epic-7 in /work/app: --model fable --effort high --permission-mode auto /ticket-workflow:orchestrate-epic 7";
+  const launches = (effects: string[]) => effects.filter((e) => e.startsWith("launch"));
+
+  it("pollRepo launches app-epic-N with --model fable --effort high --permission-mode auto and /ticket-workflow:orchestrate-epic N, tracks epic-N, and launches no work-ticket for it", () => {
+    const f = fakeIo({ issues: [epic(7)] });
+    const state = empty();
+    pollRepo(repo(), state, run(), f.io);
+    expect(f.effects).toEqual([EPIC_7]);
+    expect(state.launched).toEqual({ "epic-7": { name: "app-epic-7", at: NOW } });
+    expect(f.saved.at(-1)?.launched).toEqual({ "epic-7": { name: "app-epic-7", at: NOW } });
+  });
+
+  it("pollRepo defers an eligible epic with a log line while an epic session runs", () => {
+    const f = fakeIo({ issues: [epic(7)] });
+    const state = empty();
+    pollRepo(repo(), state, run({ epics: 1 }), f.io);
+    expect(launches(f.effects)).toEqual([]);
+    expect(state.launched).toEqual({});
+    expect(f.logs.some((l) => l.startsWith("[app] ") && l.includes("deferred #7")), f.logs.join("\n")).toBe(true);
+  });
+
+  it("pollRepo launches only the first of two eligible epics in one poll", () => {
+    const f = fakeIo({ issues: [epic(7), epic(8)] });
+    const state = empty();
+    const ctx = run();
+    pollRepo(repo(), state, ctx, f.io);
+    expect(launches(f.effects)).toEqual([EPIC_7]);
+    expect(Object.keys(state.launched)).toEqual(["epic-7"]);
+    expect(ctx.epics).toBe(1);
+    expect(f.logs.some((l) => l.includes("deferred #8")), f.logs.join("\n")).toBe(true);
+  });
+
+  it("an epic launched in one repo's poll defers an eligible epic in the next repo's poll", () => {
+    const ctx = run();
+    const app = fakeIo({ issues: [epic(7)] });
+    pollRepo(repo(), empty(), ctx, app.io);
+    expect(launches(app.effects)).toEqual([EPIC_7]);
+
+    const lib = fakeIo({ issues: [epic(3)] });
+    const libState = empty();
+    pollRepo(repo({ repo: "org/lib", dir: "/work/lib", sessionPrefix: "lib" }), libState, ctx, lib.io);
+    expect(launches(lib.effects)).toEqual([]);
+    expect(libState.launched).toEqual({});
+    expect(lib.logs.some((l) => l.startsWith("[lib] ") && l.includes("deferred #3")), lib.logs.join("\n")).toBe(true);
+  });
+
+  it("pollRepo defers an eligible epic at the session cap", () => {
+    const f = fakeIo({ issues: [epic(7)] });
+    const state = empty();
+    pollRepo(repo(), state, run({ maxSessions: 1, live: new Map([["other", 1]]) }), f.io);
+    expect(launches(f.effects)).toEqual([]);
+    expect(state.launched).toEqual({});
+    expect(f.logs.some((l) => l.startsWith("[app] deferred #7: at session cap")), f.logs.join("\n")).toBe(true);
+  });
+
+  it("pollRepo counts an epic launch in the repo's live sessions, so a ticket after it defers at the cap", () => {
+    const f = fakeIo({ issues: [epic(7), ready(8)] });
+    const state = empty();
+    const ctx = run({ maxSessions: 1 });
+    pollRepo(repo(), state, ctx, f.io);
+    expect(launches(f.effects)).toEqual([EPIC_7]);
+    expect(ctx.live.get("app")).toBe(1);
+    expect(f.logs).toContain("[app] deferred #8: at session cap");
+    expect(Object.keys(state.launched)).toEqual(["epic-7"]);
+  });
+
+  const trackedEpic = (): RepoState => ({
+    launched: { "epic-7": { name: "app-epic-7", at: NOW - 3600 } },
+    attempts: {},
+    ciAttempts: {},
+  });
+
+  it("pollRepo clears a done epic session that handed off", () => {
+    const f = fakeIo({ issueViews: { 7: { state: "OPEN", labels: ["needs-review"] } } });
+    const state = trackedEpic();
+    pollRepo(repo(), state, run({ sessions: [session("app-epic-7", "done")] }), f.io);
+    expect(f.effects).toEqual([]);
+    expect(state.launched).toEqual({});
+    expect(f.saved.at(-1)?.launched).toEqual({});
+  });
+
+  it("pollRepo fails a failed, stopped or not-handed-off epic session with agent-failed, a comment naming the session and how to retry, and removes its entry", () => {
+    for (const st of ["failed", "stopped", "done"]) {
+      const f = fakeIo({ issueViews: { 7: { state: "OPEN", labels: ["agent-ok", "in-progress"] } } });
+      const bodies: string[] = [];
+      const io: PollerIo = {
+        ...f.io,
+        commentOnIssue: (r, n, body) => {
+          f.io.commentOnIssue(r, n, body);
+          bodies.push(body);
+        },
+      };
+      const state = trackedEpic();
+      pollRepo(repo(), state, run({ sessions: [session("app-epic-7", st)] }), io);
+      expect(f.effects, st).toEqual(["label org/app#7 +agent-failed -in-progress", "comment org/app#7"]);
+      expect(bodies, st).toHaveLength(1);
+      expect(bodies[0], st).toContain("app-epic-7");
+      expect(bodies[0], st).toContain("agent-failed");
+      expect(bodies[0], st).toContain("ready-epic");
+      expect(state.launched, st).toEqual({});
+      expect(f.saved.at(-1)?.launched, st).toEqual({});
+    }
+  });
+
+  it("pollRepo does not relaunch an epic that reconcile failed in the same poll", () => {
+    // The label edit fails, so the epic still looks eligible (as it does in a dry run).
+    const f = fakeIo({ issues: [epic(7)], fail: ["editLabels"] });
+    const state = trackedEpic();
+    pollRepo(repo(), state, run({ sessions: [session("app-epic-7", "failed")] }), f.io);
+    expect(launches(f.effects)).toEqual([]);
+    expect(f.effects).toContain("comment org/app#7");
+    expect(f.logs.some((l) => l.startsWith("[app] #7: failed earlier in this poll")), f.logs.join("\n")).toBe(true);
+    expect(state.launched).toEqual({});
   });
 });

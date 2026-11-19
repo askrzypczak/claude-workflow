@@ -27,6 +27,8 @@ export interface RunContext {
   maxSessions: number;
   /** Live sessions per session prefix: counted before the first repo, bumped by each launch (dry-run too). */
   live: Map<string, number>;
+  /** Live epic sessions across all repos: counted before the first repo, bumped by each epic launch. */
+  epics: number;
 }
 
 interface RepoPoll {

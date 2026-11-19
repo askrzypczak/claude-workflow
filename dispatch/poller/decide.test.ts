@@ -8,16 +8,19 @@ import {
   ciVerdict,
   conflictRemains,
   conflictVerdict,
+  epicVerdict,
   handedOff,
   liveByPrefix,
   liveCount,
+  liveEpicCount,
   prIssueVerdict,
   reconcileAction,
   sessionState,
   ticketPrompt,
   ticketVerdict,
 } from "./decide.ts";
-import type { Check, IssueRow, Launched, PrRow, Session } from "./schemas.ts";
+import { Launched, parseJson } from "./schemas.ts";
+import type { Check, IssueRow, PrRow, Session } from "./schemas.ts";
 
 const session = (name: string, state: string, startedAt = 1): Session => ({ name, state, startedAt });
 
@@ -52,6 +55,41 @@ describe("liveCount", () => {
       session("a-7-conflict", "idle"),
     ];
     expect(liveCount(launched, sessions, now)).toBe(3); // a-1, a-5, a-7-conflict
+  });
+});
+
+describe("liveCount and liveEpicCount: epic sessions", () => {
+  const now = 10_000;
+  it("liveCount counts a live epic-N entry toward the session caps", () => {
+    const launched = parseJson(
+      Launched,
+      JSON.stringify({ "epic-7": { name: "a-epic-7", at: 0 }, 3: { name: "a-3", at: 0 } }),
+      "launched.json",
+    );
+    expect(liveCount(launched, [session("a-epic-7", "working"), session("a-3", "working")], now)).toBe(2);
+  });
+
+  it("liveEpicCount counts epic-N entries that are live or launched within the grace period, and no ended or non-epic entry", () => {
+    const launched: Launched = {
+      "epic-1": { name: "a-epic-1", at: 0 },
+      "epic-2": { name: "a-epic-2", at: now - 599 },
+      "epic-3": { name: "a-epic-3", at: 0 },
+      "epic-4": { name: "a-epic-4", at: now - 600 },
+      "epic-5": { name: "a-epic-5", at: 0 },
+      6: { name: "a-6", at: 0 },
+      "conflict-7": { name: "a-7-conflict", at: 0, pr: "9", mainSha: "s" },
+      "ci-8": { name: "a-8-ci", at: 0, pr: "10" },
+      9: { name: "a-9", at: now - 10 },
+    };
+    const sessions = [
+      session("a-epic-1", "blocked"),
+      session("a-epic-3", "done"),
+      session("a-epic-5", "failed"),
+      session("a-6", "working"),
+      session("a-7-conflict", "working"),
+      session("a-8-ci", "working"),
+    ];
+    expect(liveEpicCount(launched, sessions, now)).toBe(2); // a-epic-1, a-epic-2
   });
 });
 
@@ -151,9 +189,50 @@ describe("ticketVerdict and ticketPrompt", () => {
     expect(ticketVerdict(issue(["ready"]), "me", { 5: { name: "a-5", at: 1 } })).toEqual({ ok: false });
   });
 
+  it("ticketVerdict rejects an issue labelled ready-epic", () => {
+    expect(ticketVerdict(issue(["ready", "ready-epic"]), "me", {})).toEqual({ ok: false });
+  });
+
   it("adds auto for skip-plan", () => {
     expect(ticketPrompt(issue(["ready"]))).toBe("/ticket-workflow:work-ticket 5");
     expect(ticketPrompt(issue(["ready", "skip-plan"]))).toBe("/ticket-workflow:work-ticket 5 auto");
+  });
+});
+
+describe("epicVerdict", () => {
+  const epic = (labels: string[], login = "me", number = 5): IssueRow => ({ number, author: { login }, labels });
+
+  it("epicVerdict accepts an owner's open issue with agent-ok and ready-epic", () => {
+    expect(epicVerdict(epic(["agent-ok", "ready-epic"]), "me", {})).toEqual({ ok: true });
+    expect(epicVerdict(epic(["feature", "ready-epic", "agent-ok"]), "me", {})).toEqual({ ok: true });
+  });
+
+  it("epicVerdict rejects another author's issue with a log line", () => {
+    const verdict = epicVerdict(epic(["agent-ok", "ready-epic"], "eve"), "me", {});
+    expect(verdict).toEqual({ ok: false, log: expect.stringContaining("eve") });
+  });
+
+  it("epicVerdict rejects an issue missing agent-ok or ready-epic", () => {
+    for (const labels of [["ready-epic"], ["agent-ok"], ["agent-ok", "ready"], []]) {
+      expect(epicVerdict(epic(labels), "me", {}), JSON.stringify(labels)).toEqual({ ok: false });
+    }
+  });
+
+  it("epicVerdict rejects an issue that also has ready, with a log line", () => {
+    const verdict = epicVerdict(epic(["agent-ok", "ready-epic", "ready"]), "me", {});
+    expect(verdict).toEqual({ ok: false, log: expect.stringContaining("#5") });
+  });
+
+  it("epicVerdict rejects an issue with in-progress, blocked, agent-failed or orchestrate-epic-run", () => {
+    for (const label of ["in-progress", "blocked", "agent-failed", "orchestrate-epic-run"]) {
+      expect(epicVerdict(epic(["agent-ok", "ready-epic", label]), "me", {}), label).toMatchObject({ ok: false });
+    }
+  });
+
+  it("epicVerdict rejects an epic already tracked as epic-N", () => {
+    expect(epicVerdict(epic(["agent-ok", "ready-epic"]), "me", { "epic-5": { name: "a-epic-5", at: 1 } })).toEqual({
+      ok: false,
+    });
   });
 });
 
