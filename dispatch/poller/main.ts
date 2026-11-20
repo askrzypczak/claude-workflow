@@ -5,7 +5,7 @@
 import { parseArgs } from "node:util";
 import { loadConfig, parseMaxSessions } from "./config.ts";
 import type { RepoConfig } from "./config.ts";
-import { liveByPrefix, liveCount } from "./decide.ts";
+import { liveByPrefix, liveCount, liveEpicCount } from "./decide.ts";
 import { acquireLock, createIo, listSessions, loadState, log, reachable, releaseLock } from "./io.ts";
 import { pollRepo } from "./poll.ts";
 import type { Session } from "./schemas.ts";
@@ -41,8 +41,10 @@ function pollAll(repos: RepoConfig[], opts: RunOptions): number {
     return 1;
   }
 
-  // A repo whose state cannot be read fails below; for the caps, its live sessions are
-  // counted from the session list by name instead.
+  // A repo whose state cannot be read fails below; for the caps and the epic limit, its live
+  // sessions are counted from the session list by name instead. For the epic limit, a readable
+  // repo also counts listed live sessions named `<prefix>-epic-...`, so an epic session started
+  // by hand under that name holds the limit too.
   const now = Math.floor(Date.now() / 1000);
   const loaded = repos.map((entry) => {
     try {
@@ -52,13 +54,17 @@ function pollAll(repos: RepoConfig[], opts: RunOptions): number {
     }
   });
   const live = new Map<string, number>();
+  let epics = 0;
   for (const { entry, state } of loaded) {
-    const count = state ? liveCount(state.launched, sessions, now) : liveByPrefix(sessions, entry.sessionPrefix);
-    live.set(entry.sessionPrefix, count);
+    const prefix = entry.sessionPrefix;
+    const count = state ? liveCount(state.launched, sessions, now) : liveByPrefix(sessions, prefix);
+    live.set(prefix, count);
+    const byName = liveByPrefix(sessions, `${prefix}-epic`);
+    epics += state ? Math.max(liveEpicCount(state.launched, sessions, now), byName) : byName;
   }
 
   const io = createIo(opts.stateDir, opts.dryRun);
-  const run = { sessions, maxSessions: opts.maxSessions, live };
+  const run = { sessions, maxSessions: opts.maxSessions, live, epics };
   let failures = 0;
   for (const { entry, state, error } of loaded) {
     const repoLog = (m: string) => log(`[${entry.sessionPrefix}] ${m}`);

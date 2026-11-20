@@ -1348,6 +1348,77 @@ describe("agent-poller failed tickets and broken state", () => {
   });
 });
 
+describe("agent-poller epic limit across repos", () => {
+  const A = { repo: "org/alpha", sessionPrefix: "a", owner: "me" };
+  const B = { repo: "org/beta", sessionPrefix: "b", owner: "me" };
+  const readyEpic = (number: number) => ({
+    number,
+    author: { login: "me" },
+    labels: [{ name: "agent-ok" }, { name: "ready-epic" }],
+  });
+  const writeLaunched = (prefix: string, text: string) => {
+    mkdirSync(state(prefix), { recursive: true });
+    writeFileSync(join(state(prefix), "launched.json"), text);
+  };
+  const trackedEpic = () =>
+    JSON.stringify({ "epic-1": { name: "a-epic-1", at: Math.floor(Date.now() / 1000) - 60 } });
+  const sessions = (list: [string, string][]) =>
+    writeFileSync(
+      join(dir, "sessions.json"),
+      JSON.stringify(list.map(([name, st]) => ({ name, state: st, startedAt: 1 }))),
+    );
+  const epicIn = (repo: string, n: number) =>
+    writeFileSync(join(rdir(repo), "issues.json"), JSON.stringify([readyEpic(n)]));
+
+  it("an epic session tracked by one repo defers an eligible epic in another", () => {
+    configure([A, B]);
+    writeLaunched("a", trackedEpic());
+    sessions([["a-epic-1", "working"]]);
+    epicIn(B.repo, 2);
+    const r = exec();
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log")).toStrictEqual([]);
+    expect(r.stdout).toContain("[b] deferred #2: an epic session is already running");
+  });
+
+  it("launches the waiting epic once the other repo's epic session has handed off", () => {
+    configure([A, B]);
+    writeLaunched("a", trackedEpic());
+    sessions([["a-epic-1", "done"]]);
+    writeFileSync(
+      join(rdir(A.repo), "issue.json"),
+      JSON.stringify({ state: "OPEN", labels: [{ name: "needs-review" }] }),
+    );
+    epicIn(B.repo, 2);
+    const r = exec();
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log")).toStrictEqual([
+      "--bg --name b-epic-2 --model fable --effort high --permission-mode auto /ticket-workflow:orchestrate-epic 2",
+    ]);
+  });
+
+  it("a live epic session of a repo with unreadable state defers an eligible epic in another", () => {
+    configure([A, B]);
+    writeLaunched("a", "{corrupt");
+    sessions([["a-epic-1", "working"]]);
+    epicIn(B.repo, 2);
+    const r = exec();
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(readLines("claude.log")).toStrictEqual([]);
+    expect(r.stdout).toContain("[b] deferred #2: an epic session is already running");
+  });
+
+  it("an untracked live session named <prefix>-epic-N defers an eligible epic in another repo", () => {
+    configure([A, B]);
+    sessions([["a-epic-9", "working"]]);
+    epicIn(B.repo, 2);
+    const r = exec();
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readLines("claude.log")).toStrictEqual([]);
+    expect(r.stdout).toContain("[b] deferred #2: an epic session is already running");
+  });
+});
+
 describe("agent-poller run lock", () => {
   const lockWith = (pid: string | number) => {
     mkdirSync(join(dir, "state", "lock"), { recursive: true });

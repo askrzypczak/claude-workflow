@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 
 export const STATE_LABELS = [
   "ready",
+  "ready-epic",
   "in-progress",
   "needs-review",
   "blocked",

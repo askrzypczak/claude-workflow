@@ -71,12 +71,12 @@ export type PrStatus = z.infer<typeof PrStatus>;
 export const Commit = z.object({ sha: z.string().min(1) });
 
 /**
- * launched.json: `{"<N>": {name, at}, "conflict-<N>": {name, at, pr, mainSha}, "ci-<N>": {name, at, pr}}`,
- * `at` in epoch seconds.
+ * launched.json: `{"<N>": {name, at}, "epic-<N>": {name, at}, "conflict-<N>": {name, at, pr, mainSha},
+ * "ci-<N>": {name, at, pr}}`, `at` in epoch seconds.
  */
 export const Launched = z
   .record(
-    z.string().regex(/^(conflict-|ci-)?[0-9]+$/),
+    z.string().regex(/^(conflict-|ci-|epic-)?[0-9]+$/),
     z.object({
       name: z.string(),
       at: z.number(),

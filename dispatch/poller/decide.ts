@@ -25,10 +25,12 @@ export function sessionState(sessions: readonly Session[], name: string): string
 
 /** Tracked sessions still taking a slot: listed and not ended, or unlisted but launched within the grace period. */
 export function liveCount(launched: Launched, sessions: readonly Session[], now: number): number {
-  return Object.values(launched).filter(({ name, at }) => {
-    const state = sessionState(sessions, name);
-    return state === undefined ? now - at < LISTING_GRACE_SEC : !ENDED.includes(state);
-  }).length;
+  return Object.values(launched).filter((entry) => isLive(entry, sessions, now)).length;
+}
+
+function isLive(entry: { name: string; at: number }, sessions: readonly Session[], now: number): boolean {
+  const state = sessionState(sessions, entry.name);
+  return state === undefined ? now - entry.at < LISTING_GRACE_SEC : !ENDED.includes(state);
 }
 
 /**
@@ -81,7 +83,7 @@ export function conflictRemains(pr: PrStatus): boolean {
 /** Whether an open `agent-ok` issue gets a ticket session (before the cap check). */
 export function ticketVerdict(issue: IssueRow, owner: string, launched: Launched): Verdict {
   const has = (label: string) => issue.labels.includes(label);
-  if (!has("ready") || has("in-progress") || has("blocked") || has("agent-failed") || has("orchestrate-epic-run")) {
+  if (!has("ready") || has("ready-epic") || has("in-progress") || has("blocked") || has("agent-failed") || has("orchestrate-epic-run")) {
     return { ok: false };
   }
   if (issue.author.login !== owner) {
@@ -93,12 +95,23 @@ export function ticketVerdict(issue: IssueRow, owner: string, launched: Launched
 
 /** Whether an open `agent-ok` issue gets an orchestrate-epic session (before the caps and the epic limit). */
 export function epicVerdict(issue: IssueRow, owner: string, launched: Launched): Verdict {
-  throw new Error("not implemented");
+  const has = (label: string) => issue.labels.includes(label);
+  if (!has("agent-ok") || !has("ready-epic")) return { ok: false };
+  if (has("ready")) return { ok: false, log: `#${issue.number}: has both ready and ready-epic; skipping` };
+  if (has("in-progress") || has("blocked") || has("agent-failed") || has("orchestrate-epic-run")) {
+    return { ok: false };
+  }
+  if (issue.author.login !== owner) {
+    return { ok: false, log: `#${issue.number}: author ${issue.author.login} is not ${owner}; skipping` };
+  }
+  if (`epic-${issue.number}` in launched) return { ok: false };
+  return { ok: true };
 }
 
 /** Tracked `epic-N` sessions still taking a slot, counted as `liveCount` counts. */
 export function liveEpicCount(launched: Launched, sessions: readonly Session[], now: number): number {
-  throw new Error("not implemented");
+  return Object.entries(launched).filter(([key, entry]) => key.startsWith("epic-") && isLive(entry, sessions, now))
+    .length;
 }
 
 /** The work-ticket command for an issue; `skip-plan` adds `auto` (no plan sign-off). */
