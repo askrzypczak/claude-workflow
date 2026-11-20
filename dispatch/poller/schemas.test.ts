@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ENDED, reconcileAction } from "./decide.ts";
-import { parseJson, Sessions } from "./schemas.ts";
+import { Launched, parseJson, Sessions } from "./schemas.ts";
 
 // A background session as `claude agents --json --all` listed it in the agent container on
 // 2026-11-02 (Claude Code 2.1.309), with `cwd` redacted.
@@ -127,5 +127,15 @@ describe("Sessions", () => {
       expect(st !== undefined && ENDED.includes(st), label).toBe(expected.ended);
       expect(reconcileAction(st, 0), label).toEqual(expected.reconcile);
     }
+  });
+});
+
+describe("Launched", () => {
+  it("Launched accepts an epic-N entry without a pr", () => {
+    const text = JSON.stringify({ "epic-186": { name: "app-epic-186", at: 1793598345 }, 5: { name: "app-5", at: 1 } });
+    expect(parseJson(Launched, text, "launched.json")).toEqual({
+      "epic-186": { name: "app-epic-186", at: 1793598345 },
+      5: { name: "app-5", at: 1 },
+    });
   });
 });

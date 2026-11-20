@@ -14,6 +14,8 @@ agent-claude() { docker exec -it -w /home/node/claude-workflow claude-workflow-a
 
 A ticket is picked up when it is open, authored by the repo's configured `owner`, and labelled `agent-ok` + `ready` (and not `in-progress`, `blocked`, `agent-failed` or `orchestrate-epic-run`). The session is named `<sessionPrefix>-<issue>` (e.g. `app-12`) and runs `work-ticket`.
 
+An epic is picked up the same way when it is labelled `agent-ok` + `ready-epic` instead, and not also `ready`: the session is named `<sessionPrefix>-epic-<issue>` (e.g. `app-epic-40`) and runs `orchestrate-epic` on fable at high (`EPIC_LAUNCH_FLAGS` in `poller/config.ts`). At most one epic session runs at a time, across all repos. An issue with both `ready` and `ready-epic` gets no session and logs `#N: has both ready and ready-epic; skipping`.
+
 The job, the installer and the config live in the local clone of this repo, not the plugin cache: a LaunchAgent needs a stable path.
 
 What runs where: the LaunchAgent's job, `dispatch/launchd/job.sh`, runs on the host. The poller and the sessions it starts run in the [agent container](../docs/containers.md), the poller from the container's clone of this repo, `/home/node/claude-workflow`. Each poll, the job starts Colima and the container when they are down, brings Claude Code up to npm's `stable` tag (rebuilding and replacing the container when that is newer and no container session is live), updates the plugin in the container, copies the dispatch config in and runs the poller there as `node`. Interactive sessions stay on the host.
@@ -28,7 +30,9 @@ Labels on GitHub start unattended agent sessions locally:
 - They work in their repo's clone in the container, in auto permission mode: the launch flags include `--permission-mode auto`, because a session signed in with the container's Claude token would start in manual mode and stop at its first Bash call. Auto mode's classifier approves or blocks each action instead of a prompt, but "if the classifier blocks an action 3 times in a row or 20 times total, auto mode pauses and Claude Code resumes prompting" (Claude Code docs, *Choose a permission mode*); the session then shows as `blocked` in the agent view.
 - Every session uses your Claude usage limits and costs money if you pay per token. Several `ready` tickets start several sessions at once.
 - At most 10 sessions are live at once across all repos (`CLAUDE_MAX_SESSIONS`; per-repo `maxSessions`). Extra tickets log `deferred #N: at session cap` and start on a later poll.
-- Launch flags are logged on every launch. Anyone who can get `owner` to label an issue `ready` can start a session, so keep labelling rights tight.
+- An epic session (`ready-epic`) runs many sub-agents, one planner and one builder per child plus reviews, so a single epic costs far more than a ticket. At most one epic session is live at once across all repos; another eligible epic logs `deferred #N: an epic session is already running` and starts on a later poll. The epic session also counts toward `CLAUDE_MAX_SESSIONS` and `maxSessions`; its children run as its sub-agents, not as poller sessions, so they do not.
+- The epic limit counts the epic sessions the poller tracks and any live session named `<prefix>-epic-...`. An `orchestrate-epic` session started by hand under another name is not counted, so the poller can start a second epic beside it.
+- Launch flags are logged on every launch. Anyone who can get `owner` to label an issue `ready` or `ready-epic` can start a session, so keep labelling rights tight. A hijacked session whose token has Issues write could add `ready-epic` to an `agent-ok` epic, as it could add `ready` to a ticket; only the maintainer is meant to add either.
 
 ### Onboarding a repo
 
@@ -80,6 +84,7 @@ Migrating from an older poller on the host: pass `--legacy-label <its launchd la
 2. In the container's agent view (`agent-claude`, or `docker exec -it -w /home/node/claude-workflow claude-workflow-agent claude agents`), a `blocked` session is waiting for you: usually plan sign-off, also questions and permission prompts. Open it there (or `agent-claude attach <id>`), answer, and leave it running.
 3. For easy tickets add `skip-plan`: the session runs `work-ticket N auto` and skips sign-off (it still asks if the ticket is ambiguous or risky).
 4. When it finishes, the ticket is `needs-review` with a PR (a spike: with a findings comment and no PR). Review, then use `address-feedback`.
+5. For an epic, put any guidance for the run in the epic body first (a label carries none), then add `agent-ok` and `ready-epic`, not `ready`. Within ~3 minutes `<prefix>-epic-N` starts, unless another epic session is running. Its claim removes `ready-epic`, and it stops at its gates for you in the agent view like any other session.
 
 ### Conflict resolution
 
@@ -102,7 +107,7 @@ After the conflict phase, the poller launches `claude --bg --name <prefix>-N-ci 
 
 ### When something fails
 
-If a session fails, is stopped, or ends without handing the ticket off, the poller adds `agent-failed` and comments with how to inspect it: `docker exec claude-workflow-agent claude logs <prefix>-<issue>` (or `agent-claude logs <prefix>-<issue>`) and the agent view. To retry, remove `agent-failed` and add `ready` again. Only `done` (checked for hand-off), `failed` and `stopped` end a tracked session; any other state (`working`, `blocked`, `waiting`, `idle`, unknown) counts as alive.
+If a session fails, is stopped, or ends without handing the ticket off, the poller adds `agent-failed` and comments with how to inspect it: `docker exec claude-workflow-agent claude logs <prefix>-<issue>` (or `agent-claude logs <prefix>-<issue>`) and the agent view. To retry, remove `agent-failed` and add `ready` again. An epic session (`<prefix>-epic-<issue>`) is failed the same way; to retry it, remove `agent-failed` and add `ready-epic`, and the run resumes from `origin/epic-<issue>` when it exists. Only `done` (checked for hand-off), `failed` and `stopped` end a tracked session; any other state (`working`, `blocked`, `waiting`, `idle`, unknown) counts as alive.
 
 ### Operations
 
@@ -124,7 +129,7 @@ Per repo options are in `repos.json` (above). Global options are environment var
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CLAUDE_MAX_SESSIONS` | `10` | Most sessions live at once across all repos (positive integer; invalid values abort the run). A guard against a runaway label batch; raise it deliberately. |
+| `CLAUDE_MAX_SESSIONS` | `10` | Most sessions live at once across all repos, an epic session included (positive integer; invalid values abort the run). A guard against a runaway label batch; raise it deliberately. At most one of the sessions is an epic session, whatever the value. |
 | `EXTRA_PATH` | empty | Directories prepended to the job's `PATH` on the host, ahead of fnm's default bin dir (`~/.local/share/fnm/aliases/default/bin`), `~/.local/bin` and Homebrew, which it always adds, so the job finds `node`, `docker` and `colima`. It does not reach the container. |
 
 ### Notes
@@ -139,7 +144,7 @@ Per repo options are in `repos.json` (above). Global options are environment var
 Polls every configured GitHub repo for agent-ready tickets and starts one interactive background session per ticket (`claude --bg`, visible in the agent container's agent view: `docker exec -it -w /home/node/claude-workflow claude-workflow-agent claude agents`, or `agent-claude`). It runs in the agent container, started by the LaunchAgent's job every 3 minutes. Per repo it:
 
 1. Reconciles sessions it launched earlier (marks tickets `agent-failed` when a session failed, stopped, vanished, or finished without handing off).
-2. Launches `<prefix>-N` (`/ticket-workflow:work-ticket N`, or `N auto` with the `skip-plan` label) for each open issue authored by the repo's `owner` with `agent-ok` + `ready` and none of `in-progress`, `blocked`, `agent-failed`, `orchestrate-epic-run`.
+2. Launches `<prefix>-N` (`/ticket-workflow:work-ticket N`, or `N auto` with the `skip-plan` label) for each open issue authored by the repo's `owner` with `agent-ok` + `ready` and none of `ready-epic`, `in-progress`, `blocked`, `agent-failed`, `orchestrate-epic-run`. For an issue with `agent-ok` + `ready-epic` and none of `ready`, `in-progress`, `blocked`, `agent-failed`, `orchestrate-epic-run`, it launches `<prefix>-epic-N` (`/ticket-workflow:orchestrate-epic N`, with `EPIC_LAUNCH_FLAGS`) instead, while no other epic session is live in any repo (a tracked one, or any live session named `<prefix>-epic-...`).
 3. Launches `<prefix>-N-conflict` (`/ticket-workflow:resolve-conflicts N`) for open, same-repo `issue-N-*` PRs authored by `owner` that conflict with main, while ticket N is open, at most once per main SHA. Fork PRs and other authors' PRs are skipped: a fork can use any branch name. A PR or ticket labelled `orchestrate-epic-run` is skipped too.
 4. Launches `<prefix>-N-ci` (`/ticket-workflow:fix-ci N`) for open, same-repo `issue-N-*` PRs authored by `owner` that are mergeable but have a failed check (and none still running), while ticket N is open, once per PR head SHA and at most twice per PR. Pending checks, conflicting PRs and a live ticket, conflict or CI-fix session for N launch nothing, and so does a PR or ticket labelled `orchestrate-epic-run`.
 
@@ -205,10 +210,12 @@ The run aborts non-zero (with a log line naming each bad field, e.g. `[0].repo: 
 
 ```
 lock/                           global run lock (one poller at a time)
-repos/<sessionPrefix>/launched.json   {"<N>": {name, at}, "conflict-<N>": {name, at, pr, mainSha}, "ci-<N>": {name, at, pr}}
+repos/<sessionPrefix>/launched.json   {"<N>": {name, at}, "epic-<N>": {name, at}, "conflict-<N>": {name, at, pr, mainSha}, "ci-<N>": {name, at, pr}}
 repos/<sessionPrefix>/conflicts.json  {"<N>": {pr, mainSha}}  last conflict attempt per ticket
 repos/<sessionPrefix>/ci-attempts.json  {"<pr>": {headSha, count}}  CI-fix attempts per PR (missing = {})
 ```
+
+An `epic-<N>` entry is the epic session `<prefix>-epic-<N>`. A poller older than the epic launch rejects a `launched.json` that holds one, so rolling back fails that repo's poll until the entry is deleted by hand.
 
 The log stays on the host, in `~/Library/Logs/claude-workflow-poller.log`: the job writes its own lines there and the poller's output at the end of each poll.
 
@@ -257,7 +264,7 @@ Environment (of the poller; under the job only `CLAUDE_MAX_SESSIONS` reaches it)
 
 - `CLAUDE_WORKFLOW_CONFIG`: config path. On the host it names the file the job copies in; in the container the poller reads its default path, where the copy goes.
 - `STATE_DIR`: state root, `~/.local/state/claude-workflow` by default.
-- `CLAUDE_MAX_SESSIONS`: positive integer, default `10`. Live sessions are tracked entries in `launched.json` (tickets and conflict sessions) whose session is not `done`, `failed` or `stopped`; unlisted just-launched ones count. The global cap counts across all repos, a repo's `maxSessions` only that repo. At a cap the poller logs `deferred #N: at session cap` and leaves state untouched, so the launch is retried next poll. `--dry-run` applies the same caps. An invalid value aborts the run.
+- `CLAUDE_MAX_SESSIONS`: positive integer, default `10`. Live sessions are tracked entries in `launched.json` (tickets, epics, conflict and CI-fix sessions) whose session is not `done`, `failed` or `stopped`; unlisted just-launched ones count. The global cap counts across all repos, a repo's `maxSessions` only that repo. At a cap the poller logs `deferred #N: at session cap` and leaves state untouched, so the launch is retried next poll. `--dry-run` applies the same caps. Apart from the cap, at most one epic session runs across all repos: a tracked `epic-N` entry or any listed live session named `<prefix>-epic-...` holds it, and another eligible epic logs `deferred #N: an epic session is already running`. An invalid value aborts the run.
 - The launch flags are logged on every launch line (`flags: ...`).
 - `EXTRA_PATH`: prepended to `PATH` (`agent-poller.sh` and `job.sh` also add the fnm default bin dir, `~/.local/bin` and Homebrew, since launchd does not read your shell profile). Used by the tests to inject fake binaries.
 

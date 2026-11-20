@@ -99,6 +99,12 @@ describe("cleanupClosedIssue", () => {
     expect([...edits[0]!.labels].sort()).toEqual(["in-progress", "orchestrate-epic-run"]);
   });
 
+  it("cleanup removes ready-epic from a closed issue", () => {
+    const { gh, edits } = fake({ 1: closed(["ready-epic", "feature"]) });
+    cleanupClosedIssue(1, gh);
+    expect(edits).toEqual([{ issue: 1, labels: ["ready-epic"] }]);
+  });
+
   it("does nothing when the closed issue has no state labels", () => {
     const { gh, edits } = fake({ 1: closed(["bug"]) });
     cleanupClosedIssue(1, gh);

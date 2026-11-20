@@ -10,6 +10,9 @@ import { parseJson } from "./schemas.ts";
  */
 export const LAUNCH_FLAGS = ["--model", "opus", "--effort", "xhigh", "--permission-mode", "auto"];
 
+/** An orchestrate-epic session starts on fable at high effort, in auto permission mode. */
+export const EPIC_LAUNCH_FLAGS = ["--model", "fable", "--effort", "high", "--permission-mode", "auto"];
+
 const text = (error: string) => z.string({ error }).min(1, error);
 
 const RepoEntry = z.object(

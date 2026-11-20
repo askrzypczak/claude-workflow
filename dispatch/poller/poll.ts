@@ -1,7 +1,7 @@
 // One repo's poll: reconcile the sessions it launched, launch ready tickets, resolve
 // conflicting agent PRs, then fix agent PRs whose CI is red.
 // Any throw aborts this repo only (main.ts logs it and moves on).
-import { LAUNCH_FLAGS } from "./config.ts";
+import { EPIC_LAUNCH_FLAGS, LAUNCH_FLAGS } from "./config.ts";
 import type { RepoConfig } from "./config.ts";
 import {
   alreadyAttempted,
@@ -11,6 +11,7 @@ import {
   ciVerdict,
   conflictRemains,
   conflictVerdict,
+  epicVerdict,
   handedOff,
   prIssueVerdict,
   reconcileAction,
@@ -19,7 +20,9 @@ import {
   ticketVerdict,
 } from "./decide.ts";
 import type { PollerIo } from "./io.ts";
-import type { Issue, PrRow, RepoState, Session } from "./schemas.ts";
+import type { Issue, IssueRow, PrRow, RepoState, Session } from "./schemas.ts";
+
+type SessionKind = "conflict" | "ci" | "epic";
 
 /** Shared by every repo in one run. */
 export interface RunContext {
@@ -27,6 +30,8 @@ export interface RunContext {
   maxSessions: number;
   /** Live sessions per session prefix: counted before the first repo, bumped by each launch (dry-run too). */
   live: Map<string, number>;
+  /** Live epic sessions across all repos: counted before the first repo, bumped by each epic launch. */
+  epics: number;
 }
 
 interface RepoPoll {
@@ -57,19 +62,19 @@ function reconcile(p: RepoPoll): void {
   const { repo, state, io, log } = p;
   const now = io.now();
   for (const [key, entry] of Object.entries(state.launched)) {
-    const kind = key.startsWith("conflict-") ? "conflict" : key.startsWith("ci-") ? "ci" : undefined;
+    const kind = (["conflict", "ci", "epic"] as const).find((k) => key.startsWith(`${k}-`));
     const n = Number(kind ? key.slice(kind.length + 1) : key);
-    const pr = kind ? Number(entry.pr) : undefined;
+    const pr = kind === "conflict" || kind === "ci" ? Number(entry.pr) : undefined;
     const st = sessionState(p.run.sessions, entry.name);
     log(`#${n}: ${entry.name} state=${st ?? "<none>"}`);
 
     const next = reconcileAction(st, now - entry.at);
     if (next.action === "keep") continue;
     const failure = next.action === "fail" ? next.reason : finishedFailure(p, n, kind, pr);
-    if (failure !== undefined && kind !== undefined && pr !== undefined) {
+    if (failure !== undefined && (kind === "conflict" || kind === "ci") && pr !== undefined) {
       failPrSession(p, n, entry.name, pr, failure, kind);
     }
-    else if (failure !== undefined) failTicket(p, n, entry.name, failure);
+    else if (failure !== undefined) failTicket(p, n, entry.name, failure, kind === "epic");
     delete state.launched[key];
     io.saveState(repo.sessionPrefix, state);
   }
@@ -79,10 +84,10 @@ function reconcile(p: RepoPoll): void {
 function finishedFailure(
   p: RepoPoll,
   n: number,
-  kind: "conflict" | "ci" | undefined,
+  kind: SessionKind | undefined,
   prNumber: number | undefined,
 ): string | undefined {
-  if (kind !== undefined && prNumber !== undefined) {
+  if ((kind === "conflict" || kind === "ci") && prNumber !== undefined) {
     const pr = p.io.viewPr(p.repo.repo, prNumber);
     if (kind === "conflict") {
       return conflictRemains(pr) ? "session finished but the conflict remains" : undefined;
@@ -90,13 +95,18 @@ function finishedFailure(
     return ciRemains(pr) ? "session finished but CI is still failing" : undefined;
   }
   const issue = p.io.viewIssue(p.repo.repo, n);
-  return handedOff(issue) ? undefined : "session finished but the ticket was not handed off";
+  const what = kind === "epic" ? "epic" : "ticket";
+  return handedOff(issue) ? undefined : `session finished but the ${what} was not handed off`;
 }
 
-/** Launches a session per ready ticket, up to the caps. */
+/** Launches a session per ready ticket and an orchestrate-epic session per ready epic, up to the caps. */
 function launchTickets(p: RepoPoll): void {
   const { repo, state, io, log } = p;
   for (const issue of io.listIssues(repo.repo)) {
+    if (issue.labels.includes("ready-epic")) {
+      launchEpic(p, issue);
+      continue;
+    }
     const verdict = ticketVerdict(issue, repo.owner, state.launched);
     if (!verdict.ok) {
       if (verdict.log) log(verdict.log);
@@ -113,10 +123,39 @@ function launchTickets(p: RepoPoll): void {
     }
     const name = `${repo.sessionPrefix}-${n}`;
     log(`#${n}: launching ${name} (flags: ${LAUNCH_FLAGS.join(" ")})`);
-    start(p, name, ticketPrompt(issue));
+    start(p, name, LAUNCH_FLAGS, ticketPrompt(issue));
     state.launched[n] = { name, at: io.now() };
     io.saveState(repo.sessionPrefix, state);
   }
+}
+
+/** Launches `<prefix>-epic-N` for a ready epic, within the caps and while no other epic session runs. */
+function launchEpic(p: RepoPoll, issue: IssueRow): void {
+  const { repo, state, io, log } = p;
+  const verdict = epicVerdict(issue, repo.owner, state.launched);
+  if (!verdict.ok) {
+    if (verdict.log) log(verdict.log);
+    return;
+  }
+  const n = issue.number;
+  if (p.failed.has(n)) {
+    log(`#${n}: failed earlier in this poll; not relaunching`);
+    return;
+  }
+  if (capReached(p)) {
+    log(`deferred #${n}: at session cap`);
+    return;
+  }
+  if (p.run.epics >= 1) {
+    log(`deferred #${n}: an epic session is already running`);
+    return;
+  }
+  const name = `${repo.sessionPrefix}-epic-${n}`;
+  log(`#${n}: launching ${name} (flags: ${EPIC_LAUNCH_FLAGS.join(" ")})`);
+  start(p, name, EPIC_LAUNCH_FLAGS, `/ticket-workflow:orchestrate-epic ${n}`);
+  p.run.epics++;
+  state.launched[`epic-${n}`] = { name, at: io.now() };
+  io.saveState(repo.sessionPrefix, state);
 }
 
 /**
@@ -172,7 +211,7 @@ function resolveConflicts(p: RepoPoll, prs: readonly PrRow[]): void {
     }
     const name = `${repo.sessionPrefix}-${n}-conflict`;
     log(`#${n}: PR #${pr.number} conflicts with main; launching ${name} (flags: ${LAUNCH_FLAGS.join(" ")})`);
-    start(p, name, `/ticket-workflow:resolve-conflicts ${n}`);
+    start(p, name, LAUNCH_FLAGS, `/ticket-workflow:resolve-conflicts ${n}`);
     state.launched[`conflict-${n}`] = { name, at: io.now(), pr: String(pr.number), mainSha };
     state.attempts[n] = { pr: String(pr.number), mainSha };
     io.saveState(repo.sessionPrefix, state);
@@ -226,7 +265,7 @@ function fixCi(p: RepoPoll, prs: readonly PrRow[]): void {
     }
     const name = `${repo.sessionPrefix}-${n}-ci`;
     log(`#${n}: PR #${pr.number} has failing CI; launching ${name} (flags: ${LAUNCH_FLAGS.join(" ")})`);
-    start(p, name, `/ticket-workflow:fix-ci ${n}`);
+    start(p, name, LAUNCH_FLAGS, `/ticket-workflow:fix-ci ${n}`);
     state.launched[`ci-${n}`] = { name, at: io.now(), pr: String(pr.number) };
     state.ciAttempts[pr.number] = {
       headSha: pr.headRefOid,
@@ -243,8 +282,8 @@ function capReached(p: RepoPoll): boolean {
   });
 }
 
-function start(p: RepoPoll, name: string, prompt: string): void {
-  p.io.launch(p.repo.dir, name, LAUNCH_FLAGS, prompt);
+function start(p: RepoPoll, name: string, flags: string[], prompt: string): void {
+  p.io.launch(p.repo.dir, name, flags, prompt);
   p.run.live.set(p.repo.sessionPrefix, (p.run.live.get(p.repo.sessionPrefix) ?? 0) + 1);
 }
 
@@ -266,16 +305,15 @@ function tryTo(p: RepoPoll, what: string, step: () => void): void {
 
 // The issue comment is the step that must succeed: if it throws, the entry stays tracked and
 // the failure is reported again on the next poll.
-function failTicket(p: RepoPoll, n: number, name: string, reason: string): void {
+function failTicket(p: RepoPoll, n: number, name: string, reason: string, epic: boolean): void {
   const repo = p.repo.repo;
   p.failed.add(n);
   p.log(`#${n}: ${reason} -> agent-failed`);
   tryTo(p, `label #${n}`, () => p.io.editLabels(repo, n, ["agent-failed"], ["in-progress"]));
-  p.io.commentOnIssue(
-    repo,
-    n,
-    `Background session \`${name}\` ended without finishing: ${reason}. ${inspect(name)} To retry, remove \`agent-failed\` and add \`ready\`.`,
-  );
+  const body = epic
+    ? `Epic session \`${name}\` ended without finishing: ${reason}. ${inspect(name)} To retry, remove \`agent-failed\` and add \`ready-epic\`; the run resumes from \`origin/epic-${n}\` when it exists.`
+    : `Background session \`${name}\` ended without finishing: ${reason}. ${inspect(name)} To retry, remove \`agent-failed\` and add \`ready\`.`;
+  p.io.commentOnIssue(repo, n, body);
 }
 
 function failPrSession(

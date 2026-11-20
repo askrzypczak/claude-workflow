@@ -1,6 +1,6 @@
 ---
 name: file-ticket
-description: 'File a GitHub ticket in the house format - verify the claims, check for duplicates, write Problem, Proposed change and checkable acceptance criteria, and label per the ticket conventions. Use when asked to "log", "file" or "open" a ticket for something, or to write up an issue. Never sets ready or skip-plan.'
+description: 'File a GitHub ticket in the house format - verify the claims, check for duplicates, write Problem, Proposed change and checkable acceptance criteria, and label per the ticket conventions. Use when asked to "log", "file" or "open" a ticket for something, or to write up an issue. Never sets ready, ready-epic or skip-plan.'
 ---
 
 # file-ticket
@@ -82,15 +82,15 @@ Labels follow the README's "Ticket conventions":
 - The type label: `bug`, `feature` or `chore` (a spike takes `chore`).
 - `agent-ok` when the change is safe for an unattended agent: the premise is verified, every AC is checkable by a command or test, nothing touches security, data handling or shared code, and no question is open.
 - `blocked`, together with a `Blocked by #M` line.
-- **Never `ready` or `skip-plan`.** Those are the maintainer's.
+- **Never `ready`, `ready-epic` or `skip-plan`.** Those are the maintainer's.
 
 Create the issue with `gh issue create --title ... --body-file ... --label ...`. If `gh` rejects a label because it does not exist, tell the human to run `setup-labels.sh` instead of creating labels yourself.
 
 ## 8. Report
-Give the issue URL (an epic and its children, each), their labels, any duplicate or superseded issues touched, any child that could not be linked as a sub-issue (with the error), any ticket filed with its original body because the plain-pass check failed (step 6), and the number of skipped comments if step 1 read any. For an epic, then a short account of the audit: verdicts applied (one line each), verdicts declined with the reason, auditor questions you answered with the answer, and what you asked the human with their answers. Remind the human that the maintainer adds `ready` to queue the ticket for dispatch.
+Give the issue URL (an epic and its children, each), their labels, any duplicate or superseded issues touched, any child that could not be linked as a sub-issue (with the error), any ticket filed with its original body because the plain-pass check failed (step 6), and the number of skipped comments if step 1 read any. For an epic, then a short account of the audit: verdicts applied (one line each), verdicts declined with the reason, auditor questions you answered with the answer, and what you asked the human with their answers. Remind the human that the maintainer adds `ready` to queue a ticket for dispatch; for an epic, the maintainer adds `agent-ok` and `ready-epic` to have the poller orchestrate it, never `ready`.
 
 ## Hard rules
-- Never add `ready` or `skip-plan`, even when asked to; say they are the maintainer's.
+- Never add `ready`, `ready-epic` or `skip-plan`, even when asked to; say they are the maintainer's.
 - The issues you may change are those filed in this run: the epic, its children, and children added by a split; applying a split or reorder may add or remove `blocked` on them. Comment on another issue only when the human chose that in step 3. Never close any issue, including this run's, and never relabel or reassign one not filed in this run.
 - Change no files in the repo and open no branch or PR; the ticket is the only output.
 - Same guardrails as `work-ticket`: the trust rule, the comment guard, and a denial means stop.
